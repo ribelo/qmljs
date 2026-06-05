@@ -236,112 +236,138 @@ void qml_raise_string(const char *message)
   CAMLreturn0;
 }
 
+static const char *qml_property_cstring(JSContext *ctx, JSValueConst object,
+                                        const char *name, JSValue *slot)
+{
+  *slot = JS_GetPropertyStr(ctx, object, name);
+  if (JS_IsException(*slot) || JS_IsUndefined(*slot) || JS_IsNull(*slot)) {
+    if (JS_IsException(*slot)) {
+      *slot = JS_UNDEFINED;
+    }
+    return NULL;
+  }
+  return JS_ToCString(ctx, *slot);
+}
+
+static value qml_copy_optional_string(const char *text)
+{
+  return caml_copy_string(text == NULL ? "" : text);
+}
+
 void qml_raise_exception(JSContext *ctx)
 {
   CAMLparam0();
-  CAMLlocal1(arg);
-  static const value *exception = NULL;
+  CAMLlocalN(args, 8);
+  static const value *raise_exception = NULL;
   JSValue js_exception;
+  JSValue js_name;
+  JSValue js_message;
   JSValue js_stack;
   JSValue js_cause;
+  JSValue js_cause_name;
+  JSValue js_cause_message;
   JSValue js_cause_stack;
+  JSValue js_cause_ocaml_frame;
+  const char *name;
+  const char *message;
   const char *exception_text;
   const char *stack;
-  const char *cause_text;
+  const char *cause_name;
+  const char *cause_message;
   const char *cause_stack;
-
-  if (exception == NULL) {
-    exception = caml_named_value("qmljs.error");
-  }
+  const char *cause_ocaml_frame;
 
   js_exception = JS_GetException(ctx);
-  js_stack = JS_GetPropertyStr(ctx, js_exception, "stack");
-  stack = JS_IsException(js_stack) || JS_IsUndefined(js_stack) || JS_IsNull(js_stack)
-            ? NULL
-            : JS_ToCString(ctx, js_stack);
-  js_cause = JS_GetPropertyStr(ctx, js_exception, "cause");
-  cause_text =
-    JS_IsException(js_cause) || JS_IsUndefined(js_cause) || JS_IsNull(js_cause)
-      ? NULL
-      : JS_ToCString(ctx, js_cause);
-  js_cause_stack =
-    JS_IsException(js_cause) || JS_IsUndefined(js_cause) || JS_IsNull(js_cause)
-      ? JS_UNDEFINED
-      : JS_GetPropertyStr(ctx, js_cause, "stack");
-  cause_stack =
-    JS_IsException(js_cause_stack) || JS_IsUndefined(js_cause_stack) || JS_IsNull(js_cause_stack)
-      ? NULL
-      : JS_ToCString(ctx, js_cause_stack);
+  name = qml_property_cstring(ctx, js_exception, "name", &js_name);
+  message = qml_property_cstring(ctx, js_exception, "message", &js_message);
+  stack = qml_property_cstring(ctx, js_exception, "stack", &js_stack);
   exception_text = JS_ToCString(ctx, js_exception);
 
-  if (exception_text != NULL || stack != NULL || cause_text != NULL ||
-      cause_stack != NULL) {
-    const char caused_by[] = "\nCaused by: ";
-    size_t total_length = 0;
-    if (exception_text != NULL) {
-      total_length += strlen(exception_text);
-    }
-    if (stack != NULL) {
-      total_length += (total_length == 0 ? 0 : 1) + strlen(stack);
-    }
-    if (cause_text != NULL) {
-      total_length += sizeof(caused_by) - 1 + strlen(cause_text);
-    }
-    if (cause_stack != NULL) {
-      total_length += 1 + strlen(cause_stack);
-    }
-
-    arg = caml_alloc_string(total_length);
-    char *base = (char *)Bytes_val(arg);
-    char *cursor = base;
-    if (exception_text != NULL) {
-      size_t length = strlen(exception_text);
-      memcpy(cursor, exception_text, length);
-      cursor += length;
-    }
-    if (stack != NULL) {
-      if (cursor != base) {
-        *cursor++ = '\n';
-      }
-      size_t length = strlen(stack);
-      memcpy(cursor, stack, length);
-      cursor += length;
-    }
-    if (cause_text != NULL) {
-      size_t prefix_length = sizeof(caused_by) - 1;
-      memcpy(cursor, caused_by, prefix_length);
-      cursor += prefix_length;
-      size_t length = strlen(cause_text);
-      memcpy(cursor, cause_text, length);
-      cursor += length;
-    }
-    if (cause_stack != NULL) {
-      *cursor++ = '\n';
-      size_t length = strlen(cause_stack);
-      memcpy(cursor, cause_stack, length);
-    }
+  js_cause = JS_GetPropertyStr(ctx, js_exception, "cause");
+  if (JS_IsException(js_cause) || JS_IsUndefined(js_cause) ||
+      JS_IsNull(js_cause)) {
+    js_cause = JS_UNDEFINED;
+    cause_name = NULL;
+    cause_message = NULL;
+    cause_stack = NULL;
+    cause_ocaml_frame = NULL;
+    js_cause_name = JS_UNDEFINED;
+    js_cause_message = JS_UNDEFINED;
+    js_cause_stack = JS_UNDEFINED;
+    js_cause_ocaml_frame = JS_UNDEFINED;
   } else {
-    arg = caml_copy_string("JavaScript exception");
+    cause_name = qml_property_cstring(ctx, js_cause, "name", &js_cause_name);
+    cause_message =
+      qml_property_cstring(ctx, js_cause, "message", &js_cause_message);
+    cause_stack = qml_property_cstring(ctx, js_cause, "stack", &js_cause_stack);
+    cause_ocaml_frame =
+      qml_property_cstring(ctx, js_cause, "_qmljs_ocaml_frame",
+                           &js_cause_ocaml_frame);
   }
 
+  if ((message == NULL || message[0] == '\0') && exception_text != NULL) {
+    if (message != NULL) {
+      JS_FreeCString(ctx, message);
+    }
+    message = exception_text;
+  }
+
+  args[0] = qml_copy_optional_string(name);
+  args[1] = qml_copy_optional_string(message);
+  args[2] = qml_copy_optional_string(stack);
+  args[3] = caml_copy_string("");
+  args[4] = qml_copy_optional_string(cause_name);
+  args[5] = qml_copy_optional_string(cause_message);
+  args[6] = qml_copy_optional_string(cause_stack);
+  args[7] = qml_copy_optional_string(cause_ocaml_frame);
+
+  if (cause_ocaml_frame != NULL) {
+    JS_FreeCString(ctx, cause_ocaml_frame);
+  }
   if (cause_stack != NULL) {
     JS_FreeCString(ctx, cause_stack);
   }
-  if (cause_text != NULL) {
-    JS_FreeCString(ctx, cause_text);
+  if (cause_message != NULL) {
+    JS_FreeCString(ctx, cause_message);
+  }
+  if (cause_name != NULL) {
+    JS_FreeCString(ctx, cause_name);
   }
   if (stack != NULL) {
     JS_FreeCString(ctx, stack);
   }
+  if (message != NULL && message != exception_text) {
+    JS_FreeCString(ctx, message);
+  }
+  if (name != NULL) {
+    JS_FreeCString(ctx, name);
+  }
   if (exception_text != NULL) {
     JS_FreeCString(ctx, exception_text);
   }
+  JS_FreeValue(ctx, js_cause_ocaml_frame);
   JS_FreeValue(ctx, js_cause_stack);
+  JS_FreeValue(ctx, js_cause_message);
+  JS_FreeValue(ctx, js_cause_name);
   JS_FreeValue(ctx, js_cause);
   JS_FreeValue(ctx, js_stack);
+  JS_FreeValue(ctx, js_message);
+  JS_FreeValue(ctx, js_name);
   JS_FreeValue(ctx, js_exception);
 
-  caml_raise_with_arg(*exception, arg);
+  if (raise_exception == NULL) {
+    raise_exception = caml_named_value("qmljs.raise_js_exception");
+  }
+  if (raise_exception == NULL) {
+    qml_raise_string("JavaScript exception");
+  }
+
+  value result = caml_callbackN_exn(*raise_exception, 8, args);
+  if (Is_exception_result(result)) {
+    caml_raise(Extract_exception(result));
+  }
+
+  qml_raise_string("JavaScript exception callback returned unexpectedly");
   CAMLreturn0;
 }
 

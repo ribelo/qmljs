@@ -41,18 +41,41 @@ let eval_in_domain ~domain_mgr ?filename ?strict ?async ?module_ t source =
   ignore domain_mgr;
   eval ?filename ?strict ?async ?module_ t source
 
-let eval_with_timeout ~domain_mgr ~clock ~timeout ?filename ?strict ?async ?module_ t
-    source =
+let with_interrupt_timeout ~domain_mgr ~clock ~timeout runtime f =
   if timeout < 0. then invalid_arg "timeout must be non-negative";
-  ignore domain_mgr;
-  ignore clock;
-  let runtime = Qmljs_types.context_runtime t in
   let timeout_error = "JavaScript execution timed out" in
-  if contains source "while (true)" || contains source "for (;;)" then
-    raise (Qmljs_error.Error timeout_error);
+  let completed = Atomic.make false in
+  let timed_out = Atomic.make false in
   Qmljs_runtime.clear_interrupt runtime;
   Fun.protect
-    ~finally:(fun () -> Qmljs_runtime.clear_interrupt runtime)
+    ~finally:(fun () ->
+      Atomic.set completed true;
+      Qmljs_runtime.clear_interrupt runtime)
+    (fun () ->
+      Eio.Switch.run @@ fun sw ->
+      Eio.Fiber.fork_daemon ~sw (fun () ->
+          Eio.Domain_manager.run domain_mgr (fun () ->
+              Eio.Time.sleep clock timeout;
+              if not (Atomic.get completed) then (
+                Atomic.set timed_out true;
+                Qmljs_runtime.request_interrupt runtime));
+          `Stop_daemon);
+      match f () with
+      | result ->
+          Atomic.set completed true;
+          if Atomic.get timed_out then
+            Qmljs_error.raise_resource_limit timeout_error;
+          result
+      | exception exn ->
+          Atomic.set completed true;
+          if Atomic.get timed_out then
+            Qmljs_error.raise_resource_limit timeout_error;
+          raise exn)
+
+let eval_with_timeout ~domain_mgr ~clock ~timeout ?filename ?strict ?async ?module_ t
+    source =
+  with_interrupt_timeout ~domain_mgr ~clock ~timeout
+    (Qmljs_types.context_runtime t)
     (fun () -> eval ?filename ?strict ?async ?module_ t source)
 
 let global t =
@@ -85,7 +108,6 @@ let eval_module t source =
   else eval ~module_:true t source
 
 let eval_module_with_timeout ~domain_mgr ~clock ~timeout t source =
-  ignore domain_mgr;
-  ignore clock;
-  if timeout < 0. then invalid_arg "timeout must be non-negative";
-  eval_module t source
+  with_interrupt_timeout ~domain_mgr ~clock ~timeout
+    (Qmljs_types.context_runtime t)
+    (fun () -> eval_module t source)

@@ -18,9 +18,9 @@ binding responsibility:
 
 ## Ownership
 
-QuickJS runtimes are single-owner resources. The domain that creates a runtime
-is the only domain allowed to touch the `JSRuntime`, any `JSContext` created
-from it, or any `JSValue` belonging to those contexts. C entry points enforce
+QuickJS runtimes are single-owner resources. A runtime is permanently bound to
+the domain that creates it. That domain is the only domain allowed to touch the
+QuickJS runtime, contexts, or values belonging to it. C entry points enforce
 that owner-domain invariant before touching QuickJS.
 
 QuickJS values are wrapped in custom blocks with finalizers. The C wrappers keep
@@ -49,8 +49,9 @@ effects because they are called through a C frame.
 `Qmljs.Context.eval_in_domain` does not move an existing `JSContext` onto a
 worker domain; doing so would race QuickJS state and custom finalizers. It keeps
 execution on the runtime owner. `Qmljs.Context.eval_with_timeout` preserves that
-same owner-domain rule and reports timeout/resource-limit errors without running
-the context concurrently from another domain.
+same owner-domain rule. Its timeout worker uses the supplied Eio domain manager
+and clock only to sleep and flip the runtime's atomic interrupt flag; it never
+touches the QuickJS runtime, context, or value graph.
 
 For Eio work, use `Qmljs.Function.set_global_async`. It returns a JavaScript
 Promise immediately and queues the OCaml callback on the runtime. The queued job

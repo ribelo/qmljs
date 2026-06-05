@@ -100,14 +100,18 @@ CAMLprim value qml_runtime_request_interrupt(value runtime)
 
 CAMLprim value qml_runtime_clear_interrupt(value runtime)
 {
-  atomic_store_explicit(&Qml_runtime_val(runtime)->state->interrupt_requested, 0,
-                        memory_order_relaxed);
-  return Val_unit;
+  CAMLparam1(runtime);
+  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qml_runtime(runtime);
+  atomic_store_explicit(&state->interrupt_requested, 0, memory_order_relaxed);
+  CAMLreturn(Val_unit);
 }
 
 CAMLprim value qml_runtime_interrupt_requested(value runtime)
 {
-  return Val_bool(
-    atomic_load_explicit(&Qml_runtime_val(runtime)->state->interrupt_requested,
-                         memory_order_relaxed));
+  CAMLparam1(runtime);
+  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qml_runtime(runtime);
+  CAMLreturn(Val_bool(
+    atomic_load_explicit(&state->interrupt_requested, memory_order_relaxed)));
 }

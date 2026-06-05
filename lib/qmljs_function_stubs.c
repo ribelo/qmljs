@@ -21,10 +21,80 @@ static void qml_callback_finalize(void *opaque)
 static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
                                          const char *name)
 {
-  char *message = caml_format_exception(exception);
-  JSValue result = JS_ThrowInternalError(ctx, "%s: %s", name, message);
-  caml_stat_free(message);
-  return result;
+  CAMLparam1(exception);
+  CAMLlocal1(message_value);
+  static const value *message_fn = NULL;
+  char *fallback = NULL;
+  const char *message = NULL;
+  size_t message_length = 0;
+
+  if (message_fn == NULL) {
+    message_fn = caml_named_value("qmljs.host_exception_message");
+  }
+
+  if (message_fn != NULL) {
+    value result = caml_callback_exn(*message_fn, exception);
+    if (Is_exception_result(result)) {
+      fallback = caml_format_exception(Extract_exception(result));
+      message = fallback;
+      message_length = strlen(fallback);
+    } else {
+      message_value = result;
+      message = String_val(message_value);
+      message_length = caml_string_length(message_value);
+    }
+  } else {
+    fallback = caml_format_exception(exception);
+    message = fallback;
+    message_length = strlen(fallback);
+  }
+
+  JSValue error = JS_NewError(ctx);
+  if (JS_IsException(error)) {
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, error);
+  }
+
+  JSValue js_message = JS_NewStringLen(ctx, message, message_length);
+  if (JS_IsException(js_message)) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+  if (JS_DefinePropertyValueStr(ctx, error, "message", js_message,
+                                JS_PROP_C_W_E) < 0) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+
+  JSValue frame = JS_NewString(ctx, name);
+  if (JS_IsException(frame)) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+  if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_ocaml_frame", frame,
+                                JS_PROP_CONFIGURABLE) < 0) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+
+  if (fallback != NULL) {
+    caml_stat_free(fallback);
+  }
+  CAMLreturnT(JSValue, JS_Throw(ctx, error));
 }
 
 static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,

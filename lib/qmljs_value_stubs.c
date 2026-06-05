@@ -179,13 +179,16 @@ CAMLprim value qml_value_to_bool(value context, value wrapped)
 CAMLprim value qml_value_to_int(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
-  int32_t result = 0;
+  int64_t result = 0;
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
-  if (JS_ToInt32(ctx, &result, qml_js_value(wrapped)) < 0) {
+  if (JS_ToInt64(ctx, &result, qml_js_value(wrapped)) < 0) {
     qml_raise_exception(ctx);
   }
-  CAMLreturn(Val_long(result));
+  if (result < (int64_t)Min_long || result > (int64_t)Max_long) {
+    qml_raise_string("JavaScript integer is outside the OCaml int range");
+  }
+  CAMLreturn(Val_long((intnat)result));
 }
 
 CAMLprim value qml_value_to_float(value context, value wrapped)
@@ -247,16 +250,14 @@ CAMLprim value qml_value_call(value context, value function, value args)
 CAMLprim value qml_value_is_promise(value wrapped)
 {
   CAMLparam1(wrapped);
-  qml_ensure_owner(Qml_value_val(wrapped)->state);
-  CAMLreturn(Val_bool(JS_IsPromise(Qml_value_val(wrapped)->value)));
+  CAMLreturn(Val_bool(JS_IsPromise(qml_js_value(wrapped))));
 }
 
 CAMLprim value qml_value_promise_state(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
-  qml_ensure_owner(Qml_value_val(wrapped)->state);
-  CAMLreturn(Val_int(JS_PromiseState(ctx, Qml_value_val(wrapped)->value)));
+  CAMLreturn(Val_int(JS_PromiseState(ctx, qml_js_value(wrapped))));
 }
 
 CAMLprim value qml_value_promise_result(value context, value wrapped)

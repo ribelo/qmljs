@@ -22,11 +22,9 @@ external runtime_request_interrupt : runtime -> unit = "qml_runtime_request_inte
 [@@noalloc]
 
 external runtime_clear_interrupt : runtime -> unit = "qml_runtime_clear_interrupt"
-[@@noalloc]
 
 external runtime_interrupt_requested : runtime -> bool
   = "qml_runtime_interrupt_requested"
-[@@noalloc]
 
 external context_create : runtime -> context = "qml_context_create"
 
