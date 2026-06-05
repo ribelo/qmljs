@@ -1,3 +1,7 @@
 (test
  (name test_qmljs)
  (libraries qmljs eio_main))
+
+(test
+ (name test_qmljs_readiness)
+ (libraries qmljs eio_main))
