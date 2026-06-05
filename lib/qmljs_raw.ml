@@ -71,3 +71,14 @@ external value_promise_result : context -> value -> value
   = "qml_value_promise_result"
 
 external promise_create : context -> value * value * value = "qml_promise_create"
+
+external diagnostics_live_runtimes : unit -> int
+  = "qml_diagnostics_live_runtimes"
+[@@noalloc]
+
+external diagnostics_live_contexts : unit -> int
+  = "qml_diagnostics_live_contexts"
+[@@noalloc]
+
+external diagnostics_live_values : unit -> int = "qml_diagnostics_live_values"
+[@@noalloc]

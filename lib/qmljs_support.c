@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+static atomic_int qml_live_runtimes;
+static atomic_int qml_live_contexts;
+static atomic_int qml_live_values;
+
 struct qml_deferred_value {
   JSContext *ctx;
   JSValue value;
@@ -102,6 +106,7 @@ static void qml_runtime_finalize(value v)
     caml_stat_free(runtime->state);
     runtime->state = NULL;
   }
+  atomic_fetch_sub_explicit(&qml_live_runtimes, 1, memory_order_relaxed);
 }
 
 static void qml_context_finalize(value v)
@@ -112,6 +117,7 @@ static void qml_context_finalize(value v)
     context->ctx = NULL;
   }
   caml_remove_generational_global_root(&context->runtime);
+  atomic_fetch_sub_explicit(&qml_live_contexts, 1, memory_order_relaxed);
 }
 
 static void qml_value_finalize(value v)
@@ -122,6 +128,7 @@ static void qml_value_finalize(value v)
     wrapped->ctx = NULL;
   }
   caml_remove_generational_global_root(&wrapped->context);
+  atomic_fetch_sub_explicit(&qml_live_values, 1, memory_order_relaxed);
 }
 
 static struct custom_operations qml_runtime_ops = {
@@ -164,6 +171,7 @@ value qml_alloc_runtime(JSRuntime *rt, struct qml_runtime_state *state)
   block = caml_alloc_custom(&qml_runtime_ops, sizeof(struct qml_runtime), 0, 1);
   Qml_runtime_val(block)->rt = rt;
   Qml_runtime_val(block)->state = state;
+  atomic_fetch_add_explicit(&qml_live_runtimes, 1, memory_order_relaxed);
   CAMLreturn(block);
 }
 
@@ -176,6 +184,7 @@ value qml_alloc_context(value runtime, JSContext *ctx)
   Qml_context_val(block)->runtime = runtime;
   Qml_context_val(block)->state = Qml_runtime_val(runtime)->state;
   caml_register_generational_global_root(&Qml_context_val(block)->runtime);
+  atomic_fetch_add_explicit(&qml_live_contexts, 1, memory_order_relaxed);
   CAMLreturn(block);
 }
 
@@ -190,7 +199,28 @@ value qml_alloc_value(value context, JSValue js_value)
   Qml_value_val(block)->context = context;
   Qml_value_val(block)->state = Qml_context_val(context)->state;
   caml_register_generational_global_root(&Qml_value_val(block)->context);
+  atomic_fetch_add_explicit(&qml_live_values, 1, memory_order_relaxed);
   CAMLreturn(block);
+}
+
+CAMLprim value qml_diagnostics_live_runtimes(value unit)
+{
+  (void)unit;
+  return Val_int(
+    atomic_load_explicit(&qml_live_runtimes, memory_order_relaxed));
+}
+
+CAMLprim value qml_diagnostics_live_contexts(value unit)
+{
+  (void)unit;
+  return Val_int(
+    atomic_load_explicit(&qml_live_contexts, memory_order_relaxed));
+}
+
+CAMLprim value qml_diagnostics_live_values(value unit)
+{
+  (void)unit;
+  return Val_int(atomic_load_explicit(&qml_live_values, memory_order_relaxed));
 }
 
 void qml_raise_string(const char *message)
