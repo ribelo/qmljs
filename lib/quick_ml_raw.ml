@@ -32,6 +32,7 @@ external value_to_bool : context -> value -> bool = "qml_value_to_bool"
 external value_to_int : context -> value -> int = "qml_value_to_int"
 external value_to_float : context -> value -> float = "qml_value_to_float"
 external value_to_string : context -> value -> string = "qml_value_to_string"
+external value_call : context -> value -> value array -> value = "qml_value_call"
 
 external value_is_promise : value -> bool = "qml_value_is_promise"
 [@@noalloc]
@@ -41,3 +42,5 @@ external value_promise_state : context -> value -> int = "qml_value_promise_stat
 
 external value_promise_result : context -> value -> value
   = "qml_value_promise_result"
+
+external promise_create : context -> value * value * value = "qml_promise_create"

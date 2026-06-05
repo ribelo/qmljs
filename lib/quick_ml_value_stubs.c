@@ -101,6 +101,30 @@ CAMLprim value qml_value_to_string(value context, value wrapped)
   CAMLreturn(result);
 }
 
+CAMLprim value qml_value_call(value context, value function, value args)
+{
+  CAMLparam3(context, function, args);
+  JSContext *ctx = qml_context(context);
+  mlsize_t argc = Wosize_val(args);
+  JSValueConst *argv = NULL;
+  if (argc > 0) {
+    argv = caml_stat_alloc(sizeof(JSValueConst) * argc);
+    for (mlsize_t i = 0; i < argc; i++) {
+      argv[i] = qml_js_value(Field(args, i));
+    }
+  }
+
+  JSValue result = JS_Call(ctx, qml_js_value(function), JS_UNDEFINED,
+                           (int)argc, argv);
+  if (argv != NULL) {
+    caml_stat_free(argv);
+  }
+  if (JS_IsException(result)) {
+    qml_raise_exception(ctx);
+  }
+  CAMLreturn(qml_alloc_value(ctx, result));
+}
+
 CAMLprim value qml_value_is_promise(value wrapped)
 {
   return Val_bool(JS_IsPromise(Qml_value_val(wrapped)->value));
@@ -121,4 +145,22 @@ CAMLprim value qml_value_promise_result(value context, value wrapped)
     qml_raise_exception(ctx);
   }
   CAMLreturn(qml_alloc_value(ctx, result));
+}
+
+CAMLprim value qml_promise_create(value context)
+{
+  CAMLparam1(context);
+  CAMLlocal1(result);
+  JSContext *ctx = qml_context(context);
+  JSValue resolving_functions[2];
+  JSValue promise = JS_NewPromiseCapability(ctx, resolving_functions);
+  if (JS_IsException(promise)) {
+    qml_raise_exception(ctx);
+  }
+
+  result = caml_alloc_tuple(3);
+  Store_field(result, 0, qml_alloc_value(ctx, promise));
+  Store_field(result, 1, qml_alloc_value(ctx, resolving_functions[0]));
+  Store_field(result, 2, qml_alloc_value(ctx, resolving_functions[1]));
+  CAMLreturn(result);
 }

@@ -51,6 +51,8 @@ module Value : sig
   val to_int : t -> int
   val to_float : t -> float
   val to_string : t -> string
+
+  val call : t -> t array -> t
 end
 
 module Function : sig
@@ -62,6 +64,13 @@ module Function : sig
     value
 
   val set_global :
+    Context.t ->
+    name:string ->
+    arity:int ->
+    (value array -> value) ->
+    unit
+
+  val set_global_async :
     Context.t ->
     name:string ->
     arity:int ->
@@ -79,6 +88,7 @@ module Promise : sig
   val is : value -> bool
   val state : value -> state
   val result : value -> value
+  val create : Context.t -> value * value * value
   val await : ?yield_every:int -> value -> value
 end
 

@@ -32,6 +32,14 @@ let result value =
             (Quick_ml_types.value_raw value)
       }
 
+let create context =
+  let promise, resolve, reject =
+    Quick_ml_raw.promise_create (Quick_ml_types.context_raw context)
+  in
+  ( { Quick_ml_types.context; raw = promise }
+  , { Quick_ml_types.context; raw = resolve }
+  , { Quick_ml_types.context; raw = reject } )
+
 let await ?yield_every promise =
   let rec loop () =
     ignore

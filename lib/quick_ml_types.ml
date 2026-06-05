@@ -1,4 +1,7 @@
-type runtime = { raw : Quick_ml_raw.runtime }
+type runtime =
+  { raw : Quick_ml_raw.runtime
+  ; host_jobs : (unit -> unit) Queue.t
+  }
 
 type context =
   { runtime : runtime

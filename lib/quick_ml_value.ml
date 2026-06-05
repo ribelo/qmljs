@@ -49,3 +49,14 @@ let to_string t =
   Quick_ml_raw.value_to_string
     (Quick_ml_types.context_raw (Quick_ml_types.value_context t))
     (Quick_ml_types.value_raw t)
+
+let call t args =
+  let context = Quick_ml_types.value_context t in
+  let raw_args = Array.map Quick_ml_types.value_raw args in
+  { Quick_ml_types.context
+  ; raw =
+      Quick_ml_raw.value_call
+        (Quick_ml_types.context_raw context)
+        (Quick_ml_types.value_raw t)
+        raw_args
+  }
