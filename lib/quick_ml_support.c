@@ -110,7 +110,7 @@ void qml_raise_exception(JSContext *ctx)
   static const value *exception = NULL;
   JSValue js_exception;
   JSValue js_stack;
-  const char *message;
+  const char *exception_text;
   const char *stack;
 
   if (exception == NULL) {
@@ -119,15 +119,31 @@ void qml_raise_exception(JSContext *ctx)
 
   js_exception = JS_GetException(ctx);
   js_stack = JS_GetPropertyStr(ctx, js_exception, "stack");
-  stack = JS_IsException(js_stack) ? NULL : JS_ToCString(ctx, js_stack);
-  message = stack != NULL ? stack : JS_ToCString(ctx, js_exception);
+  stack = JS_IsException(js_stack) || JS_IsUndefined(js_stack) || JS_IsNull(js_stack)
+            ? NULL
+            : JS_ToCString(ctx, js_stack);
+  exception_text = JS_ToCString(ctx, js_exception);
 
-  arg = caml_copy_string(message != NULL ? message : "JavaScript exception");
+  if (exception_text != NULL && stack != NULL) {
+    size_t exception_length = strlen(exception_text);
+    size_t stack_length = strlen(stack);
+    arg = caml_alloc_string(exception_length + 1 + stack_length);
+    memcpy(Bytes_val(arg), exception_text, exception_length);
+    Bytes_val(arg)[exception_length] = '\n';
+    memcpy(Bytes_val(arg) + exception_length + 1, stack, stack_length);
+  } else {
+    const char *message =
+      exception_text != NULL ? exception_text :
+      stack != NULL ? stack :
+      "JavaScript exception";
+    arg = caml_copy_string(message);
+  }
 
   if (stack != NULL) {
     JS_FreeCString(ctx, stack);
-  } else if (message != NULL) {
-    JS_FreeCString(ctx, message);
+  }
+  if (exception_text != NULL) {
+    JS_FreeCString(ctx, exception_text);
   }
   JS_FreeValue(ctx, js_stack);
   JS_FreeValue(ctx, js_exception);
