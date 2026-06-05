@@ -1,17 +1,17 @@
-type state = Quick_ml_types.promise_state =
+type state = Qmljs_types.promise_state =
   | Not_a_promise
   | Pending
   | Fulfilled
   | Rejected
 
-let is value = Quick_ml_raw.value_is_promise (Quick_ml_types.value_raw value)
+let is value = Qmljs_raw.value_is_promise (Qmljs_types.value_raw value)
 
 let state value =
-  let context = Quick_ml_types.value_context value in
+  let context = Qmljs_types.value_context value in
   match
-    Quick_ml_raw.value_promise_state
-      (Quick_ml_types.context_raw context)
-      (Quick_ml_types.value_raw value)
+    Qmljs_raw.value_promise_state
+      (Qmljs_types.context_raw context)
+      (Qmljs_types.value_raw value)
   with
   | -1 -> Not_a_promise
   | 0 -> Pending
@@ -24,34 +24,34 @@ let result value =
   | Pending -> invalid_arg "pending promise has no result"
   | Not_a_promise -> invalid_arg "value is not a promise"
   | Fulfilled | Rejected ->
-      let context = Quick_ml_types.value_context value in
-      { Quick_ml_types.context
+      let context = Qmljs_types.value_context value in
+      { Qmljs_types.context
       ; raw =
-          Quick_ml_raw.value_promise_result
-            (Quick_ml_types.context_raw context)
-            (Quick_ml_types.value_raw value)
+          Qmljs_raw.value_promise_result
+            (Qmljs_types.context_raw context)
+            (Qmljs_types.value_raw value)
       }
 
 let create context =
   let promise, resolve, reject =
-    Quick_ml_raw.promise_create (Quick_ml_types.context_raw context)
+    Qmljs_raw.promise_create (Qmljs_types.context_raw context)
   in
-  ( { Quick_ml_types.context; raw = promise }
-  , { Quick_ml_types.context; raw = resolve }
-  , { Quick_ml_types.context; raw = reject } )
+  ( { Qmljs_types.context; raw = promise }
+  , { Qmljs_types.context; raw = resolve }
+  , { Qmljs_types.context; raw = reject } )
 
 let await ?yield_every promise =
   let rec loop () =
     ignore
-      ( Quick_ml_async.drain_jobs ?yield_every
-          (Quick_ml_types.context_runtime (Quick_ml_types.value_context promise))
+      ( Qmljs_async.drain_jobs ?yield_every
+          (Qmljs_types.context_runtime (Qmljs_types.value_context promise))
         : int );
     match state promise with
     | Not_a_promise -> invalid_arg "value is not a promise"
     | Fulfilled -> result promise
     | Rejected ->
         let reason = result promise in
-        raise (Quick_ml_error.Error (Quick_ml_value.to_string reason))
+        raise (Qmljs_error.Error (Qmljs_value.to_string reason))
     | Pending ->
         Eio.Fiber.yield ();
         loop ()

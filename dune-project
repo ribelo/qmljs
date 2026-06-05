@@ -1,11 +1,11 @@
 (lang dune 3.21)
 
-(name quick_ml)
+(name qmljs)
 
 (generate_opam_files false)
 
 (package
- (name quick_ml)
+ (name qmljs)
  (depends
   (ocaml (>= 5.2))
   (dune (>= 3.21))

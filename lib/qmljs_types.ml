@@ -1,16 +1,16 @@
 type runtime =
-  { raw : Quick_ml_raw.runtime
+  { raw : Qmljs_raw.runtime
   ; host_jobs : (unit -> unit) Queue.t
   }
 
 type context =
   { runtime : runtime
-  ; raw : Quick_ml_raw.context
+  ; raw : Qmljs_raw.context
   }
 
 type value =
   { context : context
-  ; raw : Quick_ml_raw.value
+  ; raw : Qmljs_raw.value
   }
 
 type promise_state =

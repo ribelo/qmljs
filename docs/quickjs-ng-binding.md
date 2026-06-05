@@ -2,19 +2,19 @@
 
 ## Shape
 
-The public library facade is `Quick_ml`. Implementation modules are split by
+The public library facade is `Qmljs`. Implementation modules are split by
 binding responsibility:
 
-- `Quick_ml_runtime`: runtime creation, QuickJS job execution, and queued host
+- `Qmljs_runtime`: runtime creation, QuickJS job execution, and queued host
   jobs.
-- `Quick_ml_context`: context creation, eval, global object access, and global
+- `Qmljs_context`: context creation, eval, global object access, and global
   property installation.
-- `Quick_ml_value`: primitive construction, conversion, and function calls.
-- `Quick_ml_function`: synchronous host functions and Eio-driven host promise
+- `Qmljs_value`: primitive construction, conversion, and function calls.
+- `Qmljs_function`: synchronous host functions and Eio-driven host promise
   functions.
-- `Quick_ml_promise`: promise creation, state, result, and Eio-compatible await.
-- `Quick_ml_raw` plus `*_stubs.c`: direct C FFI. This layer is not exposed by
-  `Quick_ml`.
+- `Qmljs_promise`: promise creation, state, result, and Eio-compatible await.
+- `Qmljs_raw` plus `*_stubs.c`: direct C FFI. This layer is not exposed by
+  `Qmljs`.
 
 ## Ownership
 
@@ -31,13 +31,19 @@ wrappers keep their normal lifetime.
 
 ## Async Model
 
-QuickJS promise jobs are driven by `Quick_ml.Async.drain_jobs` and
-`Quick_ml.Promise.await`. Synchronous host callbacks must not perform Eio
+QuickJS promise jobs are driven by `Qmljs.Async.drain_jobs` and
+`Qmljs.Promise.await`. Synchronous host callbacks must not perform Eio
 effects because they are called through a C frame.
 
-For Eio work, use `Quick_ml.Function.set_global_async`. It returns a JavaScript
+Use `Qmljs.Context.eval_in_domain` to run JavaScript on an Eio domain manager
+so other fibers in the calling domain can continue. Use
+`Qmljs.Context.eval_with_timeout` when a long-running script needs a deadline;
+it requests a QuickJS interrupt from the calling domain and clears the interrupt
+flag before returning.
+
+For Eio work, use `Qmljs.Function.set_global_async`. It returns a JavaScript
 Promise immediately and queues the OCaml callback on the runtime. The queued job
-is run by `Quick_ml.Async.drain_jobs` or `Quick_ml.Promise.await`, where Eio
+is run by `Qmljs.Async.drain_jobs` or `Qmljs.Promise.await`, where Eio
 effects are legal.
 
 ## Allocation Evidence
@@ -49,12 +55,12 @@ conversion path:
 nix develop .#oxcaml -c dune exec bench/alloc.exe
 ```
 
-Current evidence: `Value.to_int: 0.000000 words/call`.
+Current evidence: `Qmljs.Value.to_int: 0.000000 words/call`.
 
 ## Current Limitations
 
-- Long-running JavaScript evaluation is still synchronous once entered; the
-  binding has not yet added QuickJS interrupt/deadline integration.
+- `Context.eval` is synchronous. Use `Context.eval_in_domain` or
+  `Context.eval_with_timeout` when the caller domain must keep running.
 - Module loading, typed arrays, objects, atoms, classes, and bytecode APIs are
   not exposed yet.
 - The runtime should be treated as single-driver state. Use the Eio driver

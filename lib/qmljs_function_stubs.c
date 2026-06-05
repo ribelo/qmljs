@@ -1,4 +1,4 @@
-#include "quick_ml_stubs.h"
+#include "qmljs_stubs.h"
 
 #include <caml/printexc.h>
 
@@ -51,6 +51,7 @@ CAMLprim value qml_function_make(value context, value name, value arity, value f
 {
   CAMLparam4(context, name, arity, fn);
   JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
   struct qml_callback *callback = caml_stat_alloc(sizeof(struct qml_callback));
   callback->fn = fn;
   caml_register_generational_global_root(&callback->fn);

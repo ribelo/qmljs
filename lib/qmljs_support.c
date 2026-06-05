@@ -1,4 +1,4 @@
-#include "quick_ml_stubs.h"
+#include "qmljs_stubs.h"
 
 #include <string.h>
 
@@ -8,6 +8,10 @@ static void qml_runtime_finalize(value v)
   if (runtime->rt != NULL) {
     JS_FreeRuntime(runtime->rt);
     runtime->rt = NULL;
+  }
+  if (runtime->state != NULL) {
+    caml_stat_free(runtime->state);
+    runtime->state = NULL;
   }
 }
 
@@ -30,7 +34,7 @@ static void qml_value_finalize(value v)
 }
 
 static struct custom_operations qml_runtime_ops = {
-  "quick_ml.runtime",
+  "qmljs.runtime",
   qml_runtime_finalize,
   custom_compare_default,
   custom_hash_default,
@@ -41,7 +45,7 @@ static struct custom_operations qml_runtime_ops = {
 };
 
 static struct custom_operations qml_context_ops = {
-  "quick_ml.context",
+  "qmljs.context",
   qml_context_finalize,
   custom_compare_default,
   custom_hash_default,
@@ -52,7 +56,7 @@ static struct custom_operations qml_context_ops = {
 };
 
 static struct custom_operations qml_value_ops = {
-  "quick_ml.value",
+  "qmljs.value",
   qml_value_finalize,
   custom_compare_default,
   custom_hash_default,
@@ -62,12 +66,13 @@ static struct custom_operations qml_value_ops = {
   custom_fixed_length_default
 };
 
-value qml_alloc_runtime(JSRuntime *rt)
+value qml_alloc_runtime(JSRuntime *rt, struct qml_runtime_state *state)
 {
   CAMLparam0();
   CAMLlocal1(block);
   block = caml_alloc_custom(&qml_runtime_ops, sizeof(struct qml_runtime), 0, 1);
   Qml_runtime_val(block)->rt = rt;
+  Qml_runtime_val(block)->state = state;
   CAMLreturn(block);
 }
 
@@ -96,7 +101,7 @@ void qml_raise_string(const char *message)
   CAMLlocal1(arg);
   static const value *exception = NULL;
   if (exception == NULL) {
-    exception = caml_named_value("quick_ml.error");
+    exception = caml_named_value("qmljs.error");
   }
   arg = caml_copy_string(message);
   caml_raise_with_arg(*exception, arg);
@@ -114,7 +119,7 @@ void qml_raise_exception(JSContext *ctx)
   const char *stack;
 
   if (exception == NULL) {
-    exception = caml_named_value("quick_ml.error");
+    exception = caml_named_value("qmljs.error");
   }
 
   js_exception = JS_GetException(ctx);
@@ -177,4 +182,9 @@ JSValue qml_js_value(value wrapped)
     qml_raise_string("QuickJS value is closed");
   }
   return wrapped_value->value;
+}
+
+void qml_update_stack_top(JSContext *ctx)
+{
+  JS_UpdateStackTop(JS_GetRuntime(ctx));
 }

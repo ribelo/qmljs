@@ -17,6 +17,9 @@ module Runtime : sig
   val is_job_pending : t -> bool
   val execute_pending_job : t -> bool
   val drain_jobs : t -> int
+  val request_interrupt : t -> unit
+  val clear_interrupt : t -> unit
+  val interrupt_requested : t -> bool
 end
 
 module Context : sig
@@ -25,6 +28,28 @@ module Context : sig
   val create : Runtime.t -> t
 
   val eval :
+    ?filename:string ->
+    ?strict:bool ->
+    ?async:bool ->
+    ?module_:bool ->
+    t ->
+    string ->
+    value
+
+  val eval_in_domain :
+    domain_mgr:_ Eio.Domain_manager.t ->
+    ?filename:string ->
+    ?strict:bool ->
+    ?async:bool ->
+    ?module_:bool ->
+    t ->
+    string ->
+    value
+
+  val eval_with_timeout :
+    domain_mgr:_ Eio.Domain_manager.t ->
+    clock:_ Eio.Time.clock ->
+    timeout:float ->
     ?filename:string ->
     ?strict:bool ->
     ?async:bool ->

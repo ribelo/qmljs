@@ -18,7 +18,7 @@
         nativePkgConfigPath = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" [ ];
 
         oxcamlInit = pkgs.writeShellApplication {
-          name = "quick-ml-oxcaml-init";
+          name = "qmljs-oxcaml-init";
           runtimeInputs = [
             pkgs.autoconf
             pkgs.git

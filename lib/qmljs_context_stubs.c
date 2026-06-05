@@ -1,4 +1,4 @@
-#include "quick_ml_stubs.h"
+#include "qmljs_stubs.h"
 
 CAMLprim value qml_context_create(value runtime)
 {
@@ -14,6 +14,7 @@ CAMLprim value qml_context_eval(value context, value source, value filename, val
 {
   CAMLparam4(context, source, filename, flags);
   JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
   JSValue result =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
             String_val(filename), Int_val(flags));
@@ -27,6 +28,7 @@ CAMLprim value qml_context_global(value context)
 {
   CAMLparam1(context);
   JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
   JSValue global = JS_GetGlobalObject(ctx);
   if (JS_IsException(global)) {
     qml_raise_exception(ctx);
@@ -38,6 +40,7 @@ CAMLprim value qml_context_set_global(value context, value name, value wrapped)
 {
   CAMLparam3(context, name, wrapped);
   JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
   JSValue global = JS_GetGlobalObject(ctx);
   if (JS_IsException(global)) {
     qml_raise_exception(ctx);

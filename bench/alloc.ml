@@ -10,13 +10,13 @@ let allocated_words fn =
     -. before.Gc.minor_words -. before.Gc.major_words )
 
 let () =
-  let runtime = Quick_ml.Runtime.create () in
-  let context = Quick_ml.Context.create runtime in
-  let value = Quick_ml.Value.int context 42 in
+  let runtime = Qmljs.Runtime.create () in
+  let context = Qmljs.Context.create runtime in
+  let value = Qmljs.Value.int context 42 in
   let _, words =
     allocated_words @@ fun () ->
     for _ = 1 to iterations do
-      ignore (Quick_ml.Value.to_int value : int)
+      ignore (Qmljs.Value.to_int value : int)
     done
   in
   Printf.printf "Value.to_int: %.6f words/call\n" (words /. float iterations)
