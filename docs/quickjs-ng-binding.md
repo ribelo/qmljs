@@ -48,14 +48,18 @@ effects are legal.
 
 ## Allocation Evidence
 
-The allocation probe in `bench/alloc.ml` measures the current hot integer
-conversion path:
+The allocation probe in `bench/alloc.ml` measures representative hot paths:
 
 ```sh
 nix develop .#oxcaml -c dune exec bench/alloc.exe
 ```
 
-Current evidence: `Qmljs.Value.to_int: 0.000000 words/call`.
+Current evidence:
+
+- `Qmljs.Runtime.interrupt_requested`: `0.000000 words/call`
+- `Qmljs.Runtime.is_job_pending`: `0.000000 words/call`
+- `Qmljs.Value.to_int`: `0.000000 words/call`
+- `Qmljs.Promise.state`: `0.000000 words/call`.
 
 ## Current Limitations
 
