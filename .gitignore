@@ -3,4 +3,5 @@ _opam/
 .opam/
 .opam-oxcaml/
 .reference/
+.pi/
 *.install
