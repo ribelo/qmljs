@@ -13,5 +13,6 @@ type promise_state = Quick_ml_types.promise_state =
 module Runtime = Quick_ml_runtime
 module Context = Quick_ml_context
 module Value = Quick_ml_value
+module Function = Quick_ml_function
 module Promise = Quick_ml_promise
 module Async = Quick_ml_async

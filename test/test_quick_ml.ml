@@ -69,6 +69,22 @@ let test_rejected_promise () =
   | exception Quick_ml.Error message ->
       if not (String.contains message 'b') then fail "missing rejection reason"
 
+let test_host_function () =
+  with_context @@ fun _runtime context ->
+  Quick_ml.Function.set_global context ~name:"add1" ~arity:1 (fun args ->
+      Quick_ml.Value.int context (Quick_ml.Value.to_int args.(0) + 1));
+  let result = Quick_ml.Context.eval context "add1(41)" in
+  check_int "host function result" 42 (Quick_ml.Value.to_int result)
+
+let test_host_function_error () =
+  with_context @@ fun _runtime context ->
+  Quick_ml.Function.set_global context ~name:"explode" ~arity:0 (fun _args ->
+      raise (Quick_ml.Error "host boom"));
+  match Quick_ml.Context.eval context "explode()" with
+  | _ -> fail "expected host callback error"
+  | exception Quick_ml.Error message ->
+      if not (String.contains message 'b') then fail "missing host error"
+
 let test_cancel_pending_await () =
   with_context @@ fun _runtime context ->
   let promise = Quick_ml.Context.eval context "new Promise(() => {})" in
@@ -93,4 +109,6 @@ let () =
   test_promise_jobs ();
   test_await_promise ();
   test_rejected_promise ();
+  test_host_function ();
+  test_host_function_error ();
   test_cancel_pending_await ()

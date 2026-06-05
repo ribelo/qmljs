@@ -33,3 +33,20 @@ CAMLprim value qml_context_global(value context)
   }
   CAMLreturn(qml_alloc_value(ctx, global));
 }
+
+CAMLprim value qml_context_set_global(value context, value name, value wrapped)
+{
+  CAMLparam3(context, name, wrapped);
+  JSContext *ctx = qml_context(context);
+  JSValue global = JS_GetGlobalObject(ctx);
+  if (JS_IsException(global)) {
+    qml_raise_exception(ctx);
+  }
+  JSValue property_value = JS_DupValue(ctx, qml_js_value(wrapped));
+  int result = JS_SetPropertyStr(ctx, global, String_val(name), property_value);
+  JS_FreeValue(ctx, global);
+  if (result < 0) {
+    qml_raise_exception(ctx);
+  }
+  CAMLreturn(Val_unit);
+}

@@ -34,6 +34,7 @@ module Context : sig
     value
 
   val global : t -> value
+  val set_global : t -> name:string -> value -> unit
 end
 
 module Value : sig
@@ -50,6 +51,22 @@ module Value : sig
   val to_int : t -> int
   val to_float : t -> float
   val to_string : t -> string
+end
+
+module Function : sig
+  val make :
+    Context.t ->
+    name:string ->
+    arity:int ->
+    (value array -> value) ->
+    value
+
+  val set_global :
+    Context.t ->
+    name:string ->
+    arity:int ->
+    (value array -> value) ->
+    unit
 end
 
 module Promise : sig

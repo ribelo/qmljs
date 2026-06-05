@@ -16,6 +16,10 @@ external context_eval : context -> string -> string -> int -> value
   = "qml_context_eval"
 
 external context_global : context -> value = "qml_context_global"
+external context_set_global : context -> string -> value -> unit = "qml_context_set_global"
+
+external function_make : context -> string -> int -> (value array -> value) -> value
+  = "qml_function_make"
 
 external value_undefined : context -> value = "qml_value_undefined"
 external value_null : context -> value = "qml_value_null"
