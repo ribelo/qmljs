@@ -28,6 +28,7 @@
             pkgs.patch
             pkgs.pkg-config
             pkgs.python3
+            pkgs.quickjs-ng.dev
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.gmp
             pkgs.libev
@@ -65,6 +66,7 @@
             pkgs.ocaml
             pkgs.opam
             pkgs.pkg-config
+            pkgs.quickjs-ng.dev
           ];
         };
 
@@ -73,6 +75,7 @@
             oxcamlInit
             pkgs.opam
             pkgs.pkg-config
+            pkgs.quickjs-ng.dev
           ];
 
           shellHook = ''

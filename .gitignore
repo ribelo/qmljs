@@ -2,4 +2,5 @@ _build/
 _opam/
 .opam/
 .opam-oxcaml/
+.reference/
 *.install

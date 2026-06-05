@@ -8,4 +8,6 @@
  (name quick_ml)
  (depends
   (ocaml (>= 5.2))
-  (dune (>= 3.21))))
+  (dune (>= 3.21))
+  eio
+  (eio_main :with-test)))

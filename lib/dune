@@ -1,2 +1,12 @@
 (library
- (public_name quick_ml))
+ (public_name quick_ml)
+ (libraries eio)
+ (foreign_stubs
+  (language c)
+  (names
+   quick_ml_support
+   quick_ml_runtime_stubs
+   quick_ml_context_stubs
+   quick_ml_value_stubs)
+  (flags -DUSING_QJS_SHARED))
+ (c_library_flags -lqjs -ldl -lm))
