@@ -7,7 +7,7 @@ CAMLprim value qml_context_create(value runtime)
   if (ctx == NULL) {
     qml_raise_string("could not allocate QuickJS context");
   }
-  CAMLreturn(qml_alloc_context(ctx));
+  CAMLreturn(qml_alloc_context(runtime, ctx));
 }
 
 CAMLprim value qml_context_eval(value context, value source, value filename, value flags)
@@ -21,7 +21,7 @@ CAMLprim value qml_context_eval(value context, value source, value filename, val
   if (JS_IsException(result)) {
     qml_raise_exception(ctx);
   }
-  CAMLreturn(qml_alloc_value(ctx, result));
+  CAMLreturn(qml_alloc_value(context, result));
 }
 
 CAMLprim value qml_context_global(value context)
@@ -33,7 +33,7 @@ CAMLprim value qml_context_global(value context)
   if (JS_IsException(global)) {
     qml_raise_exception(ctx);
   }
-  CAMLreturn(qml_alloc_value(ctx, global));
+  CAMLreturn(qml_alloc_value(context, global));
 }
 
 CAMLprim value qml_context_set_global(value context, value name, value wrapped)

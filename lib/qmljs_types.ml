@@ -1,6 +1,15 @@
+type module_loader =
+  { sources : (string, string) Hashtbl.t
+  ; deny : string -> bool
+  }
+
 type runtime =
   { raw : Qmljs_raw.runtime
   ; host_jobs : (unit -> unit) Queue.t
+  ; mutable module_loader : module_loader option
+  ; memory_limit : int option
+  ; max_stack_size : int option
+  ; promise_job_limit : int option
   }
 
 type context =

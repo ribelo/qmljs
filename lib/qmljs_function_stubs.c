@@ -1,22 +1,28 @@
 #include "qmljs_stubs.h"
 
 #include <caml/printexc.h>
+#include <string.h>
 
 struct qml_callback {
   value fn;
+  value context;
+  char *name;
 };
 
 static void qml_callback_finalize(void *opaque)
 {
   struct qml_callback *callback = opaque;
   caml_remove_generational_global_root(&callback->fn);
+  caml_remove_generational_global_root(&callback->context);
+  caml_stat_free(callback->name);
   caml_stat_free(callback);
 }
 
-static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception)
+static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
+                                         const char *name)
 {
   char *message = caml_format_exception(exception);
-  JSValue result = JS_ThrowInternalError(ctx, "%s", message);
+  JSValue result = JS_ThrowInternalError(ctx, "%s: %s", name, message);
   caml_stat_free(message);
   return result;
 }
@@ -33,13 +39,14 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
 
   args = caml_alloc(argc, 0);
   for (int i = 0; i < argc; i++) {
-    Store_field(args, i, qml_alloc_value(ctx, JS_DupValue(ctx, argv[i])));
+    Store_field(args, i,
+                qml_alloc_value(callback->context, JS_DupValue(ctx, argv[i])));
   }
 
   result = caml_callback_exn(callback->fn, args);
   if (Is_exception_result(result)) {
     JSValue exception =
-      qml_throw_ocaml_exception(ctx, Extract_exception(result));
+      qml_throw_ocaml_exception(ctx, Extract_exception(result), callback->name);
     CAMLreturnT(JSValue, exception);
   }
 
@@ -53,8 +60,14 @@ CAMLprim value qml_function_make(value context, value name, value arity, value f
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
   struct qml_callback *callback = caml_stat_alloc(sizeof(struct qml_callback));
+  size_t name_length = caml_string_length(name);
   callback->fn = fn;
+  callback->context = context;
+  callback->name = caml_stat_alloc(name_length + 1);
+  memcpy(callback->name, String_val(name), name_length);
+  callback->name[name_length] = '\0';
   caml_register_generational_global_root(&callback->fn);
+  caml_register_generational_global_root(&callback->context);
 
   JSValue function =
     JS_NewCClosure(ctx, qml_host_call, String_val(name), qml_callback_finalize,
@@ -65,5 +78,5 @@ CAMLprim value qml_function_make(value context, value name, value arity, value f
     qml_raise_exception(ctx);
   }
 
-  CAMLreturn(qml_alloc_value(ctx, function));
+  CAMLreturn(qml_alloc_value(context, function));
 }

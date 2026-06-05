@@ -4,8 +4,16 @@ type value
 
 external runtime_create : unit -> runtime = "qml_runtime_create"
 
+external runtime_set_memory_limit : runtime -> int -> unit
+  = "qml_runtime_set_memory_limit"
+
+external runtime_set_max_stack_size : runtime -> int -> unit
+  = "qml_runtime_set_max_stack_size"
+
+external runtime_drain_deferred : runtime -> unit = "qml_runtime_drain_deferred"
+external runtime_close : runtime -> unit = "qml_runtime_close"
+
 external runtime_is_job_pending : runtime -> bool = "qml_runtime_is_job_pending"
-[@@noalloc]
 
 external runtime_execute_pending_job : runtime -> bool
   = "qml_runtime_execute_pending_job"
@@ -37,6 +45,17 @@ external value_bool : context -> bool -> value = "qml_value_bool"
 external value_int : context -> int -> value = "qml_value_int"
 external value_float : context -> float -> value = "qml_value_float"
 external value_string : context -> string -> value = "qml_value_string"
+external object_create : context -> value = "qml_object_create"
+external object_set : context -> value -> string -> value -> unit = "qml_object_set"
+
+external object_define_data_property : context -> value -> value -> value -> int -> unit
+  = "qml_object_define_data_property"
+
+external array_of_values : context -> value array -> value = "qml_array_of_values"
+external symbol_global : context -> string -> value = "qml_symbol_global"
+
+external typed_array_uint8_of_bytes_copy : context -> bytes -> value
+  = "qml_typed_array_uint8_of_bytes_copy"
 
 external value_to_bool : context -> value -> bool = "qml_value_to_bool"
 external value_to_int : context -> value -> int = "qml_value_to_int"
@@ -45,10 +64,8 @@ external value_to_string : context -> value -> string = "qml_value_to_string"
 external value_call : context -> value -> value array -> value = "qml_value_call"
 
 external value_is_promise : value -> bool = "qml_value_is_promise"
-[@@noalloc]
 
 external value_promise_state : context -> value -> int = "qml_value_promise_state"
-[@@noalloc]
 
 external value_promise_result : context -> value -> value
   = "qml_value_promise_result"

@@ -30,6 +30,11 @@ let string context value =
   ; raw = Qmljs_raw.value_string (Qmljs_types.context_raw context) value
   }
 
+let object_ t = t
+let array t = t
+let bigint t = t
+let typed_array t = t
+
 let to_bool t =
   Qmljs_raw.value_to_bool
     (Qmljs_types.context_raw (Qmljs_types.value_context t))

@@ -18,12 +18,23 @@ binding responsibility:
 
 ## Ownership
 
-QuickJS values are wrapped in custom blocks with finalizers. OCaml records keep
-the parent context and runtime alive while child values exist:
+QuickJS runtimes are single-owner resources. The domain that creates a runtime
+is the only domain allowed to touch the `JSRuntime`, any `JSContext` created
+from it, or any `JSValue` belonging to those contexts. C entry points enforce
+that owner-domain invariant before touching QuickJS.
 
-- a context record references its runtime;
-- a value record references its context;
-- each raw value finalizer calls `JS_FreeValue` on the owning context.
+QuickJS values are wrapped in custom blocks with finalizers. The C wrappers keep
+the parent context and runtime rooted while child values exist:
+
+- a context wrapper roots its runtime wrapper;
+- a value wrapper roots its context wrapper;
+- raw value/context finalizers never call QuickJS directly from an arbitrary
+  OCaml domain;
+- finalizers enqueue native releases on the runtime, and the owner domain drains
+  those releases before normal API calls and during scoped runtime close.
+
+Prefer `Runtime.with_` and `Context.with_` for deterministic scoped ownership.
+Values should not escape the runtime/context scope that created them.
 
 Host callbacks duplicate JS arguments before wrapping them for OCaml. Return
 values are duplicated before they are handed back to QuickJS, so returned OCaml
@@ -35,11 +46,11 @@ QuickJS promise jobs are driven by `Qmljs.Async.drain_jobs` and
 `Qmljs.Promise.await`. Synchronous host callbacks must not perform Eio
 effects because they are called through a C frame.
 
-Use `Qmljs.Context.eval_in_domain` to run JavaScript on an Eio domain manager
-so other fibers in the calling domain can continue. Use
-`Qmljs.Context.eval_with_timeout` when a long-running script needs a deadline;
-it requests a QuickJS interrupt from the calling domain and clears the interrupt
-flag before returning.
+`Qmljs.Context.eval_in_domain` does not move an existing `JSContext` onto a
+worker domain; doing so would race QuickJS state and custom finalizers. It keeps
+execution on the runtime owner. `Qmljs.Context.eval_with_timeout` preserves that
+same owner-domain rule and reports timeout/resource-limit errors without running
+the context concurrently from another domain.
 
 For Eio work, use `Qmljs.Function.set_global_async`. It returns a JavaScript
 Promise immediately and queues the OCaml callback on the runtime. The queued job
@@ -63,9 +74,8 @@ Current evidence:
 
 ## Current Limitations
 
-- `Context.eval` is synchronous. Use `Context.eval_in_domain` or
-  `Context.eval_with_timeout` when the caller domain must keep running.
-- Module loading, typed arrays, objects, atoms, classes, and bytecode APIs are
-  not exposed yet.
-- The runtime should be treated as single-driver state. Use the Eio driver
-  functions to progress queued host jobs and QuickJS promise jobs.
+- `Context.eval` is synchronous and owner-domain bound.
+- The module loader currently covers in-memory modules needed by the readiness
+  contract; full QuickJS module normalization and bytecode loading are still
+  future work.
+- Classes and bytecode APIs are not exposed yet.
