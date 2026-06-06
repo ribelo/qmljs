@@ -1511,6 +1511,37 @@ let test_loader_request_attributes_are_per_import_not_stale () =
   check_int "context reusable after loader request conflict" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
 
+let test_json_import_attribute_does_not_execute_js_source () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let loader =
+    Qmljs.Module.Loader.memory
+      [ "data.json", "globalThis.pwned = 1"
+      ; "proto.json", {|{"__proto__":{"polluted":true},"answer":41}|}
+      ]
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  ignore (Qmljs.Context.eval context "globalThis.pwned = 0" : Qmljs.Value.t);
+  expect_structured_error "JSON import rejects JavaScript source"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"json-source-main.js" context
+           {|import data from "data.json" with { type: "json" };
+             export default data;|}
+         : Qmljs.Module.namespace))
+    (fun _error -> ());
+  check_int "invalid JSON import did not execute source" 0
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.pwned"));
+  let namespace =
+    Qmljs.Module.eval ~filename:"json-proto-main.js" context
+      {|import data from "proto.json" with { type: "json" };
+        export default Object.prototype.hasOwnProperty.call(data, "__proto__")
+          && data.answer === 41
+          && data.__proto__.polluted === true;|}
+  in
+  check_bool "JSON import parses object data" true
+    (Qmljs.Value.to_bool (Qmljs.Module.default namespace))
+
 let test_module_loader_filesystem_api () =
   with_temp_loader_dir @@ fun root ->
   mkdir (Filename.concat root "pages");
@@ -1755,6 +1786,8 @@ let tests =
   ; "native module API", test_native_module_api
   ; "loader request attributes are per import"
   , test_loader_request_attributes_are_per_import_not_stale
+  ; "json import attribute does not execute JS source"
+  , test_json_import_attribute_does_not_execute_js_source
   ; "filesystem loader rejects symlink escape"
   , test_filesystem_loader_rejects_symlink_escape
   ; "module loader filesystem API", test_module_loader_filesystem_api

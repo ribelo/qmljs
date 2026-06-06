@@ -601,31 +601,57 @@ static int qmljs_import_attribute_is_json(JSContext *ctx,
   return 0;
 }
 
-static JSValue qmljs_compile_loaded_module(JSContext *ctx, const char *source,
-                                         size_t source_length,
-                                         const char *module_name, int is_json)
+static int qmljs_json_module_eval(JSContext *ctx, JSModuleDef *module)
+{
+  JSValue value = JS_GetModulePrivateValue(ctx, module);
+  if (JS_IsException(value)) {
+    return -1;
+  }
+  JS_SetModulePrivateValue(ctx, module, JS_UNDEFINED);
+  if (JS_SetModuleExport(ctx, module, "default", value) < 0) {
+    JS_FreeValue(ctx, value);
+    return -1;
+  }
+  return 0;
+}
+
+static JSModuleDef *qmljs_compile_loaded_module(JSContext *ctx,
+                                              const char *source,
+                                              size_t source_length,
+                                              const char *module_name,
+                                              int is_json)
 {
   if (!is_json) {
-    return JS_Eval(ctx, source, source_length, module_name,
-                   JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    JSValue compiled = JS_Eval(ctx, source, source_length, module_name,
+                               JS_EVAL_TYPE_MODULE |
+                                 JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+      return NULL;
+    }
+    JSModuleDef *module = JS_VALUE_GET_PTR(compiled);
+    JS_FreeValue(ctx, compiled);
+    return module;
   }
 
-  static const char prefix[] = "export default ";
-  static const char suffix[] = ";";
-  size_t prefix_length = sizeof(prefix) - 1;
-  size_t suffix_length = sizeof(suffix) - 1;
-  size_t wrapped_length = prefix_length + source_length + suffix_length;
-  char *wrapped_source = caml_stat_alloc(wrapped_length + 1);
-  memcpy(wrapped_source, prefix, prefix_length);
-  memcpy(wrapped_source + prefix_length, source, source_length);
-  memcpy(wrapped_source + prefix_length + source_length, suffix, suffix_length);
-  wrapped_source[wrapped_length] = '\0';
+  JSValue parsed = JS_ParseJSON(ctx, source, source_length, module_name);
+  if (JS_IsException(parsed)) {
+    return NULL;
+  }
 
-  JSValue compiled = JS_Eval(ctx, wrapped_source, wrapped_length, module_name,
-                             JS_EVAL_TYPE_MODULE |
-                               JS_EVAL_FLAG_COMPILE_ONLY);
-  caml_stat_free(wrapped_source);
-  return compiled;
+  JSModuleDef *module = JS_NewCModule(ctx, module_name, qmljs_json_module_eval);
+  if (module == NULL) {
+    JS_FreeValue(ctx, parsed);
+    return NULL;
+  }
+  if (JS_AddModuleExport(ctx, module, "default") < 0) {
+    JS_FreeValue(ctx, parsed);
+    return NULL;
+  }
+  if (JS_SetModulePrivateValue(ctx, module, parsed) < 0) {
+    JS_FreeValue(ctx, parsed);
+    return NULL;
+  }
+  return module;
 }
 
 static JSModuleDef *qmljs_load_module(JSContext *ctx, const char *module_name,
@@ -686,15 +712,13 @@ static JSModuleDef *qmljs_load_module(JSContext *ctx, const char *module_name,
 
   source = Field(source_option, 0);
   roots[5] = source;
-  JSValue compiled =
+  JSModuleDef *module =
     qmljs_compile_loaded_module(ctx, String_val(source),
                               caml_string_length(source), module_name,
                               is_json);
-  if (JS_IsException(compiled)) {
+  if (module == NULL) {
     CAMLreturnT(JSModuleDef *, NULL);
   }
-  JSModuleDef *module = JS_VALUE_GET_PTR(compiled);
-  JS_FreeValue(ctx, compiled);
   CAMLreturnT(JSModuleDef *, module);
 }
 

@@ -136,6 +136,8 @@ Keep these loader gaps:
   loaders.
 - [x] Tests for relative resolution, root escape denial, JSON modules, unknown
   attributes, and repeated imports.
+- [x] JSON imports parse loader source as JSON data instead of compiling it as
+  JavaScript source.
 - [x] Filesystem loader scanning does not follow symlinks out of the configured
   root.
 - [x] Repeated imports that normalize to the same module reject incompatible
