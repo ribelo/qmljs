@@ -111,6 +111,8 @@ Keep these module gaps:
 - [x] import.meta and namespace object access for evaluated modules.
 - [x] Rejected top-level-await module evaluation frees eval promises before
   raising the structured rejection.
+- [x] Module evaluation is driven by the runtime job driver, including queued
+  host jobs and configured promise job limits.
 - [x] Native module evaluation failures preserve structured metadata, cause
   chains, and OCaml frame data.
 

@@ -273,10 +273,6 @@ let declare_native context ~name (native : Native.t) =
     native.export_names
     evaluate
 
-let drain_module_jobs_if_pending context pending =
-  if pending then
-    ignore (Qmljs_async.drain_jobs (Qmljs_types.context_runtime context) : int)
-
 let dynamic_import ?(base = "<dynamic-import>") context specifier =
   reject_nul_module_specifier base;
   reject_nul_module_specifier specifier;
@@ -290,26 +286,28 @@ let dynamic_import ?(base = "<dynamic-import>") context specifier =
 
 let eval_with_meta ?(filename = "<module>") context source =
   reject_nul_module_specifier filename;
-  let namespace, import_meta, pending =
+  let namespace, import_meta, eval_result =
     Qmljs_raw.context_eval_module_with_meta
       (Qmljs_types.context_raw context)
       source
       filename
   in
-  drain_module_jobs_if_pending context pending;
+  Qmljs_promise.drive_module_evaluation
+    { Qmljs_types.context; raw = eval_result };
   { namespace = { Qmljs_types.context; raw = namespace }
   ; import_meta = { Qmljs_types.context; raw = import_meta }
   }
 
 let eval ?(filename = "<module>") context source =
   reject_nul_module_specifier filename;
-  let raw, pending =
+  let raw, eval_result =
     Qmljs_raw.context_eval_module_namespace
       (Qmljs_types.context_raw context)
       source
       filename
   in
-  drain_module_jobs_if_pending context pending;
+  Qmljs_promise.drive_module_evaluation
+    { Qmljs_types.context; raw = eval_result };
   { Qmljs_types.context; raw }
 
 let default namespace =

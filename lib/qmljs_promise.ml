@@ -55,6 +55,26 @@ let structured_rejection reason =
   | Error error -> error
   | Ok () -> Qmljs_error.Structured.of_legacy_error "promise rejected"
 
+let drive_module_evaluation eval_result =
+  if is eval_result then begin
+    (match state eval_result with
+     | Pending ->
+         let runtime =
+           Qmljs_types.context_runtime (Qmljs_types.value_context eval_result)
+         in
+         (try ignore (Qmljs_async.drain_jobs runtime : int) with
+          | exn ->
+              let backtrace = Printexc.get_raw_backtrace () in
+              Qmljs_runtime.reclaim_pending_jobs runtime;
+              Printexc.raise_with_backtrace exn backtrace)
+     | Fulfilled | Rejected | Not_a_promise -> ());
+    match state eval_result with
+    | Rejected ->
+        Qmljs_error.Structured.raise
+          (structured_rejection (result eval_result))
+    | Pending | Fulfilled | Not_a_promise -> ()
+  end
+
 let await_result ?yield_every promise =
   let runtime =
     Qmljs_types.context_runtime (Qmljs_types.value_context promise)

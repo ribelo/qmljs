@@ -160,9 +160,16 @@ let set_global t ~name value =
     (Qmljs_types.value_raw value)
 
 let eval_module ?(filename = "<module>") t source =
-  { Qmljs_types.context = t
-  ; raw = Qmljs_raw.context_eval_module (Qmljs_types.context_raw t) source filename
-  }
+  let namespace_raw, eval_result_raw =
+    Qmljs_raw.context_eval_module_namespace
+      (Qmljs_types.context_raw t)
+      source
+      filename
+  in
+  let namespace = { Qmljs_types.context = t; raw = namespace_raw } in
+  let eval_result = { Qmljs_types.context = t; raw = eval_result_raw } in
+  Qmljs_promise.drive_module_evaluation eval_result;
+  Qmljs_object.get namespace ~key:(Qmljs_value.string t "default")
 
 let eval_module_with_timeout ~timeout ?filename t source =
   with_interrupt_timeout ~timeout (Qmljs_types.context_runtime t) (fun () ->

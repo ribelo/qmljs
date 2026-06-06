@@ -85,14 +85,11 @@ external context_close : context -> bool = "qmljs_context_close"
 external context_eval : context -> string -> string -> int -> value
   = "qmljs_context_eval"
 
-external context_eval_module : context -> string -> string -> value
-  = "qmljs_context_eval_module"
-
-external context_eval_module_namespace : context -> string -> string -> value * bool
+external context_eval_module_namespace : context -> string -> string -> value * value
   = "qmljs_context_eval_module_namespace"
 
 external context_eval_module_with_meta :
-  context -> string -> string -> value * value * bool
+  context -> string -> string -> value * value * value
   = "qmljs_context_eval_module_with_meta"
 
 external context_global : context -> value = "qmljs_context_global"

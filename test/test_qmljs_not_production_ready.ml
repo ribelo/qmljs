@@ -713,6 +713,41 @@ let test_json_import_attribute_loads_json_module () =
   in
   check_int "json module default" 42 (Qmljs.Module.default_export_to_int value)
 
+let test_context_eval_module_awaits_async_host_jobs () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  Qmljs.Function.set_global_async context ~name:"later" ~arity:1 (fun args ->
+      Eio.Fiber.yield ();
+      Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1));
+  let value =
+    Qmljs.Context.eval_module context {|export default await later(41);|}
+  in
+  check_int "Context.eval_module awaited async host job" 42
+    (Qmljs.Value.to_int value);
+  check_int "async host job queue drained" 0
+    (Qmljs.Runtime.drain_jobs runtime)
+
+let test_module_eval_respects_configured_promise_job_limit () =
+  Qmljs.Runtime.with_ ~promise_job_limit:10 @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  expect_structured_error "module eval promise job limit"
+    (fun () ->
+      let namespace =
+        Qmljs.Module.eval context
+          {|let promise = Promise.resolve(0);
+            for (let i = 0; i < 64; i++) {
+              promise = promise.then(x => x + 1);
+            }
+            export default await promise;|}
+      in
+      ignore (Qmljs.Module.default namespace : Qmljs.value))
+    (fun error ->
+      check_kind "module eval promise job limit kind"
+        Qmljs.Error.Resource_limit (Qmljs.Error.kind error);
+      check_string "module eval promise job limit message"
+        "QuickJS promise job limit exceeded"
+        (Qmljs.Error.message error))
+
 let test_error_kind_and_metadata_api () =
   expect_structured_error "host structured metadata"
     (fun () ->
@@ -1006,6 +1041,10 @@ let tests env =
   , test_sync_host_callback_foreign_return_is_js_host_defect
   ; "json import attribute loads JSON module"
   , test_json_import_attribute_loads_json_module
+  ; "Context.eval_module awaits async host jobs"
+  , test_context_eval_module_awaits_async_host_jobs
+  ; "Module.eval respects configured promise job limit"
+  , test_module_eval_respects_configured_promise_job_limit
   ; "structured error kind and metadata API"
   , test_error_kind_and_metadata_api
   ; "structured promise await API", test_structured_promise_await_api
