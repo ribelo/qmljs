@@ -593,7 +593,7 @@ CAMLprim value qmljs_object_keys(value context, value object)
   JSPropertyEnum *properties = NULL;
   uint32_t length = 0;
   if (JS_GetOwnPropertyNames(ctx, &properties, &length, qmljs_js_value(object),
-                             JS_GPN_STRING_MASK) < 0) {
+                             JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0) {
     qmljs_raise_exception(ctx);
   }
 

@@ -467,6 +467,11 @@ let test_object_own_key_iteration_api () =
     (String.concat ","
        (sorted_strings
           (Qmljs.Object.own_keys ~enumerable_only:false object_)));
+  let object_keys = Qmljs.Object.keys object_ |> List.sort String.compare in
+  if object_keys <> [ "visible" ] then
+    fail
+      ("Object.keys returned wrong keys: "
+       ^ String.concat "," object_keys);
   let enum_symbols =
     Qmljs.Object.own_keys ~strings:false ~symbols:true object_
   in
