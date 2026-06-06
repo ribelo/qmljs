@@ -335,6 +335,40 @@ let test_json_stringify_int_record () =
          in
          contains json "9007199254740992" || contains json "9007199254740993")
 
+(* BUG 13 — to_int is not referentially transparent after the provenance fix.
+
+   [Value.to_int] should be a function of the underlying JS value. The "keep
+   Value.int as a JS number" fix stores the exact OCaml int on the *wrapper*
+   while the JS value stays the lossy Number (2^53 for 2^53+1). A JS identity
+   function [a => a] returns the very same JS value, but as a fresh wrapper with
+   no provenance, so [to_int (id v)] reads the JS Number (2^53) while [to_int v]
+   returns 2^53+1. The same JS value must convert to the same int regardless of
+   how the wrapper was obtained. *)
+let test_to_int_referentially_transparent () =
+  with_context @@ fun _runtime context ->
+  let v = Qmljs.Value.int context 9007199254740993 in
+  let id = Qmljs.Context.eval context "(a => a)" in
+  let through_js = Qmljs.Function.call id [| v |] in
+  check_int "to_int through identity fn equals direct to_int"
+    (Qmljs.Value.to_int v) (Qmljs.Value.to_int through_js)
+
+(* BUG 14 — strict_equal and to_int contradict each other after the fix.
+
+   If [strict_equal a b] is true the two values are ===-equal in JS, i.e. the
+   same number, so [to_int a] and [to_int b] must agree. [Value.int 9007199254740993]
+   is delivered to JS as the Number 2^53, hence strictly equal to a JS 2^53
+   literal; but its wrapper carries provenance, so [to_int] returns 2^53+1 for it
+   and 2^53 for the literal. A value cannot be simultaneously equal-to and
+   convert-differently-from another. *)
+let test_strict_equal_implies_equal_to_int () =
+  with_context @@ fun _runtime context ->
+  let v = Qmljs.Value.int context 9007199254740993 in
+  let literal = Qmljs.Context.eval context "9007199254740992" in
+  if Qmljs.Value.strict_equal v literal then
+    check_int "strict_equal values share to_int" (Qmljs.Value.to_int literal)
+      (Qmljs.Value.to_int v)
+  else fail "expected Value.int 2^53+1 to be ===-equal to the JS Number 2^53"
+
 let tests =
   [ "int_roundtrip_precision", test_int_roundtrip_precision
   ; "int_max_int_roundtrip", test_int_max_int_roundtrip
@@ -350,6 +384,8 @@ let tests =
   ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "json_stringify_int_record", test_json_stringify_int_record
+  ; "to_int_referentially_transparent", test_to_int_referentially_transparent
+  ; "strict_equal_implies_equal_to_int", test_strict_equal_implies_equal_to_int
   ]
 
 let () =
