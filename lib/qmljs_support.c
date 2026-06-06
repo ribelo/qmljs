@@ -1292,9 +1292,56 @@ static int qmljs_error_kind_of_marker(const char *marker)
   return 0;
 }
 
+static int qmljs_same_stack_line(const char *left, size_t left_length,
+                               const char *right, size_t right_length)
+{
+  while (left_length > 0 &&
+         (left[left_length - 1] == '\n' || left[left_length - 1] == '\r')) {
+    left_length--;
+  }
+  while (right_length > 0 &&
+         (right[right_length - 1] == '\n' || right[right_length - 1] == '\r')) {
+    right_length--;
+  }
+  return left_length == right_length && memcmp(left, right, left_length) == 0;
+}
+
+static int qmljs_stack_has_repeated_frame(const char *stack)
+{
+  if (stack == NULL) {
+    return 0;
+  }
+
+  const char *previous = NULL;
+  size_t previous_length = 0;
+  int repeated = 1;
+  const char *line = stack;
+  while (*line != '\0') {
+    const char *end = strchr(line, '\n');
+    size_t length = end == NULL ? strlen(line) : (size_t)(end - line);
+    if (previous != NULL &&
+        qmljs_same_stack_line(previous, previous_length, line, length)) {
+      repeated++;
+      if (repeated >= 4) {
+        return 1;
+      }
+    } else {
+      repeated = 1;
+    }
+    previous = line;
+    previous_length = length;
+    if (end == NULL) {
+      break;
+    }
+    line = end + 1;
+  }
+  return 0;
+}
+
 static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
                                           const char *name,
                                           const char *message,
+                                          const char *stack,
                                           int is_uncatchable)
 {
   if (name == NULL || message == NULL) {
@@ -1315,7 +1362,8 @@ static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
        strcmp(name, "RangeError") == 0) &&
       (strstr(message, "stack overflow") != NULL ||
        strstr(message, "Maximum call stack size exceeded") != NULL) &&
-      (is_uncatchable || max_stack_size_active)) {
+      (is_uncatchable || max_stack_size_active ||
+       qmljs_stack_has_repeated_frame(stack))) {
     return 2;
   }
   if (is_uncatchable && strcmp(name, "InternalError") == 0 &&
@@ -1493,7 +1541,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   }
   if (kind == 0 && trusted_engine_error) {
     kind =
-      qmljs_error_kind_of_engine_error(state, name, message,
+      qmljs_error_kind_of_engine_error(state, name, message, stack,
                                      trusted_uncatchable_error);
   }
 
