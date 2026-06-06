@@ -70,27 +70,40 @@ module Loader = struct
       ~finally:(fun () -> close_in_noerr channel)
       (fun () -> really_input_string channel (in_channel_length channel))
 
-  let filesystem ~root ~allow =
-    let table = Hashtbl.create 16 in
-    let rec scan prefix directory =
-      Sys.readdir directory
-      |> Array.iter (fun name ->
-        let path = Filename.concat directory name in
-        let specifier =
-          match prefix with
-          | "" -> name
-          | prefix -> prefix ^ "/" ^ name
-        in
-        match (Unix.lstat path).Unix.st_kind with
-        | Unix.S_DIR -> scan specifier path
-        | Unix.S_REG -> Hashtbl.replace table specifier (read_file path)
-        | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO | Unix.S_SOCK -> ())
+  let lstat_kind path =
+    match (Unix.lstat path).Unix.st_kind with
+    | kind -> Some kind
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> None
+    | exception Unix.Unix_error (Unix.ENOTDIR, _, _) -> None
+
+  let filesystem_path root specifier =
+    let rec loop path = function
+      | [] -> None
+      | [ segment ] ->
+          let path = Filename.concat path segment in
+          (match lstat_kind path with
+           | Some Unix.S_REG -> Some path
+           | Some Unix.S_LNK | Some Unix.S_DIR | Some Unix.S_CHR
+           | Some Unix.S_BLK | Some Unix.S_FIFO | Some Unix.S_SOCK | None -> None)
+      | segment :: rest ->
+          let path = Filename.concat path segment in
+          (match lstat_kind path with
+           | Some Unix.S_DIR -> loop path rest
+           | Some Unix.S_LNK | Some Unix.S_REG | Some Unix.S_CHR
+           | Some Unix.S_BLK | Some Unix.S_FIFO | Some Unix.S_SOCK | None -> None)
     in
-    scan "" root;
+    loop root (split_specifier specifier)
+
+  let filesystem_load root request =
+    match filesystem_path root request.Qmljs_types.normalized with
+    | None -> Ok None
+    | Some path -> Ok (Some (read_file path))
+
+  let filesystem ~root ~allow =
     { Qmljs_types.requests = Hashtbl.create 16
     ; deny = (fun specifier -> not (allow ~specifier))
     ; normalize = filesystem_normalize
-    ; load = table_load table
+    ; load = filesystem_load root
     }
 
   let normalize normalize loader =

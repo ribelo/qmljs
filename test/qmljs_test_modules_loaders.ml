@@ -134,6 +134,28 @@ let test_filesystem_loader_rejects_symlink_escape () =
           check_int "context reusable after symlink escape" 2
             (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))))
 
+let test_filesystem_loader_does_not_scan_root_without_imports () =
+  with_temp_loader_dir @@ fun root ->
+  let unreadable = Filename.concat root "unreadable" in
+  mkdir unreadable;
+  Fun.protect
+    ~finally:(fun () ->
+      try Unix.chmod unreadable 0o700 with
+      | Unix.Unix_error _ -> ())
+    (fun () ->
+      Unix.chmod unreadable 0o000;
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      Qmljs.Context.with_ runtime @@ fun context ->
+      let loader =
+        Qmljs.Module.Loader.filesystem ~root ~allow:(fun ~specifier:_ -> true)
+      in
+      Qmljs.Runtime.set_module_loader runtime loader;
+      let namespace =
+        Qmljs.Module.eval ~filename:"eval.mjs" context "export default 7;"
+      in
+      check_int "filesystem loader no-import default" 7
+        (Qmljs.Value.to_int (Qmljs.Module.default namespace)))
+
 let test_loader_request_attributes_are_per_import_not_stale () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -419,6 +441,8 @@ let tests =
   , test_loader_request_attributes_are_per_import_not_stale
   ; "json import attribute does not execute JS source"
   , test_json_import_attribute_does_not_execute_js_source
+  ; "filesystem loader does not scan root without imports"
+  , test_filesystem_loader_does_not_scan_root_without_imports
   ; "filesystem loader rejects symlink escape"
   , test_filesystem_loader_rejects_symlink_escape
   ; "module loader filesystem API", test_module_loader_filesystem_api
