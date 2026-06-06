@@ -65,12 +65,6 @@ module Loader = struct
   let filesystem_normalize ~base ~specifier ~attributes:_ =
     filesystem_normalize ~base ~specifier
 
-  let read_file path =
-    let channel = open_in_bin path in
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr channel)
-      (fun () -> really_input_string channel (in_channel_length channel))
-
   let lstat_kind path =
     match (Unix.lstat path).Unix.st_kind with
     | kind -> Some kind
@@ -95,10 +89,56 @@ module Loader = struct
     in
     loop root (split_specifier specifier)
 
+  let same_file left right =
+    left.Unix.st_dev = right.Unix.st_dev
+    && left.Unix.st_ino = right.Unix.st_ino
+
+  let close_file_descr_noerr fd =
+    try Unix.close fd with
+    | Unix.Unix_error _ -> ()
+
+  let opened_file_still_checked path fd =
+    match
+      let opened = Unix.fstat fd in
+      let current = Unix.lstat path in
+      opened, current
+    with
+    | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.ELOOP), _, _) ->
+        false
+    | opened, current ->
+        opened.Unix.st_kind = Unix.S_REG
+        && current.Unix.st_kind = Unix.S_REG
+        && same_file opened current
+
+  let read_channel channel =
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr channel)
+      (fun () -> really_input_string channel (in_channel_length channel))
+
+  let read_checked_file root specifier path =
+    match Unix.openfile path [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 with
+    | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.ELOOP), _, _) ->
+        None
+    | fd ->
+        let close_fd = ref true in
+        Fun.protect
+          ~finally:(fun () ->
+            if !close_fd then close_file_descr_noerr fd)
+          (fun () ->
+            match filesystem_path root specifier with
+            | Some current_path
+              when String.equal current_path path
+                   && opened_file_still_checked path fd ->
+                let channel = Unix.in_channel_of_descr fd in
+                close_fd := false;
+                Some (read_channel channel)
+            | Some _ | None -> None)
+
   let filesystem_load root request =
-    match filesystem_path root request.Qmljs_types.normalized with
+    let specifier = request.Qmljs_types.normalized in
+    match filesystem_path root specifier with
     | None -> Ok None
-    | Some path -> Ok (Some (read_file path))
+    | Some path -> Ok (read_checked_file root specifier path)
 
   let filesystem ~root ~allow =
     { Qmljs_types.requests = Hashtbl.create 16

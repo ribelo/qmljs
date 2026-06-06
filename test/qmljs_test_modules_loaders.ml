@@ -1,3 +1,6 @@
+[@@@alert "-do_not_spawn_domains"]
+[@@@alert "-unsafe_multidomain"]
+
 open Qmljs_test_common
 
 let test_native_module_api () =
@@ -133,6 +136,67 @@ let test_filesystem_loader_rejects_symlink_escape () =
         (fun _error ->
           check_int "context reusable after symlink escape" 2
             (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))))
+
+let test_filesystem_loader_rejects_symlink_swap_race () =
+  with_temp_loader_dir @@ fun root ->
+  let victim = Filename.concat root "victim.js" in
+  let outside = Filename.temp_file "qmljs-loader-outside-" ".js" in
+  Fun.protect
+    ~finally:(fun () ->
+      try Sys.remove outside with
+      | Sys_error _ | Unix.Unix_error _ -> ())
+    (fun () ->
+      let inside_source = "export default 7;" in
+      write_file victim inside_source;
+      write_file outside "export default 99;";
+      let stop = Atomic.make false in
+      let swapper =
+        Domain.spawn (fun () ->
+          while not (Atomic.get stop) do
+            (try Sys.remove victim with
+             | Sys_error _ | Unix.Unix_error _ -> ());
+            (try Unix.symlink outside victim with
+             | Unix.Unix_error _ -> ());
+            Domain.cpu_relax ();
+            (try Sys.remove victim with
+             | Sys_error _ | Unix.Unix_error _ -> ());
+            (try write_file victim inside_source with
+             | Sys_error _ | Unix.Unix_error _ -> ());
+            Domain.cpu_relax ()
+          done)
+      in
+      Fun.protect
+        ~finally:(fun () ->
+          Atomic.set stop true;
+          Domain.join swapper)
+        (fun () ->
+          let saw_outside = ref false in
+          for attempt = 1 to 300 do
+            match
+              Qmljs.Error.capture (fun () ->
+                Qmljs.Runtime.with_ @@ fun runtime ->
+                Qmljs.Context.with_ runtime @@ fun context ->
+                let loader =
+                  Qmljs.Module.Loader.filesystem ~root
+                    ~allow:(fun ~specifier:_ -> true)
+                in
+                Qmljs.Runtime.set_module_loader runtime loader;
+                let namespace =
+                  Qmljs.Module.eval
+                    ~filename:(Printf.sprintf "symlink-swap-%d.js" attempt)
+                    context
+                    {|import value from "victim.js"; export default value;|}
+                in
+                Qmljs.Value.to_int (Qmljs.Module.default namespace))
+            with
+            | Ok 7 -> ()
+            | Ok 99 -> saw_outside := true
+            | Ok value ->
+                fail (Printf.sprintf "unexpected module value %d" value)
+            | Error _ -> ()
+          done;
+          check_bool "filesystem loader did not read swapped symlink target" false
+            !saw_outside))
 
 let test_filesystem_loader_does_not_scan_root_without_imports () =
   with_temp_loader_dir @@ fun root ->
@@ -609,5 +673,7 @@ let tests =
   , test_filesystem_loader_does_not_scan_root_without_imports
   ; "filesystem loader rejects symlink escape"
   , test_filesystem_loader_rejects_symlink_escape
+  ; "filesystem loader rejects symlink swap race"
+  , test_filesystem_loader_rejects_symlink_swap_race
   ; "module loader filesystem API", test_module_loader_filesystem_api
   ]
