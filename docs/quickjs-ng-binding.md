@@ -23,11 +23,12 @@ the domain that creates it. That domain is the only domain allowed to touch the
 QuickJS runtime, contexts, or values belonging to it. C entry points enforce
 that owner-domain invariant before touching QuickJS.
 
-QuickJS values are wrapped in custom blocks with finalizers. The C wrappers keep
-the parent context and runtime rooted while child values exist:
+QuickJS values are wrapped in custom blocks with finalizers. Custom block
+payloads contain only native pointers and refcounted runtime state. The OCaml
+record chain keeps parents alive:
 
-- a context wrapper roots its runtime wrapper;
-- a value wrapper roots its context wrapper;
+- a value record points to its context record;
+- a context record points to its runtime record;
 - raw value/context finalizers never call QuickJS directly from an arbitrary
   OCaml domain;
 - finalizers enqueue native releases on the runtime, and the owner domain drains
@@ -46,12 +47,12 @@ QuickJS promise jobs are driven by `Qmljs.Async.drain_jobs` and
 `Qmljs.Promise.await`. Synchronous host callbacks must not perform Eio
 effects because they are called through a C frame.
 
-`Qmljs.Context.eval_in_domain` does not move an existing `JSContext` onto a
-worker domain; doing so would race QuickJS state and custom finalizers. It keeps
-execution on the runtime owner. `Qmljs.Context.eval_with_timeout` preserves that
-same owner-domain rule. Its timeout worker uses the supplied Eio domain manager
-and clock only to sleep and flip the runtime's atomic interrupt flag; it never
-touches the QuickJS runtime, context, or value graph.
+`Qmljs.Context.eval` and `Qmljs.Context.eval_with_timeout` always execute on the
+runtime owner domain. `eval_with_timeout` installs a native monotonic deadline
+read by QuickJS's interrupt handler; it never moves the runtime, context, or
+value graph to another domain. This interrupts JavaScript bytecode execution.
+It cannot interrupt a host callback that is blocked inside native C or OCaml
+while QuickJS is not polling the interrupt handler.
 
 For Eio work, use `Qmljs.Function.set_global_async`. It returns a JavaScript
 Promise immediately and queues the OCaml callback on the runtime. The queued job
@@ -76,7 +77,6 @@ Current evidence:
 ## Current Limitations
 
 - `Context.eval` is synchronous and owner-domain bound.
-- The module loader currently covers in-memory modules needed by the readiness
-  contract; full QuickJS module normalization and bytecode loading are still
-  future work.
+- The module loader supports in-memory ES modules, policy denial, and the
+  `type: "js"` import attribute. Full bytecode loading is not exposed yet.
 - Classes and bytecode APIs are not exposed yet.

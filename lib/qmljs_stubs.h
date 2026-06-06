@@ -16,30 +16,39 @@
 struct qml_deferred_value;
 struct qml_deferred_context;
 
+/* Single source of truth for one QuickJS runtime. Reference counted so it
+   outlives every wrapper (runtime/context/value) and every deferred native
+   release node that can read it. Custom blocks never store OCaml values; the
+   OCaml record chain (value -> context -> runtime in Qmljs_types) keeps the
+   parents alive for the GC. The C layer only keeps native pointers and the
+   shared state pointer. */
 struct qml_runtime_state {
-  atomic_int interrupt_requested;
+  atomic_uint refs;                  /* state memory lifetime */
   caml_domain_state *owner_domain;
-  atomic_int closed;
+  JSRuntime *rt;                     /* NULL once JS_FreeRuntime has run */
+  atomic_int native_runtime_alive;   /* 1 until JS_FreeRuntime */
+  atomic_int closed_to_user;         /* 1 once close has been requested */
+  atomic_int open_contexts;          /* live JSContexts not yet freed */
+  atomic_int live_values;            /* live JSValues not yet freed */
+  atomic_int interrupt_requested;
+  atomic_llong interrupt_deadline_ns;
+  void *module_loader;               /* struct qml_module_loader *, owner-freed */
   _Atomic(struct qml_deferred_value *) deferred_values;
   _Atomic(struct qml_deferred_context *) deferred_contexts;
 };
 
 struct qml_runtime {
-  JSRuntime *rt;
   struct qml_runtime_state *state;
 };
 
 struct qml_context {
-  JSContext *ctx;
-  value runtime;
   struct qml_runtime_state *state;
+  JSContext *ctx;
 };
 
 struct qml_value {
-  JSContext *ctx;
-  JSValue value;
-  value context;
   struct qml_runtime_state *state;
+  JSValue value;
 };
 
 #define Qml_runtime_val(v) ((struct qml_runtime *)Data_custom_val(v))
@@ -58,6 +67,20 @@ JSContext *qml_context(value context);
 JSValue qml_js_value(value wrapped);
 void qml_update_stack_top(JSContext *ctx);
 void qml_ensure_owner(struct qml_runtime_state *state);
+void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped);
 void qml_drain_deferred(struct qml_runtime_state *state);
+
+/* Refcounted state lifetime. */
+void qml_state_ref(struct qml_runtime_state *state);
+void qml_state_unref(struct qml_runtime_state *state);
+
+/* Native runtime teardown helpers shared by close and finalizers. */
+int qml_runtime_free_native(struct qml_runtime_state *state);
+
+/* Release the installed module loader (owner domain only). */
+void qml_module_loader_free(struct qml_runtime_state *state);
+
+/* Install a native in-memory module loader for one runtime. */
+void qml_module_loader_install(value runtime, value entries, value deny);
 
 #endif

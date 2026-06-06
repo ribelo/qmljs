@@ -5,6 +5,8 @@ type snapshot =
   }
 
 let snapshot () =
+  Gc.full_major ();
+  Gc.full_major ();
   { runtimes = Qmljs_raw.diagnostics_live_runtimes ()
   ; contexts = Qmljs_raw.diagnostics_live_contexts ()
   ; values = Qmljs_raw.diagnostics_live_values ()

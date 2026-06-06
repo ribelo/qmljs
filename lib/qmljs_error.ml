@@ -4,6 +4,7 @@ type kind =
   | Out_of_memory_kind
   | Stack_overflow_kind
   | Resource_limit_kind
+  | Host_callback_defect_kind
 
 and frame_kind =
   | Js_frame
@@ -78,22 +79,23 @@ let make ?(name = "") ?(stack = "") ?(ocaml_frame = "") ?cause ~kind
   ; kind
   }
 
-let raise_js_exception name message stack ocaml_frame cause_name cause_message
-    cause_stack cause_ocaml_frame =
-  let cause =
-    if String.equal cause_name ""
-       && String.equal cause_message ""
-       && String.equal cause_stack ""
-       && String.equal cause_ocaml_frame ""
-    then None
-    else
-      Some
-        (make ~name:cause_name ~stack:cause_stack
-           ~ocaml_frame:cause_ocaml_frame ~kind:JavaScript cause_message)
-  in
-  raise
-    (Structured_error
-       (make ~name ~stack ~ocaml_frame ?cause ~kind:JavaScript message))
+let kind_of_code denied_specifier = function
+  | 1 -> Out_of_memory_kind
+  | 2 -> Stack_overflow_kind
+  | 3 -> Resource_limit_kind
+  | 4 -> Policy_violation_kind denied_specifier
+  | 5 -> Host_callback_defect_kind
+  | _ -> JavaScript
+
+(* Construct one level of a structured error. Called by the C boundary while
+   the live QuickJS error values are still in hand, innermost cause first. *)
+let make_structured name message stack ocaml_frame kind_code denied_specifier
+    cause =
+  make ~name ~stack ~ocaml_frame ?cause
+    ~kind:(kind_of_code denied_specifier kind_code)
+    message
+
+let raise_structured (structured : structured) = raise (Structured_error structured)
 
 let host_exception_message = function
   | Host_error (message, _metadata) -> message
@@ -101,7 +103,8 @@ let host_exception_message = function
   | exn -> Printexc.to_string exn
 
 let () =
-  Callback.Safe.register "qmljs.raise_js_exception" raise_js_exception;
+  Callback.Safe.register "qmljs.make_structured" make_structured;
+  Callback.Safe.register "qmljs.raise_structured" raise_structured;
   Callback.Safe.register "qmljs.host_exception_message" host_exception_message
 
 module Structured = struct
@@ -121,13 +124,16 @@ module Structured = struct
     | Stack_overflow -> Stdlib.Result.Error (of_stack_overflow ())
     | Resource_limit message -> Stdlib.Result.Error (of_resource_limit message)
     | Host_error (message, _metadata) ->
-        Stdlib.Result.Error (make ~kind:JavaScript message)
+        Stdlib.Result.Error (make ~kind:Host_callback_defect_kind message)
     | Error message -> Stdlib.Result.Error (of_legacy_error message)
     | exn -> Stdlib.Result.Error (of_legacy_error (Printexc.to_string exn))
 
   let host ~message ~metadata = Host_error (message, metadata)
   let message t = t.message
-  let cause_exn t = Option.value t.cause ~default:t
+  let cause_exn t =
+    match t.cause with
+    | Some cause -> cause
+    | None -> invalid_arg "error has no cause"
 
   let rec has_frame kind t ~function_name =
     List.exists
@@ -167,5 +173,10 @@ module Structured = struct
   let is_resource_limit (t : t) =
     match t.kind with
     | Resource_limit_kind | Out_of_memory_kind | Stack_overflow_kind -> true
+    | _ -> false
+
+  let is_host_callback_defect (t : t) =
+    match t.kind with
+    | Host_callback_defect_kind -> true
     | _ -> false
 end

@@ -72,7 +72,10 @@ CAMLprim value qml_object_set(value context, value object, value name, value wra
 {
   CAMLparam4(context, object, name, wrapped);
   JSContext *ctx = qml_context(context);
+  struct qml_runtime_state *state = Qml_context_val(context)->state;
   qml_update_stack_top(ctx);
+  qml_ensure_same_runtime(state, object);
+  qml_ensure_same_runtime(state, wrapped);
   JSValue property_value = JS_DupValue(ctx, qml_js_value(wrapped));
   int result =
     JS_SetPropertyStr(ctx, qml_js_value(object), String_val(name), property_value);
@@ -88,7 +91,11 @@ CAMLprim value qml_object_define_data_property(value context, value object,
 {
   CAMLparam5(context, object, key, wrapped, input_flags);
   JSContext *ctx = qml_context(context);
+  struct qml_runtime_state *state = Qml_context_val(context)->state;
   qml_update_stack_top(ctx);
+  qml_ensure_same_runtime(state, object);
+  qml_ensure_same_runtime(state, key);
+  qml_ensure_same_runtime(state, wrapped);
   JSAtom atom = JS_ValueToAtom(ctx, qml_js_value(key));
   if (atom == JS_ATOM_NULL) {
     qml_raise_exception(ctx);
@@ -121,6 +128,7 @@ CAMLprim value qml_array_of_values(value context, value values)
 {
   CAMLparam2(context, values);
   JSContext *ctx = qml_context(context);
+  struct qml_runtime_state *state = Qml_context_val(context)->state;
   qml_update_stack_top(ctx);
   JSValue result = JS_NewArray(ctx);
   if (JS_IsException(result)) {
@@ -129,6 +137,7 @@ CAMLprim value qml_array_of_values(value context, value values)
 
   mlsize_t length = Wosize_val(values);
   for (mlsize_t i = 0; i < length; i++) {
+    qml_ensure_same_runtime(state, Field(values, i));
     JSValue element = JS_DupValue(ctx, qml_js_value(Field(values, i)));
     if (JS_SetPropertyUint32(ctx, result, (uint32_t)i, element) < 0) {
       JS_FreeValue(ctx, result);
@@ -168,6 +177,7 @@ CAMLprim value qml_value_to_bool(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   qml_update_stack_top(ctx);
   int result = JS_ToBool(ctx, qml_js_value(wrapped));
   if (result < 0) {
@@ -181,6 +191,7 @@ CAMLprim value qml_value_to_int(value context, value wrapped)
   CAMLparam2(context, wrapped);
   int64_t result = 0;
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   qml_update_stack_top(ctx);
   if (JS_ToInt64(ctx, &result, qml_js_value(wrapped)) < 0) {
     qml_raise_exception(ctx);
@@ -197,6 +208,7 @@ CAMLprim value qml_value_to_float(value context, value wrapped)
   CAMLlocal1(result);
   double number = 0.0;
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   qml_update_stack_top(ctx);
   if (JS_ToFloat64(ctx, &number, qml_js_value(wrapped)) < 0) {
     qml_raise_exception(ctx);
@@ -211,6 +223,7 @@ CAMLprim value qml_value_to_string(value context, value wrapped)
   CAMLlocal1(result);
   size_t length = 0;
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   qml_update_stack_top(ctx);
   const char *string = JS_ToCStringLen(ctx, &length, qml_js_value(wrapped));
   if (string == NULL) {
@@ -226,12 +239,15 @@ CAMLprim value qml_value_call(value context, value function, value args)
 {
   CAMLparam3(context, function, args);
   JSContext *ctx = qml_context(context);
+  struct qml_runtime_state *state = Qml_context_val(context)->state;
   qml_update_stack_top(ctx);
+  qml_ensure_same_runtime(state, function);
   mlsize_t argc = Wosize_val(args);
   JSValueConst *argv = NULL;
   if (argc > 0) {
     argv = caml_stat_alloc(sizeof(JSValueConst) * argc);
     for (mlsize_t i = 0; i < argc; i++) {
+      qml_ensure_same_runtime(state, Field(args, i));
       argv[i] = qml_js_value(Field(args, i));
     }
   }
@@ -247,9 +263,11 @@ CAMLprim value qml_value_call(value context, value function, value args)
   CAMLreturn(qml_alloc_value(context, result));
 }
 
-CAMLprim value qml_value_is_promise(value wrapped)
+CAMLprim value qml_value_is_promise(value context, value wrapped)
 {
-  CAMLparam1(wrapped);
+  CAMLparam2(context, wrapped);
+  (void)qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   CAMLreturn(Val_bool(JS_IsPromise(qml_js_value(wrapped))));
 }
 
@@ -257,6 +275,7 @@ CAMLprim value qml_value_promise_state(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   CAMLreturn(Val_int(JS_PromiseState(ctx, qml_js_value(wrapped))));
 }
 
@@ -264,6 +283,7 @@ CAMLprim value qml_value_promise_result(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
+  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
   qml_update_stack_top(ctx);
   JSValue result = JS_PromiseResult(ctx, qml_js_value(wrapped));
   if (JS_IsException(result)) {
@@ -285,6 +305,9 @@ CAMLprim value qml_promise_create(value context)
   }
 
   result = caml_alloc_tuple(3);
+  Store_field(result, 0, Val_unit);
+  Store_field(result, 1, Val_unit);
+  Store_field(result, 2, Val_unit);
   Store_field(result, 0, qml_alloc_value(context, promise));
   Store_field(result, 1, qml_alloc_value(context, resolving_functions[0]));
   Store_field(result, 2, qml_alloc_value(context, resolving_functions[1]));

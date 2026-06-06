@@ -62,12 +62,20 @@
 
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.dune_3
-            pkgs.ocaml
+            oxcamlInit
             pkgs.opam
             pkgs.pkg-config
             pkgs.quickjs-ng.dev
           ];
+
+          shellHook = ''
+            export OPAMROOT="''${OPAMROOT:-$HOME/.cache/opam}"
+            export PKG_CONFIG_PATH="${nativePkgConfigPath}:''${PKG_CONFIG_PATH:-}"
+
+            if [ -d "$OPAMROOT/5.2.0+ox" ]; then
+              eval "$(opam env --switch=5.2.0+ox --set-switch)"
+            fi
+          '';
         };
 
         devShells.oxcaml = pkgs.mkShell {

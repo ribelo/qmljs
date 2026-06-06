@@ -46,19 +46,7 @@ module Context : sig
     string ->
     value
 
-  val eval_in_domain :
-    domain_mgr:_ Eio.Domain_manager.t ->
-    ?filename:string ->
-    ?strict:bool ->
-    ?async:bool ->
-    ?module_:bool ->
-    t ->
-    string ->
-    value
-
   val eval_with_timeout :
-    domain_mgr:_ Eio.Domain_manager.t ->
-    clock:_ Eio.Time.clock ->
     timeout:float ->
     ?filename:string ->
     ?strict:bool ->
@@ -68,12 +56,11 @@ module Context : sig
     string ->
     value
 
-  val eval_module : t -> string -> value
+  val eval_module : ?filename:string -> t -> string -> value
 
   val eval_module_with_timeout :
-    domain_mgr:_ Eio.Domain_manager.t ->
-    clock:_ Eio.Time.clock ->
     timeout:float ->
+    ?filename:string ->
     t ->
     string ->
     value
@@ -128,12 +115,7 @@ module Diagnostics : sig
 end
 
 module Eio : sig
-  val with_runtime :
-    domain_mgr:'domain_mgr ->
-    clock:'clock ->
-    timeout:float ->
-    (Runtime.t -> Context.t -> 'a) ->
-    'a
+  val with_runtime : (Runtime.t -> Context.t -> 'a) -> 'a
 end
 
 module Object : sig

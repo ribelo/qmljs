@@ -10,8 +10,12 @@ external runtime_set_memory_limit : runtime -> int -> unit
 external runtime_set_max_stack_size : runtime -> int -> unit
   = "qml_runtime_set_max_stack_size"
 
+external runtime_install_module_loader :
+  runtime -> (string * string) array -> (string -> bool) -> unit
+  = "qml_runtime_install_module_loader"
+
 external runtime_drain_deferred : runtime -> unit = "qml_runtime_drain_deferred"
-external runtime_close : runtime -> unit = "qml_runtime_close"
+external runtime_close : runtime -> bool = "qml_runtime_close"
 
 external runtime_is_job_pending : runtime -> bool = "qml_runtime_is_job_pending"
 
@@ -21,15 +25,25 @@ external runtime_execute_pending_job : runtime -> bool
 external runtime_request_interrupt : runtime -> unit = "qml_runtime_request_interrupt"
 [@@noalloc]
 
+external runtime_set_interrupt_timeout : runtime -> float -> unit
+  = "qml_runtime_set_interrupt_timeout"
+
+external runtime_clear_interrupt_timeout : runtime -> unit
+  = "qml_runtime_clear_interrupt_timeout"
+
 external runtime_clear_interrupt : runtime -> unit = "qml_runtime_clear_interrupt"
 
 external runtime_interrupt_requested : runtime -> bool
   = "qml_runtime_interrupt_requested"
 
 external context_create : runtime -> context = "qml_context_create"
+external context_close : context -> bool = "qml_context_close"
 
 external context_eval : context -> string -> string -> int -> value
   = "qml_context_eval"
+
+external context_eval_module : context -> string -> string -> value
+  = "qml_context_eval_module"
 
 external context_global : context -> value = "qml_context_global"
 external context_set_global : context -> string -> value -> unit = "qml_context_set_global"
@@ -61,7 +75,7 @@ external value_to_float : context -> value -> float = "qml_value_to_float"
 external value_to_string : context -> value -> string = "qml_value_to_string"
 external value_call : context -> value -> value array -> value = "qml_value_call"
 
-external value_is_promise : value -> bool = "qml_value_is_promise"
+external value_is_promise : context -> value -> bool = "qml_value_is_promise"
 
 external value_promise_state : context -> value -> int = "qml_value_promise_state"
 

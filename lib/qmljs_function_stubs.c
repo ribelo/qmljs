@@ -83,7 +83,24 @@ static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
     CAMLreturnT(JSValue, JS_EXCEPTION);
   }
   if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_ocaml_frame", frame,
-                                JS_PROP_CONFIGURABLE) < 0) {
+                                JS_PROP_C_W_E) < 0) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+
+  JSValue kind = JS_NewString(ctx, "host_callback_defect");
+  if (JS_IsException(kind)) {
+    JS_FreeValue(ctx, error);
+    if (fallback != NULL) {
+      caml_stat_free(fallback);
+    }
+    CAMLreturnT(JSValue, JS_EXCEPTION);
+  }
+  if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_kind", kind,
+                                JS_PROP_C_W_E) < 0) {
     JS_FreeValue(ctx, error);
     if (fallback != NULL) {
       caml_stat_free(fallback);
@@ -109,6 +126,9 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
 
   args = caml_alloc(argc, 0);
   for (int i = 0; i < argc; i++) {
+    Store_field(args, i, Val_unit);
+  }
+  for (int i = 0; i < argc; i++) {
     Store_field(args, i,
                 qml_alloc_value(callback->context, JS_DupValue(ctx, argv[i])));
   }
@@ -120,6 +140,7 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
     CAMLreturnT(JSValue, exception);
   }
 
+  qml_ensure_same_runtime(Qml_context_val(callback->context)->state, result);
   JSValue js_result = JS_DupValue(ctx, qml_js_value(result));
   CAMLreturnT(JSValue, js_result);
 }

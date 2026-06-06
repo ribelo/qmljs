@@ -58,16 +58,12 @@ let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   let value = Qmljs.Context.eval context "21 * 2" in
   check_int "runtime reusable after exception" 42 (Qmljs.Value.to_int value)
 
-let test_eio_many_runtimes_cancel_cleanly_without_races env =
+let test_eio_many_runtimes_cancel_cleanly_without_races () =
   Eio.Switch.run @@ fun sw ->
   let results = Eio.Stream.create 128 in
   for i = 1 to 128 do
     Eio.Fiber.fork ~sw (fun () ->
-        Qmljs.Eio.with_runtime
-          ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-          ~clock:(Eio.Stdenv.clock env)
-          ~timeout:0.05
-          (fun runtime context ->
+        Qmljs.Eio.with_runtime (fun _runtime context ->
             Qmljs.Function.set_global_async context ~name:"later" ~arity:1
               (fun args ->
                 Eio.Fiber.yield ();
@@ -82,7 +78,8 @@ let test_eio_many_runtimes_cancel_cleanly_without_races env =
   for _ = 1 to 128 do
     total := !total + Eio.Stream.take results
   done;
-  check_int "all async runtimes completed" 8_448 !total
+  let expected = (128 * 129 / 2) + (128 * 2) in
+  check_int "all async runtimes completed" expected !total
 
 let test_complete_value_surface_roundtrips_js_semantics () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -113,7 +110,7 @@ let test_complete_value_surface_roundtrips_js_semantics () =
   check_string "JS value semantics" "42:9007199254740993:4:false:false:false"
     (Qmljs.Value.to_string result)
 
-let test_module_loader_policy_and_import_attributes_are_enforced env =
+let test_module_loader_policy_and_import_attributes_are_enforced () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
   let loader =
@@ -126,8 +123,6 @@ let test_module_loader_policy_and_import_attributes_are_enforced env =
   Qmljs.Runtime.set_module_loader runtime loader;
   let value =
     Qmljs.Context.eval_module_with_timeout
-      ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-      ~clock:(Eio.Stdenv.clock env)
       ~timeout:0.5 context
       {|
         import { answer } from "math" with { type: "js" };
@@ -143,7 +138,7 @@ let test_module_loader_policy_and_import_attributes_are_enforced env =
       check_string "denied specifier" "fs"
         (Qmljs.Error.denied_module_specifier_exn error))
 
-let test_resource_limits_reject_hostile_scripts_and_recover env =
+let test_resource_limits_reject_hostile_scripts_and_recover () =
   Qmljs.Runtime.with_
     ~memory_limit:(16 * 1024 * 1024)
     ~max_stack_size:(256 * 1024)
@@ -159,19 +154,18 @@ let test_resource_limits_reject_hostile_scripts_and_recover env =
   expect_error "promise storm limit"
     (fun () ->
       Qmljs.Context.eval_with_timeout
-        ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-        ~clock:(Eio.Stdenv.clock env)
         ~timeout:0.05 context
         "for (;;) Promise.resolve().then(() => {})")
-    (fun error -> check_bool "deadline or job limit" true (Qmljs.Error.is_resource_limit error));
+    (fun error ->
+      check_bool "deadline or job limit" true (Qmljs.Error.is_resource_limit error));
   let value = Qmljs.Context.eval context "6 * 7" in
   check_int "runtime recovers after limits" 42 (Qmljs.Value.to_int value)
 
 let () =
-  Eio_main.run @@ fun env ->
+  Eio_main.run @@ fun _env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
-  test_eio_many_runtimes_cancel_cleanly_without_races env;
+  test_eio_many_runtimes_cancel_cleanly_without_races ();
   test_complete_value_surface_roundtrips_js_semantics ();
-  test_module_loader_policy_and_import_attributes_are_enforced env;
-  test_resource_limits_reject_hostile_scripts_and_recover env
+  test_module_loader_policy_and_import_attributes_are_enforced ();
+  test_resource_limits_reject_hostile_scripts_and_recover ()

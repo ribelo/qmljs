@@ -4,7 +4,11 @@ type state = Qmljs_types.promise_state =
   | Fulfilled
   | Rejected
 
-let is value = Qmljs_raw.value_is_promise (Qmljs_types.value_raw value)
+let is value =
+  let context = Qmljs_types.value_context value in
+  Qmljs_raw.value_is_promise
+    (Qmljs_types.context_raw context)
+    (Qmljs_types.value_raw value)
 
 let state value =
   let context = Qmljs_types.value_context value in
@@ -41,11 +45,11 @@ let create context =
   , { Qmljs_types.context; raw = reject } )
 
 let await ?yield_every promise =
+  let runtime =
+    Qmljs_types.context_runtime (Qmljs_types.value_context promise)
+  in
   let rec loop () =
-    ignore
-      ( Qmljs_async.drain_jobs ?yield_every
-          (Qmljs_types.context_runtime (Qmljs_types.value_context promise))
-        : int );
+    ignore (Qmljs_async.drain_jobs ?yield_every runtime : int);
     match state promise with
     | Not_a_promise -> invalid_arg "value is not a promise"
     | Fulfilled -> result promise
@@ -53,7 +57,10 @@ let await ?yield_every promise =
         let reason = result promise in
         raise (Qmljs_error.Error (Qmljs_value.to_string reason))
     | Pending ->
-        Eio.Fiber.yield ();
+        (match runtime.Qmljs_types.driver with
+         | Some driver when not driver.Qmljs_types.closed ->
+             Eio.Condition.await_no_mutex driver.Qmljs_types.condition
+         | _ -> Eio.Fiber.yield ());
         loop ()
   in
   match state promise with

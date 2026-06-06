@@ -1,6 +1,7 @@
 (library
  (public_name qmljs)
  (libraries eio)
+ (flags (:standard -alert -unsafe_multidomain -alert -do_not_spawn_domains))
  (foreign_stubs
   (language c)
   (names

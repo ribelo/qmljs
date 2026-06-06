@@ -7,7 +7,8 @@
 (package
  (name qmljs)
  (depends
-  (ocaml (>= 5.2))
+  (ocaml (= 5.2.0))
+  (ocaml-variants (= 5.2.0+ox))
   (dune (>= 3.21))
   eio
   (eio_main :with-test)))

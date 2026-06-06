@@ -3,9 +3,16 @@ type module_loader =
   ; deny : string -> bool
   }
 
+type driver =
+  { sw : Eio.Switch.t
+  ; condition : Eio.Condition.t
+  ; mutable closed : bool
+  }
+
 type runtime =
   { raw : Qmljs_raw.runtime
   ; host_jobs : (unit -> unit) Queue.t
+  ; mutable driver : driver option
   ; mutable module_loader : module_loader option
   ; memory_limit : int option
   ; max_stack_size : int option

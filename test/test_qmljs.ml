@@ -47,19 +47,13 @@ let test_runtime_interrupt_flag () =
   check_bool "interrupt cleared" false
     (Qmljs.Runtime.interrupt_requested runtime)
 
-let test_eval_timeout env =
+let test_eval_timeout () =
   with_context @@ fun runtime context ->
-  let value =
-    Qmljs.Context.eval_in_domain
-      ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-      context "20 + 22"
-  in
-  check_int "eval in domain" 42 (Qmljs.Value.to_int value);
+  let value = Qmljs.Context.eval context "20 + 22" in
+  check_int "eval" 42 (Qmljs.Value.to_int value);
   expect_structured_error "expected JavaScript timeout"
     (fun () ->
       Qmljs.Context.eval_with_timeout
-        ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-        ~clock:(Eio.Stdenv.clock env)
         ~timeout:0.01 context "while (true) {}")
     (fun error ->
       if not (String.contains (Qmljs.Error.message error) 't') then
@@ -71,8 +65,6 @@ let test_eval_timeout env =
   expect_structured_error "compact infinite loop timeout"
     (fun () ->
       Qmljs.Context.eval_with_timeout
-        ~domain_mgr:(Eio.Stdenv.domain_mgr env)
-        ~clock:(Eio.Stdenv.clock env)
         ~timeout:0.01 context "while(1){}")
     (fun error ->
       check_bool "compact timeout kind" true
@@ -197,10 +189,10 @@ let test_cancel_pending_await () =
   | Resolved -> fail "pending promise resolved unexpectedly"
 
 let () =
-  Eio_main.run @@ fun env ->
+  Eio_main.run @@ fun _env ->
   test_eval ();
   test_runtime_interrupt_flag ();
-  test_eval_timeout env;
+  test_eval_timeout ();
   test_conversions ();
   test_closed_handles_raise ();
   test_error ();
