@@ -254,6 +254,8 @@ Keep these Eio-shaped gaps:
   of crashing the driver.
 - [x] Promise.await_result uses driver wakeup generation tracking so it cannot
   miss host-job enqueue or completion notifications and sleep forever.
+- [x] Promise values exported as module defaults can be awaited under the Eio
+  driver without hanging.
 
 Do not keep AsyncRuntime, AsyncContext, Future, Promised<T>, MaybePromise<T>,
 generic scheduler, or Rust Waker plumbing as qmljs gaps.

@@ -371,6 +371,25 @@ let test_await_result_no_lost_wakeup_with_driver env =
       | Eio.Time.Timeout ->
           fail "await_result timed out after a driver wakeup")
 
+let test_promise_default_export_awaits_with_driver env =
+  Eio.Switch.run @@ fun sw ->
+  let clock = Eio.Stdenv.clock env in
+  Qmljs.Eio.with_runtime ~sw ~clock (fun _driver _runtime context ->
+      try
+        Eio.Time.with_timeout_exn clock 5.0 (fun () ->
+            let namespace =
+              Qmljs.Module.eval context
+                "export default (async () => { return 7; })();"
+            in
+            let value = Qmljs.Module.default namespace in
+            check_bool "promise default export" true (Qmljs.Promise.is value);
+            check_int "awaited promise default export" 7
+              (Qmljs.Value.to_int
+                 (Qmljs.Promise.await ~yield_every:1 value)))
+      with
+      | Eio.Time.Timeout ->
+          fail "promise default export await timed out")
+
 let test_complete_value_surface_roundtrips_js_semantics () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -479,6 +498,7 @@ let () =
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_await_result_no_lost_wakeup_with_driver env;
+  test_promise_default_export_awaits_with_driver env;
   test_complete_value_surface_roundtrips_js_semantics ();
   test_module_loader_policy_and_import_attributes_are_enforced ();
   test_resource_limits_reject_hostile_scripts_and_recover ()
