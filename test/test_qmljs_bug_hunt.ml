@@ -305,6 +305,36 @@ let test_as_int_rejects_out_of_range_bigint () =
            "as_int(2n**64n) silently returned %d for a value far outside the \
             OCaml int range" i)
 
+(* BUG 12 — the int->BigInt change breaks JSON serialization of integer data.
+
+   [of_assoc]/[of_record] with the [Value.int] encoder is the documented way to
+   build a JS object from OCaml data, and [Json.stringify] is the documented
+   serializer; "record of ints -> JS object -> JSON text" must work for ordinary
+   integers. Because [Value.int] now produces a JS BigInt for |n| > 2^53, and
+   BigInt is not JSON-serializable, [Json.stringify] raises "BigInt are forbidden
+   in JSON.stringify". This pins a distinct surface (encoders + JSON) and also
+   constrains the fix: merely teaching to_float about BigInt would leave this
+   red. *)
+let test_json_stringify_int_record () =
+  with_context @@ fun _runtime context ->
+  let obj =
+    Qmljs.Value.of_assoc Qmljs.Value.int context [ "count", 9007199254740993 ]
+  in
+  match Qmljs.Error.capture (fun () -> Qmljs.Json.stringify obj) with
+  | Error e ->
+      fail ("Json.stringify of an int-valued field raised: " ^ Qmljs.Error.message e)
+  | Ok json ->
+      (* The exact textual form is engine-dependent; just require the integer
+         value to be present and serialized as a JSON number (no BigInt "n"). *)
+      if not (String.length json > 0) then fail "empty JSON";
+      check_bool "json contains the integer" true
+        (let contains s sub =
+           let n = String.length s and m = String.length sub in
+           let rec go i = i + m <= n && (String.sub s i m = sub || go (i + 1)) in
+           m = 0 || go 0
+         in
+         contains json "9007199254740992" || contains json "9007199254740993")
+
 let tests =
   [ "int_roundtrip_precision", test_int_roundtrip_precision
   ; "int_max_int_roundtrip", test_int_max_int_roundtrip
@@ -319,6 +349,7 @@ let tests =
   ; "int_value_arithmetic_in_js", test_int_value_arithmetic_in_js
   ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
+  ; "json_stringify_int_record", test_json_stringify_int_record
   ]
 
 let () =
