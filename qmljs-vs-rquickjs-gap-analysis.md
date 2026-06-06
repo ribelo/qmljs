@@ -313,6 +313,8 @@ Keep these context gaps:
   rather than a separate intrinsic.
 - [x] Full eval option coverage, including backtrace barriers and clear
   top-level-await behavior.
+- [x] Successful timeout-wrapped eval does not drain pending promise jobs or
+  microtasks before an explicit driver/drain call.
 - [x] Module/file eval helpers only where they add structured errors or ownership
   behavior beyond ordinary OCaml file reading.
 

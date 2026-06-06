@@ -37,6 +37,20 @@ let test_sync_host_callback_timeout_is_preemptive () =
       if elapsed > 0.03 then
         fail (Printf.sprintf "timeout was not preemptive: %.3fs" elapsed))
 
+let test_eval_with_timeout_does_not_drain_microtasks_on_success () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore (Qmljs.Context.eval context "globalThis.hit = 0" : Qmljs.value);
+  check_int "eval_with_timeout result" 0
+    (Qmljs.Value.to_int
+       (Qmljs.Context.eval_with_timeout ~timeout:1.0 context
+          "Promise.resolve().then(() => globalThis.hit = 1); 0"));
+  check_int "microtask not drained after successful timeout eval" 0
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.hit"));
+  ignore (Qmljs.Async.drain_jobs runtime : int);
+  check_int "microtask runs after explicit drain" 1
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.hit"))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -351,6 +365,8 @@ let test_eio_queued_host_jobs_are_scoped env =
 let tests env =
   [ "sync host callback timeout is preemptive"
   , test_sync_host_callback_timeout_is_preemptive
+  ; "eval_with_timeout does not drain microtasks on success"
+  , test_eval_with_timeout_does_not_drain_microtasks_on_success
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved

@@ -86,25 +86,30 @@ let with_interrupt_timeout ~timeout runtime f =
   Qmljs_raw.runtime_set_interrupt_timeout
     (Qmljs_types.runtime_raw runtime)
     timeout;
-  Fun.protect
-    ~finally:(fun () ->
-      Qmljs_raw.runtime_clear_interrupt_timeout
-        (Qmljs_types.runtime_raw runtime);
-      Qmljs_runtime.clear_interrupt runtime;
+  let clear_timeout_state () =
+    Qmljs_raw.runtime_clear_interrupt_timeout
+      (Qmljs_types.runtime_raw runtime);
+    Qmljs_runtime.clear_interrupt runtime
+  in
+  match f () with
+  | result ->
+      let interrupted = Qmljs_runtime.interrupt_requested runtime in
+      clear_timeout_state ();
+      if interrupted then begin
+        Qmljs_runtime.reclaim_pending_jobs runtime;
+        Qmljs_error.raise_timeout timeout_error
+      end;
+      result
+  | exception exn ->
+      let backtrace = Printexc.get_raw_backtrace () in
+      let interrupted = Qmljs_runtime.interrupt_requested runtime in
+      clear_timeout_state ();
       (* Reclaim any promise jobs a hostile script queued so the runtime can
          recover memory after an interrupt or out-of-memory failure. *)
-      Qmljs_runtime.reclaim_pending_jobs runtime)
-    (fun () ->
-      match f () with
-      | result ->
-          if Qmljs_runtime.interrupt_requested runtime then
-            Qmljs_error.raise_timeout timeout_error;
-          result
-      | exception exn ->
-          let interrupted = Qmljs_runtime.interrupt_requested runtime in
-          if interrupted then
-            Qmljs_error.raise_timeout timeout_error;
-          raise exn)
+      Qmljs_runtime.reclaim_pending_jobs runtime;
+      if interrupted then
+        Qmljs_error.raise_timeout timeout_error;
+      Printexc.raise_with_backtrace exn backtrace
 
 let eval_with_timeout ~timeout ?filename ?strict ?async ?module_
     ?backtrace_barrier t source =
