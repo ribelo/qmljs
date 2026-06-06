@@ -27,3 +27,7 @@
  (libraries qmljs eio_main qmljs_ppx_interface)
  (preprocess
   (pps qmljs_ppx)))
+
+(test
+ (name test_qmljs_bug_hunt)
+ (libraries qmljs eio_main))
