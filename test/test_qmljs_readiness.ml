@@ -193,6 +193,34 @@ let test_class_finalizer_cannot_reenter_quickjs () =
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_class_finalizer_runs_during_context_close () =
+  let context_finalized = ref 0 in
+  let context_instance = ref None in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   Qmljs.Context.with_ runtime (fun context ->
+     let instance_class =
+       Qmljs.Class.create context ~name:"ContextCloseFinalizer"
+         ~finalize:(fun n -> context_finalized := !context_finalized + n)
+     in
+     context_instance := Some (Qmljs.Class.instance instance_class 7);
+     check_int "context-close finalizer does not run early" 0
+       !context_finalized);
+   check_int "context close drains class finalizer" 7 !context_finalized);
+  context_instance := None;
+  let runtime_finalized = ref 0 in
+  let runtime_instance = ref None in
+  let runtime = Qmljs.Runtime.create () in
+  let context = Qmljs.Context.create runtime in
+  let instance_class =
+    Qmljs.Class.create context ~name:"RuntimeCloseFinalizer"
+      ~finalize:(fun n -> runtime_finalized := !runtime_finalized + n)
+  in
+  runtime_instance := Some (Qmljs.Class.instance instance_class 11);
+  check_int "runtime-close finalizer does not run early" 0 !runtime_finalized;
+  ignore (test_runtime_close runtime : bool);
+  check_int "runtime close drains class finalizer" 11 !runtime_finalized;
+  runtime_instance := None
+
 let test_rejected_module_eval_leaks () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   let source =
@@ -573,6 +601,7 @@ let () =
   test_close_races_gc_finalizers_without_uaf ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_class_finalizer_cannot_reenter_quickjs ();
+  test_class_finalizer_runs_during_context_close ();
   test_rejected_module_eval_leaks ();
   test_rejected_module_eval_frees_eval_result ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();

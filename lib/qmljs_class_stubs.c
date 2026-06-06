@@ -94,16 +94,19 @@ static void qmljs_defer_class_finalizer(struct qmljs_class_instance *instance)
     memory_order_acquire));
 }
 
-void qmljs_drain_class_finalizers(struct qmljs_runtime_state *state)
+int qmljs_drain_class_finalizers(struct qmljs_runtime_state *state)
 {
+  int drained = 0;
   struct qmljs_class_instance *instances = atomic_exchange_explicit(
     &state->deferred_class_finalizers, NULL, memory_order_acquire);
   while (instances != NULL) {
     struct qmljs_class_instance *next = instances->next_finalizer;
     instances->next_finalizer = NULL;
     qmljs_class_instance_release(instances, 1);
+    drained = 1;
     instances = next;
   }
+  return drained;
 }
 
 static void qmljs_class_instance_finalizer(JSRuntime *rt, JSValueConst js_value)

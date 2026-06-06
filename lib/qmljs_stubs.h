@@ -112,7 +112,7 @@ void qmljs_ensure_same_context(value context, value wrapped);
 void qmljs_ensure_atom_runtime(struct qmljs_runtime_state *expected, value wrapped);
 void qmljs_drain_deferred(struct qmljs_runtime_state *state);
 void qmljs_drain_deferred_runtimes(void);
-void qmljs_drain_class_finalizers(struct qmljs_runtime_state *state);
+int qmljs_drain_class_finalizers(struct qmljs_runtime_state *state);
 void qmljs_enter_ocaml_callback(struct qmljs_runtime_state *state);
 void qmljs_leave_ocaml_callback(struct qmljs_runtime_state *state);
 JSValue qmljs_new_error_marker(JSContext *ctx);

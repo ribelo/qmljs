@@ -601,9 +601,10 @@ static void qmljs_release_context_for_scope(struct qmljs_context_handle *handle)
   }
 }
 
-static void qmljs_release_context_values_for_scope(
+static int qmljs_release_context_values_for_scope(
   struct qmljs_runtime_state *state, struct qmljs_context_handle *context)
 {
+  int released = 0;
   int claimed;
   do {
     JSValue value = JS_UNDEFINED;
@@ -620,13 +621,16 @@ static void qmljs_release_context_values_for_scope(
     }
     qmljs_unlock_lists(state);
     if (claimed) {
+      released = 1;
       qmljs_release_claimed_value(state, value);
     }
   } while (claimed);
+  return released;
 }
 
-static void qmljs_release_all_values_for_scope(struct qmljs_runtime_state *state)
+static int qmljs_release_all_values_for_scope(struct qmljs_runtime_state *state)
 {
+  int released = 0;
   int claimed;
   do {
     JSValue value = JS_UNDEFINED;
@@ -642,9 +646,33 @@ static void qmljs_release_all_values_for_scope(struct qmljs_runtime_state *state
     }
     qmljs_unlock_lists(state);
     if (claimed) {
+      released = 1;
       qmljs_release_claimed_value(state, value);
     }
   } while (claimed);
+  return released;
+}
+
+static void qmljs_release_context_values_and_class_finalizers_for_scope(
+  struct qmljs_runtime_state *state, struct qmljs_context_handle *context)
+{
+  int released;
+  int drained;
+  do {
+    released = qmljs_release_context_values_for_scope(state, context);
+    drained = qmljs_drain_class_finalizers(state);
+  } while (released || drained);
+}
+
+static void qmljs_release_all_values_and_class_finalizers_for_scope(
+  struct qmljs_runtime_state *state)
+{
+  int released;
+  int drained;
+  do {
+    released = qmljs_release_all_values_for_scope(state);
+    drained = qmljs_drain_class_finalizers(state);
+  } while (released || drained);
 }
 
 static void qmljs_release_all_atoms_for_scope(struct qmljs_runtime_state *state)
@@ -801,9 +829,10 @@ int qmljs_runtime_free_native(struct qmljs_runtime_state *state)
     return 0;
   }
   qmljs_drain_deferred(state);
-  qmljs_release_all_values_for_scope(state);
+  qmljs_release_all_values_and_class_finalizers_for_scope(state);
   qmljs_release_all_atoms_for_scope(state);
   qmljs_release_all_contexts_for_scope(state);
+  qmljs_drain_class_finalizers(state);
   if (atomic_load_explicit(&state->open_contexts, memory_order_acquire) != 0
       || atomic_load_explicit(&state->live_values, memory_order_acquire) != 0
       || atomic_load_explicit(&state->live_atoms, memory_order_acquire) != 0) {
@@ -1027,8 +1056,9 @@ int qmljs_context_close_native(value context)
     return 0;
   }
   qmljs_drain_deferred(state);
-  qmljs_release_context_values_for_scope(state, handle);
+  qmljs_release_context_values_and_class_finalizers_for_scope(state, handle);
   qmljs_release_context_for_scope(handle);
+  qmljs_drain_class_finalizers(state);
   return 1;
 }
 

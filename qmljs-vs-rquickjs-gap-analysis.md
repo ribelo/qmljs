@@ -53,6 +53,8 @@ Keep this as an OCaml API gap:
   release path.
 - [x] Run host class finalizer callbacks outside QuickJS finalizer frames so
   user OCaml cannot re-enter QuickJS while QuickJS is finalizing an object.
+- [x] Drain class finalizers queued by deterministic context/runtime close before
+  tearing down the owning context or runtime.
 - [x] Runtime close enforces owner-domain access before touching QuickJS runtime
   state or promise hooks.
 
