@@ -113,6 +113,8 @@ JSValueConst *qml_alloc_argv(size_t argc);
 void qml_free_argv(JSValueConst *argv);
 void qml_argv_set(value context, JSValueConst *argv, size_t index,
                   value wrapped);
+int qml_set_property_ocaml_string(JSContext *ctx, JSValueConst object,
+                                  value name, JSValue property_value);
 
 /* Refcounted state lifetime. */
 void qml_state_ref(struct qml_runtime_state *state);

@@ -302,7 +302,7 @@ CAMLprim value qml_context_set_global(value context, value name, value wrapped)
     qml_raise_exception(ctx);
   }
   JSValue property_value = JS_DupValue(ctx, qml_js_value(wrapped));
-  int result = JS_SetPropertyStr(ctx, global, String_val(name), property_value);
+  int result = qml_set_property_ocaml_string(ctx, global, name, property_value);
   JS_FreeValue(ctx, global);
   if (result < 0) {
     qml_raise_exception(ctx);

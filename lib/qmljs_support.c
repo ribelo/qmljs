@@ -64,6 +64,19 @@ void qml_argv_set(value context, JSValueConst *argv, size_t index,
   argv[index] = js_value;
 }
 
+int qml_set_property_ocaml_string(JSContext *ctx, JSValueConst object,
+                                  value name, JSValue property_value)
+{
+  JSAtom atom = JS_NewAtomLen(ctx, String_val(name), caml_string_length(name));
+  if (atom == JS_ATOM_NULL) {
+    JS_FreeValue(ctx, property_value);
+    return -1;
+  }
+  int result = JS_SetProperty(ctx, object, atom, property_value);
+  JS_FreeAtom(ctx, atom);
+  return result;
+}
+
 struct qml_context_handle {
   struct qml_runtime_state *state;
   JSContext *ctx;

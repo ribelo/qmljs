@@ -91,8 +91,8 @@ CAMLprim value qml_object_set(value context, value object, value name, value wra
   qml_ensure_same_context(context, object);
   qml_ensure_same_context(context, wrapped);
   JSValue property_value = JS_DupValue(ctx, qml_js_value(wrapped));
-  int result =
-    JS_SetPropertyStr(ctx, qml_js_value(object), String_val(name), property_value);
+  int result = qml_set_property_ocaml_string(ctx, qml_js_value(object), name,
+                                             property_value);
   if (result < 0) {
     qml_raise_exception(ctx);
   }
@@ -1024,9 +1024,42 @@ CAMLprim value qml_symbol_global(value context, value description)
   CAMLparam2(context, description);
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
-  JSValue result = JS_NewSymbol(ctx, String_val(description), true);
+  JSValue global = JS_GetGlobalObject(ctx);
+  if (JS_IsException(global)) {
+    qml_raise_exception(ctx);
+  }
+  JSValue symbol = JS_GetPropertyStr(ctx, global, "Symbol");
+  JS_FreeValue(ctx, global);
+  if (JS_IsException(symbol)) {
+    qml_raise_exception(ctx);
+  }
+  JSValue for_ = JS_GetPropertyStr(ctx, symbol, "for");
+  JS_FreeValue(ctx, symbol);
+  if (JS_IsException(for_)) {
+    qml_raise_exception(ctx);
+  }
+  if (!JS_IsFunction(ctx, for_)) {
+    JS_FreeValue(ctx, for_);
+    qml_raise_string("Symbol.for is not available");
+  }
+
+  JSValue argument =
+    JS_NewStringLen(ctx, String_val(description), caml_string_length(description));
+  if (JS_IsException(argument)) {
+    JS_FreeValue(ctx, for_);
+    qml_raise_exception(ctx);
+  }
+
+  JSValueConst argv[1] = { argument };
+  JSValue result = JS_Call(ctx, for_, JS_UNDEFINED, 1, argv);
+  JS_FreeValue(ctx, argument);
+  JS_FreeValue(ctx, for_);
   if (JS_IsException(result)) {
     qml_raise_exception(ctx);
+  }
+  if (!JS_IsSymbol(result)) {
+    JS_FreeValue(ctx, result);
+    qml_raise_string("Symbol.for did not return a symbol");
   }
   CAMLreturn(qml_alloc_value(context, result));
 }

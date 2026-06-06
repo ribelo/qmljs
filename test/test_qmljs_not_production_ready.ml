@@ -115,6 +115,33 @@ let test_json_stringify_undefined_is_error_not_string () =
         "JSON.stringify returned undefined"
         (Qmljs.Error.message error))
 
+let test_nul_in_public_string_keys_is_not_silently_truncated () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let key = "a\000b" in
+  let full_key = Qmljs.Value.string context key in
+  let truncated_key = Qmljs.Value.string context "a" in
+  let object_ = Qmljs.Object.create context in
+  Qmljs.Object.set_string object_ key (Qmljs.Value.int context 42);
+  check_int "object full NUL key" 42
+    (Qmljs.Value.to_int (Qmljs.Object.get object_ ~key:full_key));
+  check_bool "object truncated NUL key is not set" true
+    (Qmljs.Value.is_undefined (Qmljs.Object.get object_ ~key:truncated_key));
+  Qmljs.Context.set_global context ~name:key (Qmljs.Value.int context 43);
+  let global = Qmljs.Context.global context in
+  check_int "global full NUL key" 43
+    (Qmljs.Value.to_int (Qmljs.Object.get global ~key:full_key));
+  check_bool "global truncated NUL key is not set" true
+    (Qmljs.Value.is_undefined (Qmljs.Object.get global ~key:truncated_key));
+  Qmljs.Context.set_global context ~name:"nulSymbol"
+    (Qmljs.Symbol.global context key);
+  check_int "global symbol NUL description length" 3
+    (Qmljs.Value.to_int
+       (Qmljs.Context.eval context "Symbol.keyFor(globalThis.nulSymbol).length"));
+  check_int "global symbol NUL description middle byte" 0
+    (Qmljs.Value.to_int
+       (Qmljs.Context.eval context "Symbol.keyFor(globalThis.nulSymbol).charCodeAt(1)"))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -437,6 +464,8 @@ let tests env =
   , test_bigint_of_string_does_not_execute_code
   ; "Json.stringify undefined is error not string"
   , test_json_stringify_undefined_is_error_not_string
+  ; "NUL in public string keys is not silently truncated"
+  , test_nul_in_public_string_keys_is_not_silently_truncated
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved
