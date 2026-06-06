@@ -69,8 +69,10 @@ static void qml_class_instance_release(struct qml_class_instance *instance,
 {
   CAMLparam0();
   if (run_finalizer && instance->klass->has_finalizer) {
+    qml_enter_ocaml_callback(instance->klass->state);
     value result = caml_callback_exn(instance->klass->finalizer,
                                      instance->payload);
+    qml_leave_ocaml_callback(instance->klass->state);
     (void)result;
   }
   caml_remove_generational_global_root(&instance->payload);

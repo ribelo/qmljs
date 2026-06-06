@@ -37,6 +37,8 @@ struct qml_runtime_state {
   atomic_int open_contexts;          /* live JSContexts not yet freed */
   atomic_int live_values;            /* live JSValues not yet freed */
   atomic_int live_atoms;             /* live JSAtoms not yet freed */
+  atomic_int ocaml_callback_depth;   /* OCaml currently entered from QuickJS */
+  atomic_int deferred_drain_depth;   /* prevents recursive deferred drains */
   atomic_flag list_lock;
   struct qml_context_handle *contexts;
   struct qml_value_handle *values;
@@ -102,6 +104,9 @@ void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped);
 void qml_ensure_same_context(value context, value wrapped);
 void qml_ensure_atom_runtime(struct qml_runtime_state *expected, value wrapped);
 void qml_drain_deferred(struct qml_runtime_state *state);
+void qml_drain_deferred_runtimes(void);
+void qml_enter_ocaml_callback(struct qml_runtime_state *state);
+void qml_leave_ocaml_callback(struct qml_runtime_state *state);
 
 /* Refcounted state lifetime. */
 void qml_state_ref(struct qml_runtime_state *state);

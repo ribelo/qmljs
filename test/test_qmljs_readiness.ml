@@ -31,6 +31,48 @@ let test_lifetime_gc_stress_has_no_quickjs_leaks () =
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_gc_finalizers_do_not_call_quickjs_reentrantly () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  let finalizers_during_host_callback = ref 0 in
+  let in_host_callback = ref false in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   Qmljs.Context.with_ runtime @@ fun context ->
+   let instance_class =
+     Qmljs.Class.create context ~name:"GcFinalizerProbe"
+       ~finalize:(fun _payload ->
+         if !in_host_callback then incr finalizers_during_host_callback)
+   in
+   let return_value = Qmljs.Value.int context 7 in
+   let allocate_short_lived_values () =
+     for i = 1 to 2_000 do
+       ignore (Qmljs.Class.instance instance_class i : Qmljs.value);
+       ignore (Qmljs.Value.string context (string_of_int i) : Qmljs.value);
+       ignore
+         (Qmljs.Atom.of_string context ("atom-" ^ string_of_int i)
+          : Qmljs.atom)
+     done
+   in
+   Qmljs.Function.set_global context ~name:"stress_gc" ~arity:0 (fun _args ->
+     Fun.protect
+       ~finally:(fun () -> in_host_callback := false)
+       (fun () ->
+         in_host_callback := true;
+         allocate_short_lived_values ();
+         Gc.full_major ();
+         Gc.full_major ();
+         ignore (Qmljs.Value.int context 11 : Qmljs.value);
+         return_value));
+   let result =
+     Qmljs.Context.eval context
+       "let total = 0; for (let i = 0; i < 100; i++) total += stress_gc(); total"
+   in
+   check_int "stress loop result" 700 (Qmljs.Value.to_int result);
+   check_int "QuickJS finalizer ran while QuickJS was reentrant" 0
+     !finalizers_during_host_callback;
+   ignore (Qmljs.Context.eval context "undefined" : Qmljs.value));
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -178,6 +220,7 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
 let () =
   Eio_main.run @@ fun env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
+  test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();

@@ -940,6 +940,7 @@ let test_host_class_api () =
   in
   make_finalized_instance ();
   ignore (Qmljs.Diagnostics.snapshot () : Qmljs.Diagnostics.snapshot);
+  ignore (Qmljs.Context.eval context "undefined" : Qmljs.Value.t);
   check_int "class finalizer runs on release" 5 !finalized
 
 let test_iterable_api () =

@@ -368,6 +368,7 @@ static JSValue qml_host_call_callback(JSContext *ctx,
                 qml_alloc_value(callback->context, JS_DupValue(ctx, argv[i])));
   }
 
+  qml_enter_ocaml_callback(state);
   if (callback->mode == 0) {
     result = caml_callback_exn(callback->fn, args);
   } else {
@@ -376,6 +377,7 @@ static JSValue qml_host_call_callback(JSContext *ctx,
       qml_optional_wrapped_new_target(callback->context, ctx, new_target);
     result = caml_callback3_exn(callback->fn, this_, args, new_target_option);
   }
+  qml_leave_ocaml_callback(state);
 
   if (Is_exception_result(result)) {
     JSValue exception =

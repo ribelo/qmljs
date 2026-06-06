@@ -27,6 +27,14 @@ struct qml_deferred_context {
   struct qml_deferred_context *next;
 };
 
+struct qml_deferred_runtime {
+  struct qml_runtime_state *state;
+  struct qml_deferred_runtime *next;
+};
+
+static _Atomic(struct qml_deferred_runtime *) qml_deferred_runtimes;
+static atomic_int qml_deferred_runtime_drain_depth;
+
 struct qml_context_handle {
   struct qml_runtime_state *state;
   JSContext *ctx;
@@ -181,6 +189,27 @@ void qml_state_unref(struct qml_runtime_state *state)
   }
 }
 
+void qml_enter_ocaml_callback(struct qml_runtime_state *state)
+{
+  atomic_fetch_add_explicit(&state->ocaml_callback_depth, 1,
+                            memory_order_relaxed);
+}
+
+void qml_leave_ocaml_callback(struct qml_runtime_state *state)
+{
+  atomic_fetch_sub_explicit(&state->ocaml_callback_depth, 1,
+                            memory_order_relaxed);
+}
+
+static int qml_can_release_now(struct qml_runtime_state *state)
+{
+  return state != NULL && Caml_state == state->owner_domain &&
+         atomic_load_explicit(&state->ocaml_callback_depth,
+                              memory_order_acquire) == 0 &&
+         atomic_load_explicit(&state->deferred_drain_depth,
+                              memory_order_acquire) == 0;
+}
+
 void qml_ensure_owner(struct qml_runtime_state *state)
 {
   if (state == NULL) {
@@ -197,6 +226,36 @@ void qml_ensure_owner(struct qml_runtime_state *state)
                               memory_order_acquire) == 0) {
     qml_raise_string("QuickJS runtime is closed");
   }
+}
+
+static void qml_defer_runtime(struct qml_runtime_state *state)
+{
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      == 0) {
+    return;
+  }
+  struct qml_deferred_runtime *node =
+    caml_stat_alloc(sizeof(struct qml_deferred_runtime));
+  node->state = state;
+  qml_state_ref(state);
+  struct qml_deferred_runtime *head =
+    atomic_load_explicit(&qml_deferred_runtimes, memory_order_acquire);
+  do {
+    node->next = head;
+  } while (!atomic_compare_exchange_weak_explicit(
+    &qml_deferred_runtimes, &head, node, memory_order_release,
+    memory_order_acquire));
+}
+
+static void qml_requeue_deferred_runtime(struct qml_deferred_runtime *node)
+{
+  struct qml_deferred_runtime *head =
+    atomic_load_explicit(&qml_deferred_runtimes, memory_order_acquire);
+  do {
+    node->next = head;
+  } while (!atomic_compare_exchange_weak_explicit(
+    &qml_deferred_runtimes, &head, node, memory_order_release,
+    memory_order_acquire));
 }
 
 static void qml_defer_value(struct qml_runtime_state *state, JSValue value)
@@ -373,9 +432,16 @@ static void qml_release_all_contexts_for_scope(struct qml_runtime_state *state)
 
 void qml_drain_deferred(struct qml_runtime_state *state)
 {
-  if (state == NULL || Caml_state != state->owner_domain) {
-    /* Finalizers may run on any domain; only the owner domain may touch
-       QuickJS. Leave the queues for the owner to drain. */
+  if (!qml_can_release_now(state)) {
+    /* Finalizers may run on any domain, and also while QuickJS is already on
+       the C stack underneath an OCaml callback. Leave the queues for a
+       non-reentrant owner-domain boundary. */
+    return;
+  }
+  if (atomic_fetch_add_explicit(&state->deferred_drain_depth, 1,
+                                memory_order_acq_rel) != 0) {
+    atomic_fetch_sub_explicit(&state->deferred_drain_depth, 1,
+                              memory_order_acq_rel);
     return;
   }
 
@@ -427,7 +493,37 @@ void qml_drain_deferred(struct qml_runtime_state *state)
     contexts = next;
   }
 
+  atomic_fetch_sub_explicit(&state->deferred_drain_depth, 1,
+                            memory_order_acq_rel);
   qml_state_unref(state);
+}
+
+void qml_drain_deferred_runtimes(void)
+{
+  if (atomic_fetch_add_explicit(&qml_deferred_runtime_drain_depth, 1,
+                                memory_order_acq_rel) != 0) {
+    atomic_fetch_sub_explicit(&qml_deferred_runtime_drain_depth, 1,
+                              memory_order_acq_rel);
+    return;
+  }
+
+  struct qml_deferred_runtime *runtimes =
+    atomic_exchange_explicit(&qml_deferred_runtimes, NULL,
+                             memory_order_acquire);
+  while (runtimes != NULL) {
+    struct qml_deferred_runtime *next = runtimes->next;
+    if (qml_can_release_now(runtimes->state) &&
+        qml_runtime_free_native(runtimes->state)) {
+      qml_state_unref(runtimes->state);
+      caml_stat_free(runtimes);
+    } else {
+      qml_requeue_deferred_runtime(runtimes);
+    }
+    runtimes = next;
+  }
+
+  atomic_fetch_sub_explicit(&qml_deferred_runtime_drain_depth, 1,
+                            memory_order_acq_rel);
 }
 
 int qml_runtime_free_native(struct qml_runtime_state *state)
@@ -435,6 +531,9 @@ int qml_runtime_free_native(struct qml_runtime_state *state)
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
       == 0) {
     return 1;
+  }
+  if (!qml_can_release_now(state)) {
+    return 0;
   }
   qml_drain_deferred(state);
   qml_release_all_values_for_scope(state);
@@ -465,10 +564,8 @@ static void qml_runtime_finalize(value v)
   if (state == NULL) {
     return;
   }
-  if (Caml_state == state->owner_domain) {
-    qml_drain_deferred(state);
-    (void)qml_runtime_free_native(state);
-  }
+  atomic_store_explicit(&state->closed_to_user, 1, memory_order_release);
+  qml_defer_runtime(state);
   runtime->state = NULL;
   qml_state_unref(state);
 }
@@ -484,14 +581,7 @@ static void qml_context_finalize(value v)
   struct qml_runtime_state *state = handle->state;
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
     qml_unlink_context(state, handle);
-    if (Caml_state == state->owner_domain &&
-        atomic_load_explicit(&state->native_runtime_alive,
-                             memory_order_acquire) != 0) {
-      JS_FreeContext(handle->ctx);
-      atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
-    } else {
-      qml_defer_context(state, handle->ctx);
-    }
+    qml_defer_context(state, handle->ctx);
   }
   context->handle = NULL;
   qml_state_unref(state);
@@ -509,14 +599,7 @@ static void qml_value_finalize(value v)
   struct qml_runtime_state *state = handle->state;
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
     qml_unlink_value(state, handle);
-    if (Caml_state == state->owner_domain &&
-        atomic_load_explicit(&state->native_runtime_alive,
-                             memory_order_acquire) != 0) {
-      JS_FreeValueRT(state->rt, handle->value);
-      atomic_fetch_sub_explicit(&state->live_values, 1, memory_order_relaxed);
-    } else {
-      qml_defer_value(state, handle->value);
-    }
+    qml_defer_value(state, handle->value);
   }
   wrapped->handle = NULL;
   qml_state_unref(state);
@@ -533,14 +616,7 @@ static void qml_atom_finalize(value v)
   struct qml_runtime_state *state = handle->state;
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
     qml_unlink_atom(state, handle);
-    if (Caml_state == state->owner_domain &&
-        atomic_load_explicit(&state->native_runtime_alive,
-                             memory_order_acquire) != 0) {
-      JS_FreeAtomRT(state->rt, handle->atom);
-      atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
-    } else {
-      qml_defer_atom(state, handle->atom);
-    }
+    qml_defer_atom(state, handle->atom);
   }
   wrapped->handle = NULL;
   qml_state_unref(state);
@@ -677,6 +753,9 @@ int qml_context_close_native(value context)
   }
   struct qml_runtime_state *state = handle->state;
   qml_ensure_owner(state);
+  if (!qml_can_release_now(state)) {
+    return 0;
+  }
   qml_drain_deferred(state);
   qml_release_context_values_for_scope(state, handle);
   qml_release_context_for_scope(handle);
@@ -1072,6 +1151,7 @@ JSRuntime *qml_runtime(value runtime)
 {
   struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
   qml_ensure_owner(state);
+  qml_drain_deferred_runtimes();
   qml_drain_deferred(state);
   return state->rt;
 }
@@ -1088,6 +1168,7 @@ JSContext *qml_context(value context)
       handle->ctx == NULL) {
     qml_raise_string("QuickJS context is closed");
   }
+  qml_drain_deferred_runtimes();
   qml_drain_deferred(handle->state);
   return handle->ctx;
 }

@@ -5,6 +5,7 @@
 #include <time.h>
 
 struct qml_module_loader {
+  struct qml_runtime_state *state;
   value deny;
   value normalize;
   value load;
@@ -24,6 +25,7 @@ struct qml_promise_hook_event {
 };
 
 struct qml_native_module_data {
+  struct qml_runtime_state *state;
   value evaluate;
 };
 
@@ -65,6 +67,7 @@ static JSValue qml_throw_marked_error(JSContext *ctx, const char *message,
 static void qml_native_module_data_free(struct qml_native_module_data *data)
 {
   caml_remove_generational_global_root(&data->evaluate);
+  qml_state_unref(data->state);
   caml_stat_free(data);
 }
 
@@ -141,7 +144,9 @@ static int qml_native_module_eval(JSContext *ctx, JSModuleDef *module)
   }
 
   exports = qml_alloc_native_exports(ctx, module);
+  qml_enter_ocaml_callback(data->state);
   result = caml_callback_exn(data->evaluate, exports);
+  qml_leave_ocaml_callback(data->state);
   JS_FreeValue(ctx, private_value);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
@@ -189,6 +194,8 @@ CAMLprim value qml_module_declare_native(value context, value name,
 
   struct qml_native_module_data *data =
     caml_stat_alloc(sizeof(struct qml_native_module_data));
+  data->state = qml_context_state(context);
+  qml_state_ref(data->state);
   data->evaluate = evaluate;
   caml_register_generational_global_root(&data->evaluate);
 
@@ -237,7 +244,9 @@ static int qml_module_loader_denies(JSContext *ctx,
   CAMLparam0();
   CAMLlocal1(arg);
   arg = caml_copy_string(module_name);
+  qml_enter_ocaml_callback(loader->state);
   value result = caml_callback_exn(loader->deny, arg);
+  qml_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -342,8 +351,10 @@ static char *qml_module_loader_normalize(JSContext *ctx,
     CAMLreturnT(char *, NULL);
   }
 
+  qml_enter_ocaml_callback(loader->state);
   value result =
     caml_callback3_exn(loader->normalize, base, specifier, roots[8]);
+  qml_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -527,7 +538,9 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
+  qml_enter_ocaml_callback(loader->state);
   result = caml_callback2_exn(loader->load, roots[0], roots[1]);
+  qml_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -598,6 +611,7 @@ static int qml_interrupt_handler(JSRuntime *rt, void *opaque)
 CAMLprim value qml_runtime_create(value unit)
 {
   CAMLparam1(unit);
+  qml_drain_deferred_runtimes();
   struct qml_runtime_state *state =
     caml_stat_alloc(sizeof(struct qml_runtime_state));
   atomic_init(&state->refs, 1); /* the runtime wrapper's reference */
@@ -608,6 +622,8 @@ CAMLprim value qml_runtime_create(value unit)
   atomic_init(&state->open_contexts, 0);
   atomic_init(&state->live_values, 0);
   atomic_init(&state->live_atoms, 0);
+  atomic_init(&state->ocaml_callback_depth, 0);
+  atomic_init(&state->deferred_drain_depth, 0);
   atomic_flag_clear(&state->list_lock);
   state->contexts = NULL;
   state->values = NULL;
@@ -965,6 +981,7 @@ CAMLprim value qml_runtime_install_module_loader(value runtime, value deny,
 
   struct qml_module_loader *loader =
     caml_stat_alloc(sizeof(struct qml_module_loader));
+  loader->state = state;
   loader->deny = deny;
   loader->normalize = normalize;
   loader->load = load;
