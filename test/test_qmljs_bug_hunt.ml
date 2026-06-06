@@ -200,6 +200,69 @@ let test_async_eval_unwraps_result () =
   let result = Qmljs.Promise.await promise in
   check_int "async eval completion value" 42 (Qmljs.Value.to_int result)
 
+(* BUG 7 — the int-precision fix made Value.int produce a BigInt, so to_float
+   is no longer total.
+
+   [Value.to_float : t -> float] is presented as a total numeric conversion, and
+   a value produced by the library's own [Value.int] constructor must be
+   convertible by it. The "preserve unsafe ocaml ints" fix now builds a JS
+   BigInt whenever |n| > 2^53, and [to_float] (JS_ToFloat64) cannot implicitly
+   coerce a BigInt, so this raises "cannot convert BigInt to number" instead of
+   returning the nearest double. Number(9007199254740993n) === 9007199254740992,
+   so [to_float] must return 9007199254740992.0. *)
+let test_int_to_float_is_total () =
+  with_context @@ fun _runtime context ->
+  let v = Qmljs.Value.int context 9007199254740993 in
+  match Qmljs.Value.to_float v with
+  | f ->
+      if f <> 9007199254740992.0 then
+        fail
+          (Printf.sprintf "to_float (int 2^53+1): expected 9007199254740992.0, got %.1f"
+             f)
+  | exception exn ->
+      fail
+        (Printf.sprintf "to_float (int 2^53+1) raised instead of converting: %s"
+           (Printexc.to_string exn))
+
+(* BUG 8 — the number decoder rejects values the number encoder produced.
+
+   [Value.as_float] is the decoder for JS numbers, and [Value.int] is a number
+   encoder. [as_float (int n)] must round-trip for any [n]. Because the fix
+   makes [int] build a BigInt for |n| > 2^53, and [as_float] only accepts the
+   [Int]/[Float] kinds, [as_float (int 2^53+1)] returns Error "expected number".
+   Encoder and decoder for the same logical type must agree. *)
+let test_as_float_accepts_int_encoded_value () =
+  with_context @@ fun _runtime context ->
+  let v = Qmljs.Value.int context 9007199254740993 in
+  match Qmljs.Value.as_float v with
+  | Ok f ->
+      if f <> 9007199254740992.0 then
+        fail (Printf.sprintf "as_float (int 2^53+1): unexpected %.1f" f)
+  | Error e ->
+      fail
+        ("as_float rejected a value produced by Value.int: "
+        ^ Qmljs.Error.message e)
+
+(* BUG 9 — a value from Value.int cannot be used in ordinary JS arithmetic.
+
+   [Value.int] is the JS-number constructor; a number handed to JS must take
+   part in normal arithmetic. After the fix, [int] builds a BigInt for large
+   magnitudes, and JS forbids mixing BigInt with Number, so [x + 1] throws
+   "cannot convert BigInt to number". Adding 1 to an integer must not throw, and
+   the result must still be a number (not a BigInt). *)
+let test_int_value_arithmetic_in_js () =
+  with_context @@ fun _runtime context ->
+  Qmljs.Context.set_global context ~name:"x"
+    (Qmljs.Value.int context 9007199254740993);
+  match Qmljs.Error.capture (fun () -> Qmljs.Context.eval context "x + 1") with
+  | Error e ->
+      fail ("x + 1 raised for a Value.int operand: " ^ Qmljs.Error.message e)
+  | Ok result ->
+      (match Qmljs.Value.kind result with
+       | Qmljs.Value.Bigint ->
+           fail "x + 1 produced a BigInt; Value.int should yield a JS number"
+       | _ -> ())
+
 let tests =
   [ "int_roundtrip_precision", test_int_roundtrip_precision
   ; "int_max_int_roundtrip", test_int_max_int_roundtrip
@@ -209,6 +272,9 @@ let tests =
   ; "stack_overflow_classified", test_stack_overflow_classified
   ; "class_finalizers_run_after_gc", test_class_finalizers_run_after_gc
   ; "async_eval_unwraps_result", test_async_eval_unwraps_result
+  ; "int_to_float_is_total", test_int_to_float_is_total
+  ; "as_float_accepts_int_encoded_value", test_as_float_accepts_int_encoded_value
+  ; "int_value_arithmetic_in_js", test_int_value_arithmetic_in_js
   ]
 
 let () =
