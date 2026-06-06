@@ -152,6 +152,8 @@ Keep these loader gaps:
   metadata, cause chains, and OCaml frame data.
 - [x] Module loader normalized names and dynamic-import base/specifier strings
   reject NUL before crossing QuickJS C-string boundaries.
+- [x] Replacing the module loader is rejected while a deny, normalize, or load
+  callback is active, so the active C loader cannot be freed reentrantly.
 
 Do not keep rquickjs tuple composition, PHF bundle loaders, compile-time bundle
 macros, or native dynamic-library loading as qmljs gaps.

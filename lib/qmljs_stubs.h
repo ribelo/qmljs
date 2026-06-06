@@ -61,6 +61,7 @@ struct qmljs_runtime_state {
   int native_module_class_registered;
   JSClassID error_marker_class_id;
   int error_marker_class_registered;
+  atomic_int module_loader_callback_depth;
   _Atomic(struct qmljs_deferred_value *) deferred_values;
   _Atomic(struct qmljs_deferred_atom *) deferred_atoms;
   _Atomic(struct qmljs_deferred_context *) deferred_contexts;

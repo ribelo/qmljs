@@ -391,7 +391,6 @@ let enqueue_host_job ?on_cancel t run =
   signal_driver t
 
 let set_module_loader t loader =
-  t.Qmljs_types.module_loader <- Some loader;
   Hashtbl.clear loader.Qmljs_types.requests;
   let attributes_to_list (attributes : (string * string) array) =
     Array.to_list attributes
@@ -510,4 +509,5 @@ let set_module_loader t loader =
     (Qmljs_types.runtime_raw t)
     deny
     normalize
-    load
+    load;
+  t.Qmljs_types.module_loader <- Some loader

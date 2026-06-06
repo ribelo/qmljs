@@ -265,6 +265,56 @@ let test_loader_request_base_and_original_specifier_do_not_go_stale () =
   check_int "context reusable after loader request identity conflicts" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
 
+let test_module_loader_reentrant_replace_is_safe () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let replacement specifier =
+    Qmljs.Module.Loader.memory [ specifier, "export default 99;" ]
+  in
+  let replace specifier =
+    Qmljs.Runtime.set_module_loader runtime (replacement specifier)
+  in
+  let expect_reentrant_defect label specifier loader =
+    Qmljs.Runtime.set_module_loader runtime loader;
+    expect_structured_error label
+      (fun () ->
+        ignore
+          (Qmljs.Module.eval
+             ~filename:(label ^ ".js")
+             context
+             (Printf.sprintf "import value from %S; export default value;"
+                specifier)
+           : Qmljs.Module.namespace))
+      (fun error ->
+        check_kind (label ^ " kind")
+          Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+        check_string (label ^ " message")
+          "cannot replace module loader during module loader callback"
+          (Qmljs.Error.message error));
+    check_int (label ^ " context reusable") 2
+      (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+  in
+  expect_reentrant_defect "module loader normalize reentrant replacement"
+    "normalize-dep.js"
+    (Qmljs.Module.Loader.callback
+       ~normalize:(fun ~base:_ ~specifier ~attributes:_ ->
+         replace specifier;
+         Ok specifier)
+       ~load:(fun _request -> Ok (Some "export default 7;")));
+  expect_reentrant_defect "module loader deny reentrant replacement"
+    "deny-dep.js"
+    (Qmljs.Module.Loader.memory [ "deny-dep.js", "export default 7;" ]
+     |> Qmljs.Module.Loader.deny (fun specifier ->
+       replace specifier;
+       false));
+  expect_reentrant_defect "module loader load reentrant replacement"
+    "load-dep.js"
+    (Qmljs.Module.Loader.callback
+       ~normalize:(fun ~base:_ ~specifier ~attributes:_ -> Ok specifier)
+       ~load:(fun request ->
+         replace request.Qmljs.Module.Loader.normalized;
+         Ok (Some "export default 7;")))
+
 let test_module_normalize_rejects_nul_normalized_specifier () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -549,6 +599,8 @@ let tests =
   , test_loader_request_attributes_are_per_import_not_stale
   ; "loader request base and original specifier do not go stale"
   , test_loader_request_base_and_original_specifier_do_not_go_stale
+  ; "module loader reentrant replacement is safe"
+  , test_module_loader_reentrant_replace_is_safe
   ; "module normalize rejects NUL normalized specifier"
   , test_module_normalize_rejects_nul_normalized_specifier
   ; "json import attribute does not execute JS source"

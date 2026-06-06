@@ -11,6 +11,23 @@ struct qmljs_module_loader {
   value load;
 };
 
+static struct qmljs_runtime_state *qmljs_module_loader_enter(
+  struct qmljs_module_loader *loader)
+{
+  struct qmljs_runtime_state *state = loader->state;
+  atomic_fetch_add_explicit(&state->module_loader_callback_depth, 1,
+                            memory_order_acq_rel);
+  qmljs_enter_ocaml_callback(state);
+  return state;
+}
+
+static void qmljs_module_loader_leave(struct qmljs_runtime_state *state)
+{
+  qmljs_leave_ocaml_callback(state);
+  atomic_fetch_sub_explicit(&state->module_loader_callback_depth, 1,
+                            memory_order_acq_rel);
+}
+
 struct qmljs_promise_rejection_event {
   value reason;
   int is_handled;
@@ -454,9 +471,9 @@ static int qmljs_module_loader_denies(JSContext *ctx,
   CAMLlocal3(arg, result_value, error);
   value result;
   arg = caml_copy_string(module_name);
-  qmljs_enter_ocaml_callback(loader->state);
+  struct qmljs_runtime_state *state = qmljs_module_loader_enter(loader);
   result = caml_callback_exn(loader->deny, arg);
-  qmljs_leave_ocaml_callback(loader->state);
+  qmljs_module_loader_leave(state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -575,10 +592,10 @@ static char *qmljs_module_loader_normalize(JSContext *ctx,
     CAMLreturnT(char *, NULL);
   }
 
-  qmljs_enter_ocaml_callback(loader->state);
+  struct qmljs_runtime_state *state = qmljs_module_loader_enter(loader);
   value result =
     caml_callback3_exn(loader->normalize, base, specifier, roots[8]);
-  qmljs_leave_ocaml_callback(loader->state);
+  qmljs_module_loader_leave(state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -778,9 +795,9 @@ static JSModuleDef *qmljs_load_module(JSContext *ctx, const char *module_name,
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
-  qmljs_enter_ocaml_callback(loader->state);
+  struct qmljs_runtime_state *state = qmljs_module_loader_enter(loader);
   result = caml_callback2_exn(loader->load, roots[0], roots[1]);
-  qmljs_leave_ocaml_callback(loader->state);
+  qmljs_module_loader_leave(state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
     (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
@@ -875,6 +892,7 @@ CAMLprim value qmljs_runtime_create(value unit)
   state->native_module_class_registered = 0;
   state->error_marker_class_id = 0;
   state->error_marker_class_registered = 0;
+  atomic_init(&state->module_loader_callback_depth, 0);
   atomic_init(&state->deferred_values, NULL);
   atomic_init(&state->deferred_atoms, NULL);
   atomic_init(&state->deferred_contexts, NULL);
@@ -1221,6 +1239,11 @@ CAMLprim value qmljs_runtime_install_module_loader(value runtime, value deny,
   CAMLparam4(runtime, deny, normalize, load);
   JSRuntime *rt = qmljs_runtime(runtime);
   struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  if (atomic_load_explicit(&state->module_loader_callback_depth,
+                           memory_order_acquire) != 0) {
+    qmljs_raise_string(
+      "cannot replace module loader during module loader callback");
+  }
   qmljs_module_loader_free(state);
 
   struct qmljs_module_loader *loader =
