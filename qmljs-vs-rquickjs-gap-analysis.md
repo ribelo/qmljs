@@ -149,9 +149,11 @@ Keep these loader gaps:
   root.
 - [x] Repeated imports that normalize to the same module reject incompatible
   import attributes instead of reusing stale request metadata.
-- [x] Callback and fallback loaders reject repeated exact-load requests that
-  normalize to the same module but differ by original specifier or base, instead
-  of letting load observe stale request metadata.
+- [x] Callback loaders reject repeated exact-load requests that normalize to the
+  same module but differ by original specifier or base, instead of letting load
+  observe stale request metadata.
+- [x] Fallback loaders preserve the selected child loader's normalized identity,
+  so aliases that resolve to the same child module share one module record.
 - [x] Loader normalize, load, and deny callback failures preserve structured
   metadata, cause chains, and OCaml frame data.
 - [x] Module loader normalized names and dynamic-import base/specifier strings

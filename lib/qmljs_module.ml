@@ -170,35 +170,66 @@ module Loader = struct
     match loaders with
     | [] -> invalid_arg "module loader fallback requires at least one loader"
     | loaders ->
-        let load (request : request) =
+        let loaded_sources = Hashtbl.create 16 in
+        let child_identities = Hashtbl.create 16 in
+        let indexed_loaders = List.mapi (fun index loader -> index, loader) loaders in
+        let fallback_identity index normalized =
+          "qmljs:fallback:" ^ string_of_int index ^ ":" ^ normalized
+        in
+        let child_base = function
+          | None -> None
+          | Some base ->
+              (match Hashtbl.find_opt child_identities base with
+               | Some (_index, normalized) -> Some normalized
+               | None -> Some base)
+        in
+        let normalize ~base ~specifier ~attributes =
+          let base = child_base base in
           let rec loop = function
-            | [] -> Ok None
-            | loader :: rest ->
+            | [] -> filesystem_normalize ~base ~specifier ~attributes
+            | (index, loader) :: rest ->
                 (match
-                   loader.Qmljs_types.normalize
-                     ~base:request.base
-                     ~specifier:request.specifier
-                     ~attributes:request.attributes
+                   loader.Qmljs_types.normalize ~base ~specifier ~attributes
                  with
                  | Error _ as error -> error
                  | Ok normalized ->
                      if String.contains normalized '\000' then
-                       Error (Qmljs_error.Structured.of_policy request.specifier)
+                       Error (Qmljs_error.Structured.of_policy specifier)
                      else if loader.Qmljs_types.deny normalized then
                        Error (Qmljs_error.Structured.of_policy normalized)
                      else
-                       let request = { request with normalized } in
-                       (match loader.Qmljs_types.load request with
-                        | Ok None -> loop rest
-                        | Ok Some _ as result -> result
-                        | Error _ as error -> error))
+                       let fallback_normalized =
+                         fallback_identity index normalized
+                       in
+                       (match Hashtbl.find_opt loaded_sources fallback_normalized with
+                        | Some _source -> Ok fallback_normalized
+                        | None ->
+                            let request =
+                              { Qmljs_types.base
+                              ; specifier
+                              ; normalized
+                              ; attributes
+                              }
+                            in
+                            (match loader.Qmljs_types.load request with
+                             | Ok None -> loop rest
+                             | Ok Some source ->
+                                 Hashtbl.replace loaded_sources
+                                   fallback_normalized source;
+                                 Hashtbl.replace child_identities
+                                   fallback_normalized (index, normalized);
+                                 Ok fallback_normalized
+                             | Error _ as error -> error)))
           in
-          loop loaders
+          loop indexed_loaders
+        in
+        let load (request : request) =
+          Ok (Hashtbl.find_opt loaded_sources request.normalized)
         in
         { Qmljs_types.requests = Hashtbl.create 16
-        ; request_identity = Qmljs_types.Exact_request
+        ; request_identity = Qmljs_types.Normalized_request
         ; deny = (fun _ -> false)
-        ; normalize = filesystem_normalize
+        ; normalize
         ; load
         }
 end

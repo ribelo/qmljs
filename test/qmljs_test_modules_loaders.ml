@@ -452,6 +452,35 @@ let test_json_import_attribute_does_not_execute_js_source () =
   check_bool "JSON import parses object data" true
     (Qmljs.Value.to_bool (Qmljs.Module.default namespace))
 
+let test_fallback_loader_preserves_child_normalized_identity () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore (Qmljs.Context.eval context "globalThis.evaluations = 0" : Qmljs.value);
+  let child_loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier ~attributes:_ ->
+        match specifier with
+        | "alias-a" | "alias-b" -> Ok "shared"
+        | _ -> Ok specifier)
+      ~load:(fun request ->
+        if String.equal request.Qmljs.Module.Loader.normalized "shared" then
+          Ok
+            (Some
+               {|globalThis.evaluations = globalThis.evaluations + 1;
+                 export default globalThis.evaluations;|})
+        else Ok None)
+  in
+  Qmljs.Runtime.set_module_loader runtime
+    (Qmljs.Module.Loader.fallback [ child_loader ]);
+  let namespace =
+    Qmljs.Module.eval ~filename:"fallback-identity-main.js" context
+      {|import a from "alias-a";
+        import b from "alias-b";
+        export default globalThis.evaluations;|}
+  in
+  check_int "fallback child module evaluated once" 1
+    (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+
 let test_module_loader_filesystem_api () =
   with_temp_loader_dir @@ fun root ->
   mkdir (Filename.concat root "pages");
@@ -669,6 +698,8 @@ let tests =
   , test_module_normalize_rejects_nul_normalized_specifier
   ; "json import attribute does not execute JS source"
   , test_json_import_attribute_does_not_execute_js_source
+  ; "fallback loader preserves child normalized identity"
+  , test_fallback_loader_preserves_child_normalized_identity
   ; "filesystem loader does not scan root without imports"
   , test_filesystem_loader_does_not_scan_root_without_imports
   ; "filesystem loader rejects symlink escape"
