@@ -252,6 +252,7 @@ module Structured = struct
     Printexc.raise_with_backtrace (Structured_error error) backtrace
 
   let host ~message ~metadata = Host_error (message, metadata)
+  let conversion = of_conversion
   let message t = t.message
   let metadata t = t.metadata
   let cause t = t.cause

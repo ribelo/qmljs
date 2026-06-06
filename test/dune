@@ -13,3 +13,9 @@
 (test
  (name test_qmljs_more_gaps)
  (libraries qmljs eio_main unix))
+
+(test
+ (name test_qmljs_ppx)
+ (libraries qmljs eio_main qmljs_ppx_interface)
+ (preprocess
+  (pps qmljs_ppx)))

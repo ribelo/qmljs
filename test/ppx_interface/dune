@@ -1,0 +1,5 @@
+(library
+ (name qmljs_ppx_interface)
+ (libraries qmljs)
+ (preprocess
+  (pps qmljs_ppx)))

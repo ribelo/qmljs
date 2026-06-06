@@ -256,6 +256,7 @@ module Error : sig
 
   val capture : (unit -> 'a) -> ('a, t) result
   val host : message:string -> metadata:(string * string) list -> exn
+  val conversion : string -> t
   val message : t -> string
   val kind : t -> kind
   val metadata : t -> (string * string) list

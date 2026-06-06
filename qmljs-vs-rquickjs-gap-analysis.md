@@ -352,10 +352,30 @@ Keep these context gaps:
 
 Do not port rquickjs's builder traits or tuple-based intrinsic composition.
 
+## 14. PPX Bridge
+
+qmljs should expose a PPX-first workflow for ordinary OCaml/QuickJS bridging,
+similar in spirit to js_of_ocaml's PPX ergonomics but built on qmljs's explicit
+runtime, context, structured-error, and owner-domain model.
+
+Keep these PPX bridge gaps:
+
+- [x] Add a separate qmljs_ppx package so the root qmljs package does not depend
+  on ppxlib.
+- [x] Derive Qmljs.Value encoders and structured decoders for records, tuples,
+  closed variants, primitive containers, and same-module named derived types.
+- [x] Support field and constructor renaming with [@qmljs.name].
+- [x] Generate sync and async global registration functions from annotated OCaml
+  functions with explicit type annotations.
+- [x] Convert generated host callback decode failures into structured
+  Host_callback_defect errors.
+- [x] Build deriving in implementation and interface files.
+
 ## Priority Order
 
 | Priority | Gap |
 |---|---|
+| P0 | PPX bridge as the primary qmljs interface |
 | P0 | Object/property/array surface needed by ordinary JS interop |
 | P0 | Function/constructor callback shape, including structured async failures |
 | P0 | ArrayBuffer and typed array family |
