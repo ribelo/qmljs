@@ -159,20 +159,24 @@ module Structured = struct
   let of_stack_overflow () = make ~kind:Stack_overflow_kind "stack overflow"
   let of_resource_limit message = make ~kind:Resource_limit_kind message
   let of_timeout message = make ~kind:Timeout_kind message
+  let timeout_with_cause ~message cause =
+    make ~kind:Timeout_kind ~cause message
+
+  let of_exception = function
+    | Structured_error error -> error
+    | Policy_violation specifier -> of_policy specifier
+    | Out_of_memory -> of_out_of_memory ()
+    | Stack_overflow -> of_stack_overflow ()
+    | Resource_limit message -> of_resource_limit message
+    | Timeout message -> of_timeout message
+    | Host_error (message, metadata) ->
+        make ~kind:Host_callback_defect_kind ~metadata message
+    | Error message -> of_legacy_error message
+    | exn -> of_legacy_error (Printexc.to_string exn)
 
   let capture fn =
     try Stdlib.Result.Ok (fn ()) with
-    | Structured_error error -> Stdlib.Result.Error error
-    | Policy_violation specifier -> Stdlib.Result.Error (of_policy specifier)
-    | Out_of_memory -> Stdlib.Result.Error (of_out_of_memory ())
-    | Stack_overflow -> Stdlib.Result.Error (of_stack_overflow ())
-    | Resource_limit message -> Stdlib.Result.Error (of_resource_limit message)
-    | Timeout message -> Stdlib.Result.Error (of_timeout message)
-    | Host_error (message, metadata) ->
-        Stdlib.Result.Error
-          (make ~kind:Host_callback_defect_kind ~metadata message)
-    | Error message -> Stdlib.Result.Error (of_legacy_error message)
-    | exn -> Stdlib.Result.Error (of_legacy_error (Printexc.to_string exn))
+    | exn -> Stdlib.Result.Error (of_exception exn)
 
   let host ~message ~metadata = Host_error (message, metadata)
   let message t = t.message

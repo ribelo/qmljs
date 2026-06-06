@@ -51,6 +51,33 @@ let test_eval_with_timeout_does_not_drain_microtasks_on_success () =
   check_int "microtask runs after explicit drain" 1
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.hit"))
 
+let test_timeout_preserves_original_structured_stack () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  Qmljs.Function.set_global context ~name:"host_probe" ~arity:0 (fun _args ->
+      Qmljs.Value.int context 1);
+  expect_structured_error "timeout preserves structured stack"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval_with_timeout ~timeout:1.0 context
+           {|
+             function entry() {
+               return host_probe();
+             }
+             entry();
+           |}
+         : Qmljs.value))
+    (fun error ->
+      check_kind "timeout preserves kind" Qmljs.Error.Timeout
+        (Qmljs.Error.kind error);
+      let cause = Qmljs.Error.cause_exn error in
+      check_bool "timeout preserves JS frame" true
+        (Qmljs.Error.has_js_frame cause ~function_name:"entry"));
+  check_bool "timeout clears interrupt flag" false
+    (Qmljs.Runtime.interrupt_requested runtime);
+  check_int "runtime reusable after preserved timeout" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -367,6 +394,8 @@ let tests env =
   , test_sync_host_callback_timeout_is_preemptive
   ; "eval_with_timeout does not drain microtasks on success"
   , test_eval_with_timeout_does_not_drain_microtasks_on_success
+  ; "timeout preserves original structured stack"
+  , test_timeout_preserves_original_structured_stack
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved

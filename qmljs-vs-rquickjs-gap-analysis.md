@@ -315,6 +315,8 @@ Keep these context gaps:
   top-level-await behavior.
 - [x] Successful timeout-wrapped eval does not drain pending promise jobs or
   microtasks before an explicit driver/drain call.
+- [x] Timeout-wrapped eval preserves the original structured error as a cause
+  when an interrupt flag and JS exception are both present.
 - [x] Module/file eval helpers only where they add structured errors or ownership
   behavior beyond ordinary OCaml file reading.
 

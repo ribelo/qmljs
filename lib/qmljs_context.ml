@@ -107,8 +107,13 @@ let with_interrupt_timeout ~timeout runtime f =
       (* Reclaim any promise jobs a hostile script queued so the runtime can
          recover memory after an interrupt or out-of-memory failure. *)
       Qmljs_runtime.reclaim_pending_jobs runtime;
-      if interrupted then
-        Qmljs_error.raise_timeout timeout_error;
+      if interrupted then begin
+        let cause = Qmljs_error.Structured.of_exception exn in
+        Qmljs_error.Structured.raise
+          (Qmljs_error.Structured.timeout_with_cause
+             ~message:timeout_error
+             cause)
+      end;
       Printexc.raise_with_backtrace exn backtrace
 
 let eval_with_timeout ~timeout ?filename ?strict ?async ?module_
