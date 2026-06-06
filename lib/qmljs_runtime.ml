@@ -54,7 +54,10 @@ let interrupt_requested t =
 
 let drain_jobs t =
   let rec loop n =
-    if execute_pending_job t then loop (n + 1) else n
+    match t.Qmljs_types.promise_job_limit with
+    | Some limit when n >= limit ->
+        Qmljs_error.raise_resource_limit "QuickJS promise job limit exceeded"
+    | _ -> if execute_pending_job t then loop (n + 1) else n
   in
   loop 0
 

@@ -158,6 +158,19 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
         "for (;;) Promise.resolve().then(() => {})")
     (fun error ->
       check_bool "deadline or job limit" true (Qmljs.Error.is_resource_limit error));
+  expect_error "promise job drain limit"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval context
+           {|
+             Promise.resolve().then(function loop() {
+               return Promise.resolve().then(loop);
+             });
+           |}
+          : Qmljs.value);
+      ignore (Qmljs.Async.drain_jobs runtime : int))
+    (fun error ->
+      check_bool "job limit kind" true (Qmljs.Error.is_resource_limit error));
   let value = Qmljs.Context.eval context "6 * 7" in
   check_int "runtime recovers after limits" 42 (Qmljs.Value.to_int value)
 
