@@ -1442,6 +1442,32 @@ let with_temp_loader_dir fn =
       | Sys_error _ | Unix.Unix_error _ -> ())
     (fun () -> fn root)
 
+let test_filesystem_loader_rejects_symlink_escape () =
+  with_temp_loader_dir @@ fun root ->
+  let outside = Filename.temp_file "qmljs-loader-outside-" ".js" in
+  Fun.protect
+    ~finally:(fun () ->
+      try Sys.remove outside with
+      | Sys_error _ | Unix.Unix_error _ -> ())
+    (fun () ->
+      write_file outside "export default 99;";
+      Unix.symlink outside (Filename.concat root "outside.js");
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      Qmljs.Context.with_ runtime @@ fun context ->
+      let loader =
+        Qmljs.Module.Loader.filesystem ~root ~allow:(fun ~specifier:_ -> true)
+      in
+      Qmljs.Runtime.set_module_loader runtime loader;
+      expect_structured_error "filesystem loader symlink escape"
+        (fun () ->
+          ignore
+            (Qmljs.Module.eval ~filename:"symlink-main.js" context
+               {|import value from "outside.js"; export default value;|}
+             : Qmljs.Module.namespace))
+        (fun _error ->
+          check_int "context reusable after symlink escape" 2
+            (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))))
+
 let test_module_loader_filesystem_api () =
   with_temp_loader_dir @@ fun root ->
   mkdir (Filename.concat root "pages");
@@ -1684,6 +1710,8 @@ let tests =
   ; "array API", test_array_api
   ; "bigint readback API", test_bigint_readback_api
   ; "native module API", test_native_module_api
+  ; "filesystem loader rejects symlink escape"
+  , test_filesystem_loader_rejects_symlink_escape
   ; "module loader filesystem API", test_module_loader_filesystem_api
   ]
 

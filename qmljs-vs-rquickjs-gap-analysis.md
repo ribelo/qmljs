@@ -132,6 +132,8 @@ Keep these loader gaps:
   loaders.
 - [x] Tests for relative resolution, root escape denial, JSON modules, unknown
   attributes, and repeated imports.
+- [x] Filesystem loader scanning does not follow symlinks out of the configured
+  root.
 - [x] Loader callback failures preserve structured metadata, cause chains, and
   OCaml frame data.
 

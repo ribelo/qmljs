@@ -81,8 +81,10 @@ module Loader = struct
           | "" -> name
           | prefix -> prefix ^ "/" ^ name
         in
-        if Sys.is_directory path then scan specifier path
-        else Hashtbl.replace table specifier (read_file path))
+        match (Unix.lstat path).Unix.st_kind with
+        | Unix.S_DIR -> scan specifier path
+        | Unix.S_REG -> Hashtbl.replace table specifier (read_file path)
+        | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO | Unix.S_SOCK -> ())
     in
     scan "" root;
     { Qmljs_types.requests = Hashtbl.create 16
