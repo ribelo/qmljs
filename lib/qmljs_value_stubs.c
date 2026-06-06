@@ -328,6 +328,16 @@ static value qmljs_optional_wrapped_value(value context, JSContext *ctx,
   CAMLreturn(result);
 }
 
+static value qmljs_present_wrapped_value(value context, JSContext *ctx,
+                                       JSValueConst js_value)
+{
+  CAMLparam1(context);
+  CAMLlocal2(wrapped, result);
+  wrapped = qmljs_alloc_value(context, JS_DupValue(ctx, js_value));
+  result = qmljs_option(wrapped);
+  CAMLreturn(result);
+}
+
 CAMLprim value qmljs_object_get(value context, value object, value key)
 {
   CAMLparam3(context, object, key);
@@ -502,7 +512,7 @@ CAMLprim value qmljs_object_get_own_property_descriptor(value context,
 
   if ((descriptor.flags & JS_PROP_GETSET) == 0) {
     Store_field(tuple, 0,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.value));
+                qmljs_present_wrapped_value(context, ctx, descriptor.value));
     Store_field(tuple, 1,
                 qmljs_optional_bool((descriptor.flags & JS_PROP_WRITABLE) != 0));
   } else {
@@ -555,7 +565,7 @@ CAMLprim value qmljs_object_get_own_property_descriptor_atom(value context,
 
   if ((descriptor.flags & JS_PROP_GETSET) == 0) {
     Store_field(tuple, 0,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.value));
+                qmljs_present_wrapped_value(context, ctx, descriptor.value));
     Store_field(tuple, 1,
                 qmljs_optional_bool((descriptor.flags & JS_PROP_WRITABLE) != 0));
   } else {

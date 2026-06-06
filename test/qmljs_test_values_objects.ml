@@ -404,6 +404,38 @@ let test_object_property_descriptor_api () =
   check_string "descriptor behavior visible to JS" "42:true:false:99"
     (Qmljs.Value.to_string js_view)
 
+let test_descriptor_preserves_undefined_data_value () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let object_ = Qmljs.Object.create context in
+  let undefined = Qmljs.Value.undefined context in
+  let check_descriptor label (descriptor : Qmljs.Object.descriptor option) =
+    match descriptor with
+    | Some descriptor ->
+        (match descriptor.value with
+         | Some value ->
+             check_bool (label ^ " value is undefined") true
+               (Qmljs.Value.is_undefined value)
+         | None -> fail (label ^ " data descriptor lost undefined value"));
+        check_bool (label ^ " writable") true
+          (descriptor.writable = Some true);
+        check_bool (label ^ " has no getter") true
+          (Option.is_none descriptor.get);
+        check_bool (label ^ " has no setter") true
+          (Option.is_none descriptor.set)
+    | None -> fail (label ^ " descriptor missing")
+  in
+  let key = Qmljs.Value.string context "definedUndefined" in
+  Qmljs.Object.define_data_property object_ ~key ~value:undefined
+    ~writable:true ~enumerable:true ~configurable:true;
+  check_descriptor "string-key undefined descriptor"
+    (Qmljs.Object.get_own_property_descriptor object_ ~key);
+  let atom = Qmljs.Atom.of_string context "atomDefinedUndefined" in
+  Qmljs.Object.define_data_property_atom object_ ~key:atom ~value:undefined
+    ~writable:true ~enumerable:true ~configurable:true;
+  check_descriptor "atom-key undefined descriptor"
+    (Qmljs.Object.get_own_property_descriptor_atom object_ ~key:atom)
+
 let test_object_own_key_iteration_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -503,6 +535,8 @@ let tests =
   ; "closed atom is rejected", test_closed_atom_is_rejected
   ; "object prototype API", test_object_prototype_api
   ; "object property descriptor API", test_object_property_descriptor_api
+  ; "descriptor preserves undefined data value"
+  , test_descriptor_preserves_undefined_data_value
   ; "object own-key iteration API", test_object_own_key_iteration_api
   ; "proxy API", test_proxy_api
   ]
