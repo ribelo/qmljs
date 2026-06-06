@@ -257,10 +257,66 @@ let attach_driver t driver =
 let detach_driver t driver =
   if t.Qmljs_types.driver == Some driver then t.Qmljs_types.driver <- None
 
+(* [wakeup_generation] is the condition predicate. Waiters snapshot it before
+   checking promise state; signalers advance it under [mutex] before broadcast. *)
+let driver_closed driver =
+  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
+      driver.Qmljs_types.closed)
+
+let driver_wakeup_generation driver =
+  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
+      if driver.Qmljs_types.closed then None
+      else Some driver.Qmljs_types.wakeup_generation)
+
+let signal_driver_event driver =
+  Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
+      driver.Qmljs_types.wakeup_generation <-
+        driver.Qmljs_types.wakeup_generation + 1);
+  Eio.Condition.broadcast driver.Qmljs_types.condition
+
 let signal_driver t =
   match t.Qmljs_types.driver with
   | None -> ()
-  | Some driver -> Eio.Condition.broadcast driver.Qmljs_types.condition
+  | Some driver -> signal_driver_event driver
+
+let await_driver_wakeup driver generation =
+  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
+      while
+        (not driver.Qmljs_types.closed)
+        && driver.Qmljs_types.wakeup_generation = generation
+      do
+        Eio.Condition.await driver.Qmljs_types.condition
+          driver.Qmljs_types.mutex
+      done)
+
+let close_driver driver =
+  let changed =
+    Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
+        if driver.Qmljs_types.closed then false
+        else begin
+          driver.Qmljs_types.closed <- true;
+          driver.Qmljs_types.wakeup_generation <-
+            driver.Qmljs_types.wakeup_generation + 1;
+          true
+        end)
+  in
+  if changed then Eio.Condition.broadcast driver.Qmljs_types.condition
+
+let cancel_driver driver =
+  let changed =
+    Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
+        if driver.Qmljs_types.closed then false
+        else begin
+          driver.Qmljs_types.cancelled <- true;
+          driver.Qmljs_types.wakeup_generation <-
+            driver.Qmljs_types.wakeup_generation + 1;
+          true
+        end)
+  in
+  if changed then begin
+    driver.Qmljs_types.cancel ();
+    Eio.Condition.broadcast driver.Qmljs_types.condition
+  end
 
 let execute_host_job t =
   ignore (Qmljs_raw.runtime_is_job_pending (Qmljs_types.runtime_raw t) : bool);
@@ -271,7 +327,8 @@ let execute_host_job t =
         match job.Qmljs_types.driver with
         | None -> false, false
         | Some driver ->
-            driver.Qmljs_types.closed, driver.Qmljs_types.cancelled
+            Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
+                driver.Qmljs_types.closed, driver.Qmljs_types.cancelled)
       in
       if drop then ()
       else if cancel then Option.iter (fun cancel -> cancel ()) job.on_cancel

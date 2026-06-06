@@ -1,8 +1,7 @@
 type driver = Qmljs_types.driver
 
 let cancel driver =
-  driver.Qmljs_types.cancelled <- true;
-  driver.Qmljs_types.cancel ()
+  Qmljs_runtime.cancel_driver driver
 
 let drain_until_idle driver = driver.Qmljs_types.drain_until_idle ()
 
@@ -29,12 +28,12 @@ let resolve_or_reject context ~name ~resolve ~reject result =
   | exception exn -> reject_with_exn_noerr context reject name exn
 
 let enqueue_settlement ?on_cancel driver runtime job =
-  if not driver.Qmljs_types.closed then
+  if not (Qmljs_runtime.driver_closed driver) then
     Qmljs_runtime.enqueue_host_job ?on_cancel runtime (fun () ->
-        if not driver.Qmljs_types.closed then job ())
+        if not (Qmljs_runtime.driver_closed driver) then job ())
 
 let promise ?(name = "Qmljs.Eio.promise") driver context fn =
-  if driver.Qmljs_types.closed then
+  if Qmljs_runtime.driver_closed driver then
     invalid_arg "QuickJS Eio driver is closed";
   let promise, resolve, reject = Qmljs_promise.create context in
   let runtime = Qmljs_types.context_runtime context in
@@ -62,22 +61,22 @@ let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
     @@ fun runtime ->
   Qmljs_context.with_ runtime @@ fun context ->
   let condition = Eio.Condition.create () in
+  let mutex = Eio.Mutex.create () in
   let driver =
     { Qmljs_types.sw
     ; condition
+    ; mutex
+    ; wakeup_generation = 0
     ; closed = false
     ; cancelled = false
     ; drain_until_idle = (fun () -> Qmljs_async.drain_jobs runtime)
-    ; cancel =
-        (fun () ->
-          Qmljs_runtime.request_interrupt runtime;
-          Eio.Condition.broadcast condition)
+    ; cancel = (fun () -> Qmljs_runtime.request_interrupt runtime)
     }
   in
   Qmljs_runtime.attach_driver runtime driver;
   Fun.protect
     ~finally:(fun () ->
-      driver.Qmljs_types.closed <- true;
+      Qmljs_runtime.close_driver driver;
       Qmljs_runtime.detach_driver runtime driver;
-      Eio.Condition.broadcast condition)
+      ())
     (fun () -> f driver runtime context)

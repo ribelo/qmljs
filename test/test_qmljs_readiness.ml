@@ -326,6 +326,31 @@ let test_eio_many_runtimes_cancel_cleanly_without_races env =
   let expected = (128 * 129 / 2) + (128 * 2) in
   check_int "all async runtimes completed" expected !total
 
+let test_await_result_no_lost_wakeup_with_driver env =
+  Eio.Switch.run @@ fun sw ->
+  let clock = Eio.Stdenv.clock env in
+  Qmljs.Eio.with_runtime ~sw ~clock (fun driver _runtime context ->
+      try
+        Eio.Time.with_timeout_exn clock 5.0 (fun () ->
+            for i = 1 to 1_000 do
+              let promise =
+                Qmljs.Eio.promise driver context (fun () ->
+                    Eio.Fiber.yield ();
+                    Eio.Fiber.yield ();
+                    Qmljs.Value.int context i)
+              in
+              if i mod 3 = 0 then Eio.Fiber.yield ();
+              match Qmljs.Promise.await_result ~yield_every:1 promise with
+              | Ok value ->
+                  check_int "Eio promise result after await" i
+                    (Qmljs.Value.to_int value)
+              | Error error ->
+                  fail ("Eio promise rejected: " ^ Qmljs.Error.message error)
+            done)
+      with
+      | Eio.Time.Timeout ->
+          fail "await_result timed out after a driver wakeup")
+
 let test_complete_value_surface_roundtrips_js_semantics () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -432,6 +457,7 @@ let () =
   test_array_of_values_wrong_context_does_not_leak_partial_array ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
+  test_await_result_no_lost_wakeup_with_driver env;
   test_complete_value_surface_roundtrips_js_semantics ();
   test_module_loader_policy_and_import_attributes_are_enforced ();
   test_resource_limits_reject_hostile_scripts_and_recover ()

@@ -59,17 +59,26 @@ let await_result ?yield_every promise =
   let runtime =
     Qmljs_types.context_runtime (Qmljs_types.value_context promise)
   in
+  let driver_wakeup () =
+    match runtime.Qmljs_types.driver with
+    | Some driver ->
+        Option.map
+          (fun generation -> driver, generation)
+          (Qmljs_runtime.driver_wakeup_generation driver)
+    | None -> None
+  in
   let rec loop () =
+    let wakeup = driver_wakeup () in
     ignore (Qmljs_async.drain_jobs ?yield_every runtime : int);
     match state promise with
     | Not_a_promise -> invalid_arg "value is not a promise"
     | Fulfilled -> Ok (result promise)
     | Rejected -> Error (structured_rejection (result promise))
     | Pending ->
-        (match runtime.Qmljs_types.driver with
-         | Some driver when not driver.Qmljs_types.closed ->
-             Eio.Condition.await_no_mutex driver.Qmljs_types.condition
-         | _ -> Eio.Fiber.yield ());
+        (match wakeup with
+         | Some (driver, generation) ->
+             Qmljs_runtime.await_driver_wakeup driver generation
+         | None -> Eio.Fiber.yield ());
         loop ()
   in
   match state promise with
