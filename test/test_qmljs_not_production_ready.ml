@@ -36,6 +36,9 @@ external test_set_array_failpoint : int -> unit
 external test_set_host_callback_failpoint : int -> unit
   = "qmljs_test_set_host_callback_failpoint"
 
+external test_set_wrapper_failpoint : int -> unit
+  = "qmljs_test_set_wrapper_failpoint"
+
 external test_host_callback_depth : Qmljs.Runtime.t -> int
   = "qmljs_test_host_callback_depth"
 
@@ -96,6 +99,40 @@ let test_c_stubs_initialize_ocaml_arrays_before_allocating_elements () =
   ignore (Qmljs.Promise.await ~yield_every:1 promise : Qmljs.Value.t);
   expect_array_failpoint "promise hooks array failpoint" 4
     (fun () -> ignore (Qmljs.Runtime.take_promise_hooks runtime))
+
+let expect_wrapper_failpoint label site fn =
+  Fun.protect
+    ~finally:(fun () -> test_set_wrapper_failpoint 0)
+    (fun () ->
+      test_set_wrapper_failpoint site;
+      expect_structured_error label fn (fun error ->
+        check_string (label ^ " message")
+          "qmljs test wrapper allocation failpoint"
+          (Qmljs.Error.message error)))
+
+let test_alloc_value_failpoint_does_not_leak_or_corrupt_counters () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  expect_wrapper_failpoint "context wrapper allocation failpoint" 1
+    (fun () ->
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      ignore (Qmljs.Context.create runtime : Qmljs.Context.t));
+  expect_wrapper_failpoint "value wrapper allocation failpoint" 2
+    (fun () ->
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      Qmljs.Context.with_ runtime @@ fun context ->
+      ignore (Qmljs.Value.string context "wrapper-failpoint" : Qmljs.Value.t));
+  expect_wrapper_failpoint "atom wrapper allocation failpoint" 3
+    (fun () ->
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      Qmljs.Context.with_ runtime @@ fun context ->
+      ignore (Qmljs.Atom.of_string context "wrapper-failpoint" : Qmljs.Atom.t));
+  expect_wrapper_failpoint "promise wrapper allocation failpoint" 4
+    (fun () ->
+      Qmljs.Runtime.with_ @@ fun runtime ->
+      Qmljs.Context.with_ runtime @@ fun context ->
+      ignore (Qmljs.Promise.create context));
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
 let expect_host_callback_failpoint label ~runtime ~site ~frame fn =
   Fun.protect
@@ -868,6 +905,8 @@ let tests env =
   , test_call_argument_count_over_int_max_is_rejected
   ; "C stubs initialize OCaml arrays before allocating elements"
   , test_c_stubs_initialize_ocaml_arrays_before_allocating_elements
+  ; "wrapper allocation failpoints do not leak or corrupt counters"
+  , test_alloc_value_failpoint_does_not_leak_or_corrupt_counters
   ; "host callback argument wrapping allocation failure is JS exception"
   , test_host_callback_argument_wrapping_allocation_failure_is_js_exception
   ; "with preserves body and cleanup failures"

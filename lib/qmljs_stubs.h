@@ -99,6 +99,14 @@ void qmljs_raise_exception(JSContext *ctx);
 void qmljs_raise_value_exception(JSContext *ctx, JSValueConst exception);
 value qmljs_structured_of_exception_value(JSContext *ctx, JSValueConst exception);
 
+enum {
+  QMLJS_WRAPPER_FAILPOINT_DISABLED = 0,
+  QMLJS_WRAPPER_FAILPOINT_CONTEXT = 1,
+  QMLJS_WRAPPER_FAILPOINT_VALUE = 2,
+  QMLJS_WRAPPER_FAILPOINT_ATOM = 3,
+  QMLJS_WRAPPER_FAILPOINT_PROMISE = 4,
+};
+
 JSRuntime *qmljs_runtime(value runtime);
 JSContext *qmljs_context(value context);
 struct qmljs_runtime_state *qmljs_context_state(value context);
@@ -120,6 +128,7 @@ int qmljs_is_error_marker(JSContext *ctx, JSValueConst value);
 JSValueConst *qmljs_alloc_argv(size_t argc);
 void qmljs_free_argv(JSValueConst *argv);
 int qmljs_argc_of_size(size_t argc);
+int qmljs_test_take_wrapper_failpoint(int site);
 void qmljs_argv_check(value context, value wrapped);
 void qmljs_argv_set(value context, JSValueConst *argv, size_t index,
                   value wrapped);

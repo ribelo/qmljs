@@ -350,6 +350,9 @@ Keep these runtime gaps:
   elements, before any later allocation can fail; covered for import
   attributes, memory usage, promise rejections, and promise hooks with
   failpoint tests.
+- [x] Context, value, atom, and promise wrapper allocation failures unwind
+  partially linked native state so live counters and runtime teardown remain
+  consistent.
 
 Do not keep custom Rust allocators or Rust global allocator integration as a
 current qmljs requirement. Add allocator customization only if there is a

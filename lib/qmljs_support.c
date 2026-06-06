@@ -11,6 +11,16 @@ static atomic_int qmljs_live_context_wrappers;
 static atomic_int qmljs_live_value_wrappers;
 static atomic_int qmljs_live_native_runtimes;
 static atomic_int qmljs_live_argv_arrays;
+static atomic_int qmljs_test_wrapper_failpoint_site;
+
+int qmljs_test_take_wrapper_failpoint(int site)
+{
+  int expected = site;
+  return atomic_compare_exchange_strong_explicit(
+    &qmljs_test_wrapper_failpoint_site, &expected,
+    QMLJS_WRAPPER_FAILPOINT_DISABLED, memory_order_acq_rel,
+    memory_order_acquire);
+}
 
 struct qmljs_deferred_value {
   struct qmljs_runtime_state *state;
@@ -69,6 +79,14 @@ CAMLprim value qmljs_test_reject_arg_count(value argc)
     qmljs_raise_string("function argument count exceeds QuickJS argc range");
   }
   (void)qmljs_argc_of_size((size_t)count);
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value qmljs_test_set_wrapper_failpoint(value site)
+{
+  CAMLparam1(site);
+  atomic_store_explicit(&qmljs_test_wrapper_failpoint_site, Int_val(site),
+                        memory_order_release);
   CAMLreturn(Val_unit);
 }
 
@@ -543,6 +561,18 @@ static void qmljs_release_claimed_value(struct qmljs_runtime_state *state,
   }
 }
 
+static void qmljs_release_value_for_scope(struct qmljs_value_handle *handle)
+{
+  struct qmljs_runtime_state *state = handle->state;
+  JSValue value = JS_UNDEFINED;
+  qmljs_lock_lists(state);
+  int claimed = qmljs_claim_value_for_scope_locked(state, handle, &value);
+  qmljs_unlock_lists(state);
+  if (claimed) {
+    qmljs_release_claimed_value(state, value);
+  }
+}
+
 static int qmljs_claim_atom_for_scope_locked(
   struct qmljs_runtime_state *state, struct qmljs_atom_handle *handle,
   JSAtom *atom)
@@ -563,6 +593,18 @@ static void qmljs_release_claimed_atom(struct qmljs_runtime_state *state,
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
         != 0 && state->rt != NULL) {
     JS_FreeAtomRT(state->rt, atom);
+  }
+}
+
+static void qmljs_release_atom_for_scope(struct qmljs_atom_handle *handle)
+{
+  struct qmljs_runtime_state *state = handle->state;
+  JSAtom atom = JS_ATOM_NULL;
+  qmljs_lock_lists(state);
+  int claimed = qmljs_claim_atom_for_scope_locked(state, handle, &atom);
+  qmljs_unlock_lists(state);
+  if (claimed) {
+    qmljs_release_claimed_atom(state, atom);
   }
 }
 
@@ -983,6 +1025,9 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   CAMLparam1(runtime);
   CAMLlocal1(block);
   struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  block = caml_alloc_custom(&qmljs_context_ops, sizeof(struct qmljs_context), 0, 1);
+  Qml_context_val(block)->handle = NULL;
+  atomic_fetch_add_explicit(&qmljs_live_context_wrappers, 1, memory_order_relaxed);
   struct qmljs_context_handle *handle =
     caml_stat_alloc(sizeof(struct qmljs_context_handle));
   handle->state = state;
@@ -992,11 +1037,16 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   handle->prev = NULL;
   handle->next = NULL;
   qmljs_state_ref(state);
-  qmljs_link_context(state, handle);
-  block = caml_alloc_custom(&qmljs_context_ops, sizeof(struct qmljs_context), 0, 1);
-  Qml_context_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->open_contexts, 1, memory_order_relaxed);
-  atomic_fetch_add_explicit(&qmljs_live_context_wrappers, 1, memory_order_relaxed);
+  qmljs_link_context(state, handle);
+  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_CONTEXT)) {
+    qmljs_release_context_for_scope(handle);
+    qmljs_wait_lists_quiescent(state);
+    caml_stat_free(handle);
+    qmljs_state_unref(state);
+    qmljs_raise_string("qmljs test wrapper allocation failpoint");
+  }
+  Qml_context_val(block)->handle = handle;
   CAMLreturn(block);
 }
 
@@ -1006,6 +1056,9 @@ value qmljs_alloc_value(value context, JSValue js_value)
   CAMLlocal1(block);
   struct qmljs_context_handle *context_handle = Qml_context_val(context)->handle;
   struct qmljs_runtime_state *state = context_handle->state;
+  block = caml_alloc_custom(&qmljs_value_ops, sizeof(struct qmljs_value), 0, 1);
+  Qml_value_val(block)->handle = NULL;
+  atomic_fetch_add_explicit(&qmljs_live_value_wrappers, 1, memory_order_relaxed);
   struct qmljs_value_handle *handle =
     caml_stat_alloc(sizeof(struct qmljs_value_handle));
   handle->state = state;
@@ -1016,11 +1069,16 @@ value qmljs_alloc_value(value context, JSValue js_value)
   handle->prev = NULL;
   handle->next = NULL;
   qmljs_state_ref(state);
-  qmljs_link_value(state, handle);
-  block = caml_alloc_custom(&qmljs_value_ops, sizeof(struct qmljs_value), 0, 1);
-  Qml_value_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->live_values, 1, memory_order_relaxed);
-  atomic_fetch_add_explicit(&qmljs_live_value_wrappers, 1, memory_order_relaxed);
+  qmljs_link_value(state, handle);
+  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_VALUE)) {
+    qmljs_release_value_for_scope(handle);
+    qmljs_wait_lists_quiescent(state);
+    caml_stat_free(handle);
+    qmljs_state_unref(state);
+    qmljs_raise_string("qmljs test wrapper allocation failpoint");
+  }
+  Qml_value_val(block)->handle = handle;
   CAMLreturn(block);
 }
 
@@ -1028,6 +1086,8 @@ value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)
 {
   CAMLparam0();
   CAMLlocal1(block);
+  block = caml_alloc_custom(&qmljs_atom_ops, sizeof(struct qmljs_atom), 0, 1);
+  Qml_atom_val(block)->handle = NULL;
   struct qmljs_atom_handle *handle =
     caml_stat_alloc(sizeof(struct qmljs_atom_handle));
   handle->state = state;
@@ -1037,10 +1097,16 @@ value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)
   handle->prev = NULL;
   handle->next = NULL;
   qmljs_state_ref(state);
-  qmljs_link_atom(state, handle);
-  block = caml_alloc_custom(&qmljs_atom_ops, sizeof(struct qmljs_atom), 0, 1);
-  Qml_atom_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->live_atoms, 1, memory_order_relaxed);
+  qmljs_link_atom(state, handle);
+  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_ATOM)) {
+    qmljs_release_atom_for_scope(handle);
+    qmljs_wait_lists_quiescent(state);
+    caml_stat_free(handle);
+    qmljs_state_unref(state);
+    qmljs_raise_string("qmljs test wrapper allocation failpoint");
+  }
+  Qml_atom_val(block)->handle = handle;
   CAMLreturn(block);
 }
 

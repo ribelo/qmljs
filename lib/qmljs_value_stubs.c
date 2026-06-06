@@ -1965,16 +1965,22 @@ CAMLprim value qmljs_promise_create(value context)
   CAMLlocal1(result);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
+  result = caml_alloc_tuple(3);
+  Store_field(result, 0, Val_unit);
+  Store_field(result, 1, Val_unit);
+  Store_field(result, 2, Val_unit);
+
   JSValue resolving_functions[2];
   JSValue promise = JS_NewPromiseCapability(ctx, resolving_functions);
   if (JS_IsException(promise)) {
     qmljs_raise_exception(ctx);
   }
-
-  result = caml_alloc_tuple(3);
-  Store_field(result, 0, Val_unit);
-  Store_field(result, 1, Val_unit);
-  Store_field(result, 2, Val_unit);
+  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_PROMISE)) {
+    JS_FreeValue(ctx, promise);
+    JS_FreeValue(ctx, resolving_functions[0]);
+    JS_FreeValue(ctx, resolving_functions[1]);
+    qmljs_raise_string("qmljs test wrapper allocation failpoint");
+  }
   Store_field(result, 0, qmljs_alloc_value(context, promise));
   Store_field(result, 1, qmljs_alloc_value(context, resolving_functions[0]));
   Store_field(result, 2, qmljs_alloc_value(context, resolving_functions[1]));
