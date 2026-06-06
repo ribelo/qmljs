@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define QMLJS_MAX_SAFE_INTEGER 9007199254740991LL
+
 CAMLprim value qmljs_value_undefined(value context)
 {
   CAMLparam1(context);
@@ -40,7 +42,10 @@ CAMLprim value qmljs_value_int(value context, value input)
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);
   }
-  CAMLreturn(qmljs_alloc_value_with_exact_int(context, result, integer));
+  if (integer < -QMLJS_MAX_SAFE_INTEGER || integer > QMLJS_MAX_SAFE_INTEGER) {
+    CAMLreturn(qmljs_alloc_value_with_exact_int(context, result, integer));
+  }
+  CAMLreturn(qmljs_alloc_value(context, result));
 }
 
 CAMLprim value qmljs_value_float(value context, value input)
@@ -1790,6 +1795,67 @@ CAMLprim value qmljs_value_to_bool(value context, value wrapped)
   CAMLreturn(Val_bool(result));
 }
 
+static int qmljs_parse_ocaml_int(const char *string, size_t length,
+                               int64_t *out)
+{
+  if (length == 0) {
+    return 0;
+  }
+
+  size_t index = 0;
+  int negative = 0;
+  if (string[index] == '-') {
+    negative = 1;
+    index++;
+    if (index == length) {
+      return 0;
+    }
+  }
+
+  uint64_t limit = negative ? (uint64_t)(-(int64_t)Min_long)
+                            : (uint64_t)Max_long;
+  uint64_t magnitude = 0;
+  for (; index < length; index++) {
+    char ch = string[index];
+    if (ch < '0' || ch > '9') {
+      return 0;
+    }
+    uint64_t digit = (uint64_t)(ch - '0');
+    if (magnitude > (limit - digit) / 10) {
+      return 0;
+    }
+    magnitude = magnitude * 10 + digit;
+  }
+
+  if (negative) {
+    *out = magnitude == limit ? (int64_t)Min_long : -(int64_t)magnitude;
+  } else {
+    *out = (int64_t)magnitude;
+  }
+  return 1;
+}
+
+static int qmljs_bigint_to_ocaml_int(JSContext *ctx, JSValueConst js_value,
+                                   int64_t *out)
+{
+  JSValue string_value = JS_ToString(ctx, js_value);
+  if (JS_IsException(string_value)) {
+    return -1;
+  }
+
+  size_t length = 0;
+  const char *string = JS_ToCStringLen(ctx, &length, string_value);
+  if (string == NULL) {
+    JS_FreeValue(ctx, string_value);
+    return -1;
+  }
+
+  int parsed = qmljs_parse_ocaml_int(string, length, out);
+  JS_FreeCString(ctx, string);
+  JS_FreeValue(ctx, string_value);
+  return parsed ? 0 : 1;
+}
+
 CAMLprim value qmljs_value_to_int(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
@@ -1800,7 +1866,18 @@ CAMLprim value qmljs_value_to_int(value context, value wrapped)
   if (qmljs_value_exact_int(wrapped, &result)) {
     CAMLreturn(Val_long((intnat)result));
   }
-  if (JS_ToInt64Ext(ctx, &result, qmljs_js_value(wrapped)) < 0) {
+  JSValueConst js_value = qmljs_js_value(wrapped);
+  if (JS_IsBigInt(js_value)) {
+    int bigint_result = qmljs_bigint_to_ocaml_int(ctx, js_value, &result);
+    if (bigint_result < 0) {
+      qmljs_raise_exception(ctx);
+    }
+    if (bigint_result > 0) {
+      qmljs_raise_string("BigInt is outside the OCaml int range");
+    }
+    CAMLreturn(Val_long((intnat)result));
+  }
+  if (JS_ToInt64Ext(ctx, &result, js_value) < 0) {
     qmljs_raise_exception(ctx);
   }
   if (result < (int64_t)Min_long || result > (int64_t)Max_long) {

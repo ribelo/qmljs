@@ -140,6 +140,7 @@ let as_bool t =
   | _ -> expected "bool"
 
 let as_int t =
+  capture_conversion @@ fun () ->
   match kind t with
   | Int | Bigint -> Ok (to_int t)
   | _ -> expected "int"
