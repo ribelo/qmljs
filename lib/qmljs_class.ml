@@ -99,7 +99,16 @@ let constructor t ~name ~arity initialize =
     Qmljs_function.make_with_this t.context ~name ~arity @@ fun call ->
     match call.Qmljs_function.new_target with
     | None -> invalid_arg (name ^ " must be called with new")
-    | Some _ -> instance t (initialize call.args)
+    | Some new_target ->
+        let instance = instance t (initialize call.args) in
+        let prototype =
+          Qmljs_object.get new_target
+            ~key:(Qmljs_value.string t.context "prototype")
+        in
+        (match Qmljs_value.kind prototype with
+         | Object | Null -> Qmljs_object.set_prototype instance ~prototype
+         | _ -> ());
+        instance
   in
   Qmljs_function.set_constructor fn true;
   let prototype = prototype t in
