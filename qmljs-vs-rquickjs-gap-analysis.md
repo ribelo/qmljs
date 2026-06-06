@@ -76,6 +76,8 @@ Keep this as a focused qmljs gap:
 - [x] Structured conversion failures using Qmljs.Error.t, not string exceptions.
 - [x] Bigint.of_string treats input as data and does not splice it into
   executable JavaScript source.
+- [x] Json.stringify rejects JavaScript undefined results instead of returning
+  non-JSON text.
 - [x] Round-trip tests that match JavaScript semantics for null, undefined, arrays,
   objects, BigInt, typed arrays, and exceptions.
 

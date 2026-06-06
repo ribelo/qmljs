@@ -1648,6 +1648,10 @@ CAMLprim value qml_json_stringify(value context, value wrapped, value input_spac
   if (JS_IsException(json)) {
     qml_raise_exception(ctx);
   }
+  if (JS_IsUndefined(json)) {
+    JS_FreeValue(ctx, json);
+    qml_raise_string("JSON.stringify returned undefined");
+  }
   size_t length = 0;
   const char *string = JS_ToCStringLen(ctx, &length, json);
   if (string == NULL) {

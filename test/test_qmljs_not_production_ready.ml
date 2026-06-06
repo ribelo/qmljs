@@ -97,6 +97,24 @@ let test_bigint_of_string_does_not_execute_code () =
     (Qmljs.Bigint.to_string
        (Qmljs.Bigint.of_string context "9007199254740993"))
 
+let test_json_stringify_undefined_is_error_not_string () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let undefined = Qmljs.Value.undefined context in
+  (match Qmljs.Json.to_string undefined with
+   | Ok "undefined" -> fail "Json.to_string returned non-JSON text"
+   | Ok text -> fail ("Json.to_string unexpectedly returned " ^ text)
+   | Error error ->
+       check_string "Json.to_string undefined message"
+         "JSON.stringify returned undefined"
+         (Qmljs.Error.message error));
+  expect_structured_error "Json.stringify undefined"
+    (fun () -> ignore (Qmljs.Json.stringify undefined : string))
+    (fun error ->
+      check_string "Json.stringify undefined message"
+        "JSON.stringify returned undefined"
+        (Qmljs.Error.message error))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -417,6 +435,8 @@ let tests env =
   , test_timeout_preserves_original_structured_stack
   ; "Bigint.of_string does not execute code"
   , test_bigint_of_string_does_not_execute_code
+  ; "Json.stringify undefined is error not string"
+  , test_json_stringify_undefined_is_error_not_string
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved
