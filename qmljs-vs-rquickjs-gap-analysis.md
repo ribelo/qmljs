@@ -228,6 +228,9 @@ Keep these gaps:
   outside QuickJS's int argc range before casting or allocating argv.
 - [x] Function call, construct, defer, and value-call paths validate arguments
   before argv allocation so wrong-context or closed values cannot leak argv.
+- [x] Host callback argument, this, and new.target wrapping failures are caught
+  through the host-callback trampoline and reported as structured host defects,
+  with callback-depth accounting restored on every protected callback path.
 
 Do not port rquickjs's Func, MutFn, OnceFn, Rest, This, Opt, IntoArg, or
 IntoJsFunc traits. OCaml can expose these as explicit callback records or helper

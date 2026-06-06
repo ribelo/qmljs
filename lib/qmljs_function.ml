@@ -4,6 +4,12 @@ type call =
   ; new_target : Qmljs_types.value option
   }
 
+external host_call_trampoline : unit -> Qmljs_types.value @@ portable
+  = "qmljs_host_call_trampoline"
+
+let () =
+  Callback.Safe.register "qmljs.host_call_trampoline" host_call_trampoline
+
 let make context ~name ~arity callback =
   if arity < 0 then invalid_arg "arity must be non-negative";
   let raw_callback raw_args =

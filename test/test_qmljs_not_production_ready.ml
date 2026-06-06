@@ -33,6 +33,12 @@ external test_internal_runtime_close : Qmljs__Qmljs_types.runtime -> bool
 external test_set_array_failpoint : int -> unit
   = "qmljs_test_set_array_failpoint"
 
+external test_set_host_callback_failpoint : int -> unit
+  = "qmljs_test_set_host_callback_failpoint"
+
+external test_host_callback_depth : Qmljs.Runtime.t -> int
+  = "qmljs_test_host_callback_depth"
+
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
     raise (Qmljs.Error.host ~message ~metadata))
@@ -90,6 +96,52 @@ let test_c_stubs_initialize_ocaml_arrays_before_allocating_elements () =
   ignore (Qmljs.Promise.await ~yield_every:1 promise : Qmljs.Value.t);
   expect_array_failpoint "promise hooks array failpoint" 4
     (fun () -> ignore (Qmljs.Runtime.take_promise_hooks runtime))
+
+let expect_host_callback_failpoint label ~runtime ~site ~frame fn =
+  Fun.protect
+    ~finally:(fun () -> test_set_host_callback_failpoint 0)
+    (fun () ->
+      test_set_host_callback_failpoint site;
+      expect_structured_error label fn (fun error ->
+        check_kind (label ^ " kind") Qmljs.Error.Host_callback_defect
+          (Qmljs.Error.kind error);
+        check_string (label ^ " message")
+          "Failure(\"qmljs test host callback wrapper allocation failpoint\")"
+          (Qmljs.Error.message error);
+        check_bool (label ^ " frame") true
+          (Qmljs.Error.has_ocaml_frame error ~function_name:frame)));
+  check_int (label ^ " callback depth") 0
+    (test_host_callback_depth runtime)
+
+let test_host_callback_argument_wrapping_allocation_failure_is_js_exception () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  Qmljs.Function.set_global context ~name:"wrap_args" ~arity:3 (fun _args ->
+      fail "wrap_args callback should not run");
+  expect_host_callback_failpoint "argument wrapping failpoint" ~runtime ~site:1
+    ~frame:"wrap_args"
+    (fun () ->
+      ignore (Qmljs.Context.eval context "wrap_args(1, 2, 3)" : Qmljs.Value.t));
+  check_int "runtime reusable after argument wrapping failure" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"));
+  let constructor =
+    Qmljs.Function.make_with_this context ~name:"WrapCtor" ~arity:1
+      (fun _call -> fail "WrapCtor callback should not run")
+  in
+  Qmljs.Function.set_constructor constructor true;
+  Qmljs.Context.set_global context ~name:"WrapCtor" constructor;
+  expect_host_callback_failpoint "this wrapping failpoint" ~runtime ~site:2
+    ~frame:"WrapCtor"
+    (fun () ->
+      ignore (Qmljs.Context.eval context "new WrapCtor(1)" : Qmljs.Value.t));
+  check_int "runtime reusable after this wrapping failure" 3
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 2"));
+  expect_host_callback_failpoint "new.target wrapping failpoint" ~runtime ~site:3
+    ~frame:"WrapCtor"
+    (fun () ->
+      ignore (Qmljs.Context.eval context "new WrapCtor(1)" : Qmljs.Value.t));
+  check_int "runtime reusable after new.target wrapping failure" 4
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "2 + 2"))
 
 let test_with_preserves_body_and_cleanup_failures () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -737,6 +789,8 @@ let tests env =
   , test_call_argument_count_over_int_max_is_rejected
   ; "C stubs initialize OCaml arrays before allocating elements"
   , test_c_stubs_initialize_ocaml_arrays_before_allocating_elements
+  ; "host callback argument wrapping allocation failure is JS exception"
+  , test_host_callback_argument_wrapping_allocation_failure_is_js_exception
   ; "with preserves body and cleanup failures"
   , test_with_preserves_body_and_cleanup_failures
   ; "sync host callback timeout is preemptive"

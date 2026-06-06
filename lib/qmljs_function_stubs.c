@@ -12,6 +12,40 @@ struct qmljs_callback {
   int mode;
 };
 
+struct qmljs_host_call_frame {
+  JSContext *ctx;
+  struct qmljs_callback *callback;
+  JSValueConst this_value;
+  int argc;
+  JSValueConst *argv;
+  JSValueConst new_target;
+  struct qmljs_runtime_state *state;
+};
+
+static _Thread_local struct qmljs_host_call_frame *qmljs_current_host_call =
+  NULL;
+
+enum {
+  QMLJS_HOST_CALLBACK_FAILPOINT_DISABLED = 0,
+  QMLJS_HOST_CALLBACK_FAILPOINT_ARGUMENT = 1,
+  QMLJS_HOST_CALLBACK_FAILPOINT_THIS = 2,
+  QMLJS_HOST_CALLBACK_FAILPOINT_NEW_TARGET = 3
+};
+
+static atomic_int qmljs_test_host_callback_failpoint_site =
+  QMLJS_HOST_CALLBACK_FAILPOINT_DISABLED;
+
+static void qmljs_test_raise_host_callback_failpoint(int site)
+{
+  int expected = site;
+  if (atomic_compare_exchange_strong_explicit(
+        &qmljs_test_host_callback_failpoint_site, &expected,
+        QMLJS_HOST_CALLBACK_FAILPOINT_DISABLED, memory_order_acq_rel,
+        memory_order_acquire)) {
+    caml_failwith("qmljs test host callback wrapper allocation failpoint");
+  }
+}
+
 static void qmljs_callback_finalize(void *opaque)
 {
   struct qmljs_callback *callback = opaque;
@@ -356,8 +390,57 @@ static value qmljs_optional_wrapped_new_target(value context, JSContext *ctx,
   if (JS_IsUndefined(new_target)) {
     CAMLreturn(Val_int(0));
   }
+  qmljs_test_raise_host_callback_failpoint(
+    QMLJS_HOST_CALLBACK_FAILPOINT_NEW_TARGET);
   wrapped = qmljs_alloc_value(context, JS_DupValue(ctx, new_target));
   CAMLreturn(qmljs_option(wrapped));
+}
+
+CAMLprim value qmljs_host_call_trampoline(value unit)
+{
+  CAMLparam1(unit);
+  CAMLlocal4(args, result, this_, new_target_option);
+  struct qmljs_host_call_frame *frame = qmljs_current_host_call;
+  if (frame == NULL) {
+    caml_failwith("qmljs host callback trampoline called outside host callback");
+  }
+
+  struct qmljs_callback *callback = frame->callback;
+  args = caml_alloc(frame->argc, 0);
+  for (int i = 0; i < frame->argc; i++) {
+    Store_field(args, i, Val_unit);
+  }
+  for (int i = 0; i < frame->argc; i++) {
+    qmljs_test_raise_host_callback_failpoint(
+      QMLJS_HOST_CALLBACK_FAILPOINT_ARGUMENT);
+    Store_field(args, i,
+                qmljs_alloc_value(callback->context,
+                                JS_DupValue(frame->ctx, frame->argv[i])));
+  }
+
+  if (callback->mode == 0) {
+    qmljs_enter_ocaml_callback(frame->state);
+    result = caml_callback_exn(callback->fn, args);
+    qmljs_leave_ocaml_callback(frame->state);
+  } else {
+    qmljs_test_raise_host_callback_failpoint(
+      QMLJS_HOST_CALLBACK_FAILPOINT_THIS);
+    this_ =
+      qmljs_alloc_value(callback->context,
+                      JS_DupValue(frame->ctx, frame->this_value));
+    new_target_option =
+      qmljs_optional_wrapped_new_target(callback->context, frame->ctx,
+                                      frame->new_target);
+    qmljs_enter_ocaml_callback(frame->state);
+    result =
+      caml_callback3_exn(callback->fn, this_, args, new_target_option);
+    qmljs_leave_ocaml_callback(frame->state);
+  }
+
+  if (Is_exception_result(result)) {
+    caml_raise(Extract_exception(result));
+  }
+  CAMLreturn(result);
 }
 
 static JSValue qmljs_host_call_callback(JSContext *ctx,
@@ -367,7 +450,7 @@ static JSValue qmljs_host_call_callback(JSContext *ctx,
                                       JSValueConst new_target)
 {
   CAMLparam0();
-  CAMLlocal4(args, result, this_, new_target_option);
+  CAMLlocal1(result);
   struct qmljs_runtime_state *state = qmljs_context_state(callback->context);
 
   if (atomic_load_explicit(&state->interrupt_deadline_ns,
@@ -377,32 +460,36 @@ static JSValue qmljs_host_call_callback(JSContext *ctx,
     CAMLreturnT(JSValue, qmljs_throw_host_deadline_error(ctx));
   }
 
-  args = caml_alloc(argc, 0);
-  for (int i = 0; i < argc; i++) {
-    Store_field(args, i, Val_unit);
-  }
-  for (int i = 0; i < argc; i++) {
-    Store_field(args, i,
-                qmljs_alloc_value(callback->context, JS_DupValue(ctx, argv[i])));
+  const value *trampoline_fn = caml_named_value("qmljs.host_call_trampoline");
+  if (trampoline_fn == NULL) {
+    CAMLreturnT(JSValue,
+                qmljs_throw_host_defect_message(
+                  ctx, "qmljs host callback trampoline is not registered",
+                  callback->name));
   }
 
-  qmljs_enter_ocaml_callback(state);
-  if (callback->mode == 0) {
-    result = caml_callback_exn(callback->fn, args);
-  } else {
-    this_ = qmljs_alloc_value(callback->context, JS_DupValue(ctx, this_value));
-    new_target_option =
-      qmljs_optional_wrapped_new_target(callback->context, ctx, new_target);
-    result = caml_callback3_exn(callback->fn, this_, args, new_target_option);
-  }
-  qmljs_leave_ocaml_callback(state);
+  struct qmljs_host_call_frame frame = {
+    .ctx = ctx,
+    .callback = callback,
+    .this_value = this_value,
+    .argc = argc,
+    .argv = argv,
+    .new_target = new_target,
+    .state = state
+  };
+  struct qmljs_host_call_frame *previous = qmljs_current_host_call;
+  qmljs_current_host_call = &frame;
+  value trampoline_result = caml_callback_exn(*trampoline_fn, Val_unit);
+  qmljs_current_host_call = previous;
 
-  if (Is_exception_result(result)) {
+  if (Is_exception_result(trampoline_result)) {
     JSValue exception =
-      qmljs_throw_ocaml_exception(ctx, Extract_exception(result), callback->name);
+      qmljs_throw_ocaml_exception(ctx, Extract_exception(trampoline_result),
+                                callback->name);
     CAMLreturnT(JSValue, exception);
   }
 
+  result = trampoline_result;
   JSValue raw_result = JS_UNDEFINED;
   const char *return_error =
     qmljs_js_value_for_context(callback->context, result, &raw_result);
@@ -786,4 +873,20 @@ CAMLprim value qmljs_function_set_constructor(value context, value function,
   qmljs_ensure_same_context(context, function);
   JS_SetConstructorBit(ctx, qmljs_js_value(function), Bool_val(input));
   CAMLreturn(Val_unit);
+}
+
+CAMLprim value qmljs_test_set_host_callback_failpoint(value site)
+{
+  CAMLparam1(site);
+  atomic_store_explicit(&qmljs_test_host_callback_failpoint_site, Int_val(site),
+                        memory_order_release);
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value qmljs_test_host_callback_depth(value runtime)
+{
+  CAMLparam1(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(Field(runtime, 0))->state;
+  CAMLreturn(Val_int(atomic_load_explicit(&state->ocaml_callback_depth,
+                                          memory_order_acquire)));
 }
