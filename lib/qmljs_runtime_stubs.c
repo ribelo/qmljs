@@ -759,6 +759,7 @@ CAMLprim value qmljs_runtime_create(value unit)
   atomic_init(&state->deferred_values, NULL);
   atomic_init(&state->deferred_atoms, NULL);
   atomic_init(&state->deferred_contexts, NULL);
+  atomic_init(&state->deferred_class_finalizers, NULL);
 
   JSRuntime *rt = JS_NewRuntime();
   if (rt == NULL) {

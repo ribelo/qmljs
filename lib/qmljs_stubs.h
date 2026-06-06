@@ -17,6 +17,7 @@
 struct qmljs_deferred_value;
 struct qmljs_deferred_atom;
 struct qmljs_deferred_context;
+struct qmljs_class_instance;
 struct qmljs_promise_rejection_event;
 struct qmljs_promise_hook_event;
 struct qmljs_context_handle;
@@ -61,6 +62,7 @@ struct qmljs_runtime_state {
   _Atomic(struct qmljs_deferred_value *) deferred_values;
   _Atomic(struct qmljs_deferred_atom *) deferred_atoms;
   _Atomic(struct qmljs_deferred_context *) deferred_contexts;
+  _Atomic(struct qmljs_class_instance *) deferred_class_finalizers;
 };
 
 struct qmljs_runtime {
@@ -107,6 +109,7 @@ void qmljs_ensure_same_context(value context, value wrapped);
 void qmljs_ensure_atom_runtime(struct qmljs_runtime_state *expected, value wrapped);
 void qmljs_drain_deferred(struct qmljs_runtime_state *state);
 void qmljs_drain_deferred_runtimes(void);
+void qmljs_drain_class_finalizers(struct qmljs_runtime_state *state);
 void qmljs_enter_ocaml_callback(struct qmljs_runtime_state *state);
 void qmljs_leave_ocaml_callback(struct qmljs_runtime_state *state);
 JSValueConst *qmljs_alloc_argv(size_t argc);

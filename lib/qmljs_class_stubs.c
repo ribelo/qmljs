@@ -15,6 +15,7 @@ struct qmljs_class {
 struct qmljs_class_instance {
   struct qmljs_host_class *klass;
   value payload;
+  struct qmljs_class_instance *next_finalizer;
 };
 
 #define Qml_class_val(v) ((struct qmljs_class *)Data_custom_val(v))
@@ -81,13 +82,42 @@ static void qmljs_class_instance_release(struct qmljs_class_instance *instance,
   CAMLreturn0;
 }
 
+static void qmljs_defer_class_finalizer(struct qmljs_class_instance *instance)
+{
+  struct qmljs_runtime_state *state = instance->klass->state;
+  struct qmljs_class_instance *head = atomic_load_explicit(
+    &state->deferred_class_finalizers, memory_order_acquire);
+  do {
+    instance->next_finalizer = head;
+  } while (!atomic_compare_exchange_weak_explicit(
+    &state->deferred_class_finalizers, &head, instance, memory_order_release,
+    memory_order_acquire));
+}
+
+void qmljs_drain_class_finalizers(struct qmljs_runtime_state *state)
+{
+  struct qmljs_class_instance *instances = atomic_exchange_explicit(
+    &state->deferred_class_finalizers, NULL, memory_order_acquire);
+  while (instances != NULL) {
+    struct qmljs_class_instance *next = instances->next_finalizer;
+    instances->next_finalizer = NULL;
+    qmljs_class_instance_release(instances, 1);
+    instances = next;
+  }
+}
+
 static void qmljs_class_instance_finalizer(JSRuntime *rt, JSValueConst js_value)
 {
   (void)rt;
   struct qmljs_class_instance *instance =
     JS_GetOpaque(js_value, JS_GetClassID(js_value));
   if (instance != NULL) {
-    qmljs_class_instance_release(instance, 1);
+    if (instance->klass->has_finalizer) {
+      /* QuickJS finalizers are not a safe place to run arbitrary OCaml. */
+      qmljs_defer_class_finalizer(instance);
+    } else {
+      qmljs_class_instance_release(instance, 0);
+    }
   }
 }
 
@@ -178,6 +208,7 @@ CAMLprim value qmljs_class_new_instance(value context, value class_,
     caml_stat_alloc(sizeof(struct qmljs_class_instance));
   instance->klass = klass;
   instance->payload = payload;
+  instance->next_finalizer = NULL;
   qmljs_host_class_ref(klass);
   caml_register_generational_global_root(&instance->payload);
 

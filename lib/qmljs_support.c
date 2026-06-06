@@ -522,6 +522,8 @@ void qmljs_drain_deferred(struct qmljs_runtime_state *state)
   int runtime_alive =
     atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire);
 
+  qmljs_drain_class_finalizers(state);
+
   struct qmljs_deferred_value *values =
     atomic_exchange_explicit(&state->deferred_values, NULL,
                              memory_order_acquire);
@@ -563,6 +565,8 @@ void qmljs_drain_deferred(struct qmljs_runtime_state *state)
     caml_stat_free(contexts);
     contexts = next;
   }
+
+  qmljs_drain_class_finalizers(state);
 
   atomic_fetch_sub_explicit(&state->deferred_drain_depth, 1,
                             memory_order_acq_rel);

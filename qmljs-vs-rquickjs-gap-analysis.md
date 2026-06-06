@@ -51,6 +51,8 @@ Keep this as an OCaml API gap:
   instanceof.
 - [x] Support custom finalization through the runtime's deferred owner-domain
   release path.
+- [x] Run host class finalizer callbacks outside QuickJS finalizer frames so
+  user OCaml cannot re-enter QuickJS while QuickJS is finalizing an object.
 - [x] Runtime close enforces owner-domain access before touching QuickJS runtime
   state or promise hooks.
 

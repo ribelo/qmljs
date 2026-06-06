@@ -82,6 +82,33 @@ let test_gc_finalizers_do_not_call_quickjs_reentrantly () =
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_class_finalizer_cannot_reenter_quickjs () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   Qmljs.Context.with_ runtime @@ fun context ->
+   let finalized = ref 0 in
+   let instance_class =
+     Qmljs.Class.create context ~name:"ReentrantFinalizer"
+       ~finalize:(fun () ->
+         let value = Qmljs.Context.eval context "1 + 1" in
+         finalized := !finalized + Qmljs.Value.to_int value)
+   in
+   let make_instance () =
+     ignore (Qmljs.Class.instance instance_class () : Qmljs.value)
+   in
+   for _ = 1 to 100 do
+     make_instance ()
+   done;
+   Gc.full_major ();
+   Gc.full_major ();
+   Qmljs.Runtime.run_gc runtime;
+   let value = Qmljs.Context.eval context "2 + 2" in
+   check_int "runtime reusable after class finalizer" 4
+     (Qmljs.Value.to_int value);
+   check_int "class finalizer reentrant evals" 200 !finalized);
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let test_rejected_module_eval_leaks () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   let source =
@@ -396,6 +423,7 @@ let () =
   Eio_main.run @@ fun env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
+  test_class_finalizer_cannot_reenter_quickjs ();
   test_rejected_module_eval_leaks ();
   test_rejected_module_eval_frees_eval_result ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
