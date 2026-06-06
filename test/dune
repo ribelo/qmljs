@@ -11,7 +11,15 @@
  (libraries qmljs eio_main unix))
 
 (test
- (name test_qmljs_more_gaps)
+ (name test_qmljs_api_surface)
+ (modules
+  test_qmljs_api_surface
+  qmljs_test_common
+  qmljs_test_runtime_context
+  qmljs_test_values_objects
+  qmljs_test_functions_classes
+  qmljs_test_binary_numbers
+  qmljs_test_modules_loaders)
  (libraries qmljs eio_main unix))
 
 (test
