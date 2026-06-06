@@ -431,6 +431,33 @@ let test_module_loader_host_error_metadata_survives () =
       check_bool "module loader host frame survives" true
         (Qmljs.Error.has_ocaml_frame error ~function_name:"module_loader.load"))
 
+let test_module_loader_deny_host_error_metadata_survives () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let loader =
+    Qmljs.Module.Loader.memory [ "denied.js", "export default 1;" ]
+    |> Qmljs.Module.Loader.deny (fun _specifier ->
+      raise
+        (Qmljs.Error.host ~message:"deny boom"
+           ~metadata:[ "request_id", "d-1" ]))
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  expect_structured_error "module loader deny host metadata"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"loader-deny-metadata-fail.mjs" context
+           {|import value from "denied.js"; export default value;|}
+         : Qmljs.Module.namespace))
+    (fun error ->
+      check_kind "module loader deny host metadata kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "module loader deny host metadata message" "deny boom"
+        (Qmljs.Error.message error);
+      check_bool "module loader deny host metadata survives" true
+        (List.mem ("request_id", "d-1") (Qmljs.Error.metadata error));
+      check_bool "module loader deny host frame survives" true
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"module_loader.deny"))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -815,6 +842,8 @@ let tests env =
   , test_native_module_host_error_metadata_survives
   ; "module loader host error metadata survives"
   , test_module_loader_host_error_metadata_survives
+  ; "module loader deny host error metadata survives"
+  , test_module_loader_deny_host_error_metadata_survives
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved

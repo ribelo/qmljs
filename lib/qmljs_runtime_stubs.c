@@ -451,10 +451,11 @@ static int qmljs_module_loader_denies(JSContext *ctx,
                                     const char *module_name)
 {
   CAMLparam0();
-  CAMLlocal1(arg);
+  CAMLlocal3(arg, result_value, error);
+  value result;
   arg = caml_copy_string(module_name);
   qmljs_enter_ocaml_callback(loader->state);
-  value result = caml_callback_exn(loader->deny, arg);
+  result = caml_callback_exn(loader->deny, arg);
   qmljs_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
@@ -462,7 +463,15 @@ static int qmljs_module_loader_denies(JSContext *ctx,
     caml_stat_free(message);
     CAMLreturnT(int, -1);
   }
-  CAMLreturnT(int, Bool_val(result));
+  result_value = result;
+
+  if (Tag_val(result_value) == 1) {
+    error = Field(result_value, 0);
+    (void)qmljs_throw_error_marker(ctx, error);
+    CAMLreturnT(int, -1);
+  }
+
+  CAMLreturnT(int, Bool_val(Field(result_value, 0)));
 }
 
 static int qmljs_import_attributes_to_ocaml(JSContext *ctx,

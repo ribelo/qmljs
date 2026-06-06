@@ -147,8 +147,8 @@ Keep these loader gaps:
 - [x] Callback and fallback loaders reject repeated exact-load requests that
   normalize to the same module but differ by original specifier or base, instead
   of letting load observe stale request metadata.
-- [x] Loader callback failures preserve structured metadata, cause chains, and
-  OCaml frame data.
+- [x] Loader normalize, load, and deny callback failures preserve structured
+  metadata, cause chains, and OCaml frame data.
 
 Do not keep rquickjs tuple composition, PHF bundle loaders, compile-time bundle
 macros, or native dynamic-library loading as qmljs gaps.

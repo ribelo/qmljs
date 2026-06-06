@@ -420,10 +420,34 @@ let set_module_loader t loader =
       ~ocaml_frame
       error
   in
+  let host_defect_of_exception exn =
+    let message = Qmljs_error.host_exception_message exn in
+    let metadata = Array.to_list (Qmljs_error.host_exception_metadata exn) in
+    Qmljs_error.Structured.of_exception
+      (Qmljs_error.Structured.host ~message ~metadata)
+  in
+  let capture_loader_callback fn =
+    match fn () with
+    | result -> Ok result
+    | exception (Qmljs_error.Structured_error error) -> Error error
+    | exception (Qmljs_error.Host_error _ as exn) ->
+        Error (Qmljs_error.Structured.of_exception exn)
+    | exception (Qmljs_error.Policy_violation _ as exn) ->
+        Error (Qmljs_error.Structured.of_exception exn)
+    | exception Qmljs_error.Out_of_memory ->
+        Error (Qmljs_error.Structured.of_exception Qmljs_error.Out_of_memory)
+    | exception Qmljs_error.Stack_overflow ->
+        Error (Qmljs_error.Structured.of_exception Qmljs_error.Stack_overflow)
+    | exception (Qmljs_error.Resource_limit _ as exn) ->
+        Error (Qmljs_error.Structured.of_exception exn)
+    | exception (Qmljs_error.Timeout _ as exn) ->
+        Error (Qmljs_error.Structured.of_exception exn)
+    | exception exn -> Error (host_defect_of_exception exn)
+  in
   let normalize base specifier attributes =
     let attributes = attributes_to_list attributes in
     match
-      Qmljs_error.Structured.capture (fun () ->
+      capture_loader_callback (fun () ->
         loader.Qmljs_types.normalize ~base ~specifier ~attributes)
     with
     | Error error ->
@@ -461,8 +485,7 @@ let set_module_loader t loader =
           }
     in
     match
-      Qmljs_error.Structured.capture (fun () ->
-        loader.Qmljs_types.load request)
+      capture_loader_callback (fun () -> loader.Qmljs_types.load request)
     with
     | Error error ->
         Error (marker ~ocaml_frame:"module_loader.load" error normalized)
@@ -470,8 +493,16 @@ let set_module_loader t loader =
     | Ok (Error error) ->
         Error (marker ~ocaml_frame:"module_loader.load" error normalized)
   in
+  let deny specifier =
+    match
+      capture_loader_callback (fun () -> loader.Qmljs_types.deny specifier)
+    with
+    | Ok denied -> Ok denied
+    | Error error ->
+        Error (marker ~ocaml_frame:"module_loader.deny" error specifier)
+  in
   Qmljs_raw.runtime_install_module_loader
     (Qmljs_types.runtime_raw t)
-    loader.Qmljs_types.deny
+    deny
     normalize
     load

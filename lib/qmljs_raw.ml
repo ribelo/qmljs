@@ -39,7 +39,7 @@ external runtime_set_gc_threshold : runtime -> int -> unit
 
 external runtime_install_module_loader :
   runtime ->
-  (string -> bool) ->
+  (string -> (bool, Qmljs_error.marker) result) ->
   (string option ->
    string ->
    (string * string) array ->
