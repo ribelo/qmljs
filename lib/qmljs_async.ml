@@ -17,4 +17,7 @@ let drain_jobs ?(yield_every = 64) runtime =
       loop n quickjs_jobs)
     else n
   in
-  loop 0 0
+  let jobs = loop 0 0 in
+  Gc.full_major ();
+  Qmljs_runtime.run_gc runtime;
+  jobs

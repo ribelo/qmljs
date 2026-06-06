@@ -1080,7 +1080,9 @@ CAMLprim value qmljs_runtime_memory_usage(value runtime)
 CAMLprim value qmljs_runtime_run_gc(value runtime)
 {
   CAMLparam1(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   JS_RunGC(qmljs_runtime(runtime));
+  qmljs_drain_deferred(state);
   CAMLreturn(Val_unit);
 }
 
