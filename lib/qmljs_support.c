@@ -899,19 +899,24 @@ static int qml_error_kind_of_marker(const char *marker)
   return 0;
 }
 
-static int qml_error_kind_of_message(const char *message)
+static int qml_error_kind_of_engine_error(const char *name,
+                                          const char *message)
 {
-  if (message == NULL) {
+  if (name == NULL || message == NULL) {
     return 0;
   }
-  if (strcmp(message, "out of memory") == 0) {
+  if (strcmp(name, "InternalError") == 0 &&
+      strcmp(message, "out of memory") == 0) {
     return 1;
   }
-  if (strstr(message, "stack overflow") != NULL ||
-      strstr(message, "Maximum call stack size exceeded") != NULL) {
+  if ((strcmp(name, "InternalError") == 0 ||
+       strcmp(name, "RangeError") == 0) &&
+      (strstr(message, "stack overflow") != NULL ||
+       strstr(message, "Maximum call stack size exceeded") != NULL)) {
     return 2;
   }
-  if (strstr(message, "interrupted") != NULL) {
+  if (strcmp(name, "InternalError") == 0 &&
+      strstr(message, "interrupted") != NULL) {
     return 6;
   }
   return 0;
@@ -1067,10 +1072,7 @@ static value qml_build_structured_exception(JSContext *ctx,
     kind = 1;
   }
   if (kind == 0) {
-    kind = qml_error_kind_of_message(message);
-  }
-  if (kind == 0) {
-    kind = qml_error_kind_of_message(fallback_message);
+    kind = qml_error_kind_of_engine_error(name, message);
   }
 
   args[0] = qml_copy_optional_string(name);

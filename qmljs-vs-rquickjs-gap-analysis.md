@@ -323,6 +323,8 @@ Keep these context gaps:
   microtasks before an explicit driver/drain call.
 - [x] Timeout-wrapped eval preserves the original structured error as a cause
   when an interrupt flag and JS exception are both present.
+- [x] User JavaScript error messages are not reclassified as resource or timeout
+  failures by string matching.
 - [x] Module/file eval helpers only where they add structured errors or ownership
   behavior beyond ordinary OCaml file reading.
 

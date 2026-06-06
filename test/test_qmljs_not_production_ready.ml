@@ -142,6 +142,28 @@ let test_nul_in_public_string_keys_is_not_silently_truncated () =
     (Qmljs.Value.to_int
        (Qmljs.Context.eval context "Symbol.keyFor(globalThis.nulSymbol).charCodeAt(1)"))
 
+let test_user_error_message_interrupted_is_javascript_error () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  List.iter
+    (fun message ->
+      expect_structured_error ("user error " ^ message)
+        (fun () ->
+          Qmljs.Context.eval context
+            ("throw new Error(" ^ Qmljs.Json.stringify
+               (Qmljs.Value.string context message)
+             ^ ")"))
+        (fun error ->
+          check_kind ("user error kind " ^ message) Qmljs.Error.JavaScript
+            (Qmljs.Error.kind error);
+          check_string ("user error message " ^ message) message
+            (Qmljs.Error.message error)))
+    [ "interrupted"
+    ; "out of memory"
+    ; "stack overflow"
+    ; "Maximum call stack size exceeded"
+    ]
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -466,6 +488,8 @@ let tests env =
   , test_json_stringify_undefined_is_error_not_string
   ; "NUL in public string keys is not silently truncated"
   , test_nul_in_public_string_keys_is_not_silently_truncated
+  ; "user error message interrupted is JavaScript error"
+  , test_user_error_message_interrupted_is_javascript_error
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved
