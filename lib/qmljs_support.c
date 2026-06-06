@@ -1063,7 +1063,8 @@ static int qmljs_error_kind_of_marker(const char *marker)
 }
 
 static int qmljs_error_kind_of_engine_error(const char *name,
-                                          const char *message)
+                                          const char *message,
+                                          int is_uncatchable)
 {
   if (name == NULL || message == NULL) {
     return 0;
@@ -1078,7 +1079,7 @@ static int qmljs_error_kind_of_engine_error(const char *name,
        strstr(message, "Maximum call stack size exceeded") != NULL)) {
     return 2;
   }
-  if (strcmp(name, "InternalError") == 0 &&
+  if (is_uncatchable && strcmp(name, "InternalError") == 0 &&
       strstr(message, "interrupted") != NULL) {
     return 6;
   }
@@ -1188,6 +1189,8 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   const char *denied_specifier = NULL;
   int kind = 0;
   int trusted_marker = 0;
+  int trusted_engine_error = 0;
+  int trusted_uncatchable_error = 0;
 
   if (JS_IsNull(js_exception)) {
     kind = 1;
@@ -1199,6 +1202,8 @@ static value qmljs_build_structured_exception(JSContext *ctx,
     message = qmljs_property_cstring(ctx, js_exception, "message", &js_message);
     stack = qmljs_property_cstring(ctx, js_exception, "stack", &js_stack);
     trusted_marker = qmljs_is_error_marker(ctx, js_exception);
+    trusted_engine_error = JS_IsError(js_exception);
+    trusted_uncatchable_error = JS_IsUncatchableError(js_exception);
     if (trusted_marker) {
       ocaml_frame =
         qmljs_property_cstring(ctx, js_exception, "_qmljs_ocaml_frame",
@@ -1246,8 +1251,10 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   if (kind == 0 && JS_IsNull(js_exception)) {
     kind = 1;
   }
-  if (kind == 0) {
-    kind = qmljs_error_kind_of_engine_error(name, message);
+  if (kind == 0 && trusted_engine_error) {
+    kind =
+      qmljs_error_kind_of_engine_error(name, message,
+                                     trusted_uncatchable_error);
   }
 
   args[0] = qmljs_copy_optional_string(name);

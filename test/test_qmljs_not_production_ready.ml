@@ -347,6 +347,21 @@ let test_user_error_message_interrupted_is_javascript_error () =
     ; "Maximum call stack size exceeded"
     ]
 
+let test_user_internalerror_interrupted_is_javascript_error () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  expect_structured_error "user InternalError interrupted"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval context
+           {|throw { name: "InternalError", message: "interrupted" };|}
+         : Qmljs.value))
+    (fun error ->
+      check_kind "user InternalError interrupted kind"
+        Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+      check_string "user InternalError interrupted message" "interrupted"
+        (Qmljs.Error.message error))
+
 let test_user_js_cannot_spoof_qmljs_error_kind_marker () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -862,6 +877,8 @@ let tests env =
   , test_nul_in_public_string_keys_is_not_silently_truncated
   ; "user error message interrupted is JavaScript error"
   , test_user_error_message_interrupted_is_javascript_error
+  ; "user InternalError interrupted is JavaScript error"
+  , test_user_internalerror_interrupted_is_javascript_error
   ; "user JS cannot spoof qmljs error kind marker"
   , test_user_js_cannot_spoof_qmljs_error_kind_marker
   ; "throwing error getters do not poison context"
