@@ -565,6 +565,9 @@ static JSValueConst *qml_function_args(value context, value args, int *argc)
   if (*argc == 0) {
     return NULL;
   }
+  for (size_t i = 0; i < arg_count; i++) {
+    qml_argv_check(context, Field(args, i));
+  }
   JSValueConst *argv = qml_alloc_argv(arg_count);
   for (size_t i = 0; i < arg_count; i++) {
     qml_argv_set(context, argv, i, Field(args, i));
@@ -640,6 +643,9 @@ CAMLprim value qml_function_defer(value context, value function, value this_,
     qml_argc_of_size(arg_count > (size_t)INT_MAX - 2
                        ? (size_t)INT_MAX + 1
                        : arg_count + 2);
+  for (size_t i = 0; i < arg_count; i++) {
+    qml_argv_check(context, Field(args, i));
+  }
   JSValueConst *argv = qml_alloc_argv((size_t)argc);
   for (size_t i = 0; i < arg_count; i++) {
     qml_argv_set(context, argv, i, Field(args, i));

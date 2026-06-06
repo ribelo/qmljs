@@ -374,6 +374,31 @@ let test_same_runtime_cross_context_function_call_is_rejected () =
       check_kind "cross-context function call kind" Qmljs.Error.Wrong_domain
         (Qmljs.Error.kind error))
 
+let test_function_call_cross_context_arg_leak () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   let left = Qmljs.Context.create runtime in
+   let right = Qmljs.Context.create runtime in
+   let foreign = Qmljs.Value.int right 41 in
+   let function_ = Qmljs.Context.eval left "(x) => x + 1" in
+   for _ = 1 to 100 do
+     expect_structured_error "function call cross-context arg leak"
+       (fun () ->
+         ignore
+           (Qmljs.Function.call function_ [| foreign |] : Qmljs.Value.t))
+       (fun error ->
+         check_kind "function call cross-context arg leak kind"
+           Qmljs.Error.Wrong_domain (Qmljs.Error.kind error));
+     expect_structured_error "value call cross-context arg leak"
+       (fun () ->
+         ignore (Qmljs.Value.call function_ [| foreign |] : Qmljs.Value.t))
+       (fun error ->
+         check_kind "value call cross-context arg leak kind"
+           Qmljs.Error.Wrong_domain (Qmljs.Error.kind error))
+   done);
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let test_sync_host_callback_foreign_return_is_js_host_defect () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   let left = Qmljs.Context.create runtime in
@@ -656,6 +681,8 @@ let tests env =
   , test_same_runtime_cross_context_object_set_is_rejected
   ; "same-runtime cross-context function call is rejected"
   , test_same_runtime_cross_context_function_call_is_rejected
+  ; "function call cross-context arg leak"
+  , test_function_call_cross_context_arg_leak
   ; "sync host callback foreign return is JS host defect"
   , test_sync_host_callback_foreign_return_is_js_host_defect
   ; "json import attribute loads JSON module"
