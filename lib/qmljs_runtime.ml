@@ -46,7 +46,20 @@ type promise_hook =
   ; has_parent : bool
   }
 
+let register_domain_cleanup =
+  let cleanup_key =
+    Domain.DLS.new_key (fun () ->
+      Domain.at_exit (fun () ->
+        for _ = 1 to 3 do
+          Gc.full_major ();
+          Qmljs_raw.runtime_drain_deferred_runtimes ()
+        done);
+      ())
+  in
+  fun () -> Domain.DLS.get cleanup_key
+
 let create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit () =
+  register_domain_cleanup ();
   let raw = Qmljs_raw.runtime_create () in
   Option.iter (Qmljs_raw.runtime_set_memory_limit raw) memory_limit;
   Option.iter (Qmljs_raw.runtime_set_max_stack_size raw) max_stack_size;

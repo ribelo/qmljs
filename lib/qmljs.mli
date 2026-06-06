@@ -275,6 +275,7 @@ module Diagnostics : sig
   type snapshot
 
   val snapshot : unit -> snapshot
+  val native_runtimes : snapshot -> int
   val assert_no_leaks : before:snapshot -> after:snapshot -> unit
 end
 

@@ -51,6 +51,10 @@ external runtime_install_module_loader :
   = "qml_runtime_install_module_loader"
 
 external runtime_drain_deferred : runtime -> unit = "qml_runtime_drain_deferred"
+
+external runtime_drain_deferred_runtimes : unit -> unit
+  = "qml_runtime_drain_deferred_runtimes"
+
 external runtime_close : runtime -> bool = "qml_runtime_close"
 
 external runtime_is_job_pending : runtime -> bool = "qml_runtime_is_job_pending"
@@ -348,4 +352,8 @@ external diagnostics_live_contexts : unit -> int
 [@@noalloc]
 
 external diagnostics_live_values : unit -> int = "qml_diagnostics_live_values"
+[@@noalloc]
+
+external diagnostics_live_native_runtimes : unit -> int
+  = "qml_diagnostics_live_native_runtimes"
 [@@noalloc]

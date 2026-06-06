@@ -1003,6 +1003,13 @@ CAMLprim value qml_runtime_drain_deferred(value runtime)
   CAMLreturn(Val_unit);
 }
 
+CAMLprim value qml_runtime_drain_deferred_runtimes(value unit)
+{
+  CAMLparam1(unit);
+  qml_drain_deferred_runtimes();
+  CAMLreturn(Val_unit);
+}
+
 CAMLprim value qml_runtime_close(value runtime)
 {
   CAMLparam1(runtime);

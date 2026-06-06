@@ -1,3 +1,6 @@
+[@@@alert "-do_not_spawn_domains"]
+[@@@alert "-unsafe_multidomain"]
+
 let fail message = raise (Failure message)
 
 let check_int label expected actual =
@@ -106,6 +109,27 @@ let test_rejected_module_eval_leaks () =
     after.obj_count;
   check_int64 "rejected module eval memory-used count"
     before.memory_used_count after.memory_used_count
+
+let test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  for i = 1 to 16 do
+    let domain =
+      Domain.spawn (fun () ->
+        let runtime = Qmljs.Runtime.create () in
+        let context = Qmljs.Context.create runtime in
+        ignore
+          (Qmljs.Value.string context ("dead-owner-" ^ string_of_int i)
+           : Qmljs.value))
+    in
+    Domain.join domain;
+    Gc.full_major ();
+    Gc.full_major ()
+  done;
+  let after = Qmljs.Diagnostics.snapshot () in
+  check_int "native runtimes after dead owner domains"
+    (Qmljs.Diagnostics.native_runtimes before)
+    (Qmljs.Diagnostics.native_runtimes after);
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -256,6 +280,7 @@ let () =
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_rejected_module_eval_leaks ();
+  test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();

@@ -8,6 +8,7 @@
 static atomic_int qml_live_runtime_wrappers;
 static atomic_int qml_live_context_wrappers;
 static atomic_int qml_live_value_wrappers;
+static atomic_int qml_live_native_runtimes;
 
 struct qml_deferred_value {
   struct qml_runtime_state *state;
@@ -546,6 +547,7 @@ int qml_runtime_free_native(struct qml_runtime_state *state)
   }
   JS_FreeRuntime(state->rt);
   state->rt = NULL;
+  atomic_fetch_sub_explicit(&qml_live_native_runtimes, 1, memory_order_relaxed);
   if (state->runtime_info != NULL) {
     caml_stat_free(state->runtime_info);
     state->runtime_info = NULL;
@@ -673,6 +675,7 @@ value qml_alloc_runtime(JSRuntime *rt, struct qml_runtime_state *state)
   CAMLlocal1(block);
   /* state->refs was initialized to 1 for this wrapper at creation. */
   state->rt = rt;
+  atomic_fetch_add_explicit(&qml_live_native_runtimes, 1, memory_order_relaxed);
   block = caml_alloc_custom(&qml_runtime_ops, sizeof(struct qml_runtime), 0, 1);
   Qml_runtime_val(block)->state = state;
   atomic_fetch_add_explicit(&qml_live_runtime_wrappers, 1, memory_order_relaxed);
@@ -781,6 +784,13 @@ CAMLprim value qml_diagnostics_live_values(value unit)
   (void)unit;
   return Val_int(
     atomic_load_explicit(&qml_live_value_wrappers, memory_order_relaxed));
+}
+
+CAMLprim value qml_diagnostics_live_native_runtimes(value unit)
+{
+  (void)unit;
+  return Val_int(
+    atomic_load_explicit(&qml_live_native_runtimes, memory_order_relaxed));
 }
 
 void qml_raise_string(const char *message)
