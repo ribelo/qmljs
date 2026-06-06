@@ -326,6 +326,10 @@ Keep these runtime gaps:
   failures with cleanup failures attached as suppressed structured data.
 - [x] Owner-domain exit closes live runtimes before the domain disappears, so
   cross-domain survivor wrappers cannot strand deferred native runtime releases.
+- [x] Runtime C stubs initialize OCaml arrays, and import-attribute tuple
+  elements, before any later allocation can fail; covered for import
+  attributes, memory usage, promise rejections, and promise hooks with
+  failpoint tests.
 
 Do not keep custom Rust allocators or Rust global allocator integration as a
 current qmljs requirement. Add allocator customization only if there is a

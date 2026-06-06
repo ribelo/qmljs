@@ -34,6 +34,81 @@ struct qmljs_native_exports {
   JSModuleDef *module;
 };
 
+enum {
+  QMLJS_ARRAY_FAILPOINT_DISABLED = 0,
+  QMLJS_ARRAY_FAILPOINT_IMPORT_ATTRIBUTES = 1,
+  QMLJS_ARRAY_FAILPOINT_MEMORY_USAGE = 2,
+  QMLJS_ARRAY_FAILPOINT_PROMISE_REJECTIONS = 3,
+  QMLJS_ARRAY_FAILPOINT_PROMISE_HOOKS = 4
+};
+
+static atomic_int qmljs_test_array_failpoint_site =
+  QMLJS_ARRAY_FAILPOINT_DISABLED;
+
+static int qmljs_test_take_array_failpoint(int site)
+{
+  int expected = site;
+  return atomic_compare_exchange_strong_explicit(
+    &qmljs_test_array_failpoint_site, &expected,
+    QMLJS_ARRAY_FAILPOINT_DISABLED, memory_order_acq_rel,
+    memory_order_acquire);
+}
+
+static int qmljs_test_array_fields_are_unit(value array, mlsize_t length)
+{
+  for (mlsize_t i = 0; i < length; i++) {
+    if (Field(array, i) != Val_unit) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int qmljs_test_check_array_failpoint(value array, mlsize_t length,
+                                          int site)
+{
+  if (!qmljs_test_take_array_failpoint(site)) {
+    return 0;
+  }
+  return qmljs_test_array_fields_are_unit(array, length) ? 1 : -1;
+}
+
+static void qmljs_initialize_ocaml_array(value array, mlsize_t length)
+{
+  for (mlsize_t i = 0; i < length; i++) {
+    Store_field(array, i, Val_unit);
+  }
+}
+
+static void qmljs_test_raise_array_failpoint(value array, mlsize_t length,
+                                           int site)
+{
+  int result = qmljs_test_check_array_failpoint(array, length, site);
+  if (result < 0) {
+    qmljs_raise_string(
+      "qmljs test failpoint observed uninitialized OCaml array slot");
+  }
+  if (result > 0) {
+    qmljs_raise_string("qmljs test array allocation failpoint");
+  }
+}
+
+static int qmljs_test_throw_array_failpoint(JSContext *ctx, value array,
+                                          mlsize_t length, int site)
+{
+  int result = qmljs_test_check_array_failpoint(array, length, site);
+  if (result < 0) {
+    JS_ThrowInternalError(
+      ctx, "qmljs test failpoint observed uninitialized OCaml array slot");
+    return -1;
+  }
+  if (result > 0) {
+    JS_ThrowInternalError(ctx, "qmljs test array allocation failpoint");
+    return -1;
+  }
+  return 0;
+}
+
 static int qmljs_define_string_property(JSContext *ctx, JSValueConst object,
                                       const char *name, const char *value)
 {
@@ -409,6 +484,13 @@ static int qmljs_import_attributes_to_ocaml(JSContext *ctx,
   }
 
   array = caml_alloc(property_count, 0);
+  qmljs_initialize_ocaml_array(array, property_count);
+  if (qmljs_test_throw_array_failpoint(
+        ctx, array, property_count,
+        QMLJS_ARRAY_FAILPOINT_IMPORT_ATTRIBUTES) < 0) {
+    JS_FreePropertyEnum(ctx, properties, property_count);
+    CAMLreturnT(int, -1);
+  }
   for (uint32_t i = 0; i < property_count; i++) {
     const char *name = JS_AtomToCString(ctx, properties[i].atom);
     if (name == NULL) {
@@ -432,6 +514,8 @@ static int qmljs_import_attributes_to_ocaml(JSContext *ctx,
     }
 
     pair = caml_alloc_tuple(2);
+    Store_field(pair, 0, Val_unit);
+    Store_field(pair, 1, Val_unit);
     name_value = caml_copy_string(name);
     attribute_value = caml_copy_string(js_string);
     Store_field(pair, 0, name_value);
@@ -923,6 +1007,9 @@ CAMLprim value qmljs_runtime_memory_usage(value runtime)
   JS_ComputeMemoryUsage(rt, &usage);
 
   result = caml_alloc(26, 0);
+  qmljs_initialize_ocaml_array(result, 26);
+  qmljs_test_raise_array_failpoint(result, 26,
+                                 QMLJS_ARRAY_FAILPOINT_MEMORY_USAGE);
   qmljs_store_int64_field(result, 0, usage.malloc_size);
   qmljs_store_int64_field(result, 1, usage.malloc_limit);
   qmljs_store_int64_field(result, 2, usage.memory_used_size);
@@ -1034,6 +1121,9 @@ CAMLprim value qmljs_runtime_take_promise_rejections(value runtime)
   }
 
   result = caml_alloc(length, 0);
+  qmljs_initialize_ocaml_array(result, length);
+  qmljs_test_raise_array_failpoint(result, length,
+                                 QMLJS_ARRAY_FAILPOINT_PROMISE_REJECTIONS);
   struct qmljs_promise_rejection_event *event = state->promise_rejections_head;
   state->promise_rejections_head = NULL;
   state->promise_rejections_tail = NULL;
@@ -1080,6 +1170,9 @@ CAMLprim value qmljs_runtime_take_promise_hooks(value runtime)
   }
 
   result = caml_alloc(length, 0);
+  qmljs_initialize_ocaml_array(result, length);
+  qmljs_test_raise_array_failpoint(result, length,
+                                 QMLJS_ARRAY_FAILPOINT_PROMISE_HOOKS);
   struct qmljs_promise_hook_event *event = state->promise_hooks_head;
   state->promise_hooks_head = NULL;
   state->promise_hooks_tail = NULL;
@@ -1171,6 +1264,14 @@ CAMLprim value qmljs_test_runtime_close(value runtime)
 {
   CAMLparam1(runtime);
   CAMLreturn(qmljs_runtime_close(Field(runtime, 0)));
+}
+
+CAMLprim value qmljs_test_set_array_failpoint(value site)
+{
+  CAMLparam1(site);
+  atomic_store_explicit(&qmljs_test_array_failpoint_site, Int_val(site),
+                        memory_order_release);
+  CAMLreturn(Val_unit);
 }
 
 CAMLprim value qmljs_runtime_is_job_pending(value runtime)

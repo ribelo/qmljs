@@ -30,6 +30,9 @@ external test_runtime_close : Qmljs.Runtime.t -> bool = "qmljs_test_runtime_clos
 external test_internal_runtime_close : Qmljs__Qmljs_types.runtime -> bool
   = "qmljs_test_runtime_close"
 
+external test_set_array_failpoint : int -> unit
+  = "qmljs_test_set_array_failpoint"
+
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
     raise (Qmljs.Error.host ~message ~metadata))
@@ -46,6 +49,47 @@ let test_call_argument_count_over_int_max_is_rejected () =
       check_string "oversized argument count message"
         "function argument count exceeds QuickJS argc range"
         (Qmljs.Error.message error))
+
+let expect_array_failpoint label site fn =
+  Fun.protect
+    ~finally:(fun () -> test_set_array_failpoint 0)
+    (fun () ->
+      test_set_array_failpoint site;
+      expect_structured_error label fn (fun error ->
+        check_string (label ^ " message")
+          "qmljs test array allocation failpoint"
+          (Qmljs.Error.message error)))
+
+let test_c_stubs_initialize_ocaml_arrays_before_allocating_elements () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  Qmljs.Runtime.set_module_loader runtime
+    (Qmljs.Module.Loader.memory [ "data.json", {|{"answer": 42}|} ]);
+  expect_array_failpoint "import attributes array failpoint" 1
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval context
+           {|import data from "data.json" with { type: "json" };
+             export default data.answer;|}
+          : Qmljs.Module.namespace));
+  expect_array_failpoint "memory usage array failpoint" 2
+    (fun () -> ignore (Qmljs.Runtime.memory_usage runtime));
+  Qmljs.Runtime.set_promise_rejection_tracking runtime true;
+  ignore
+    (Qmljs.Context.eval context
+       "globalThis.arrayFailpointRejection = Promise.reject(new Error('boom'))"
+      : Qmljs.Value.t);
+  ignore (Qmljs.Runtime.drain_jobs runtime : int);
+  expect_array_failpoint "promise rejections array failpoint" 3
+    (fun () -> ignore (Qmljs.Runtime.take_promise_rejections runtime));
+  Qmljs.Runtime.set_promise_hook_tracking runtime true;
+  let promise =
+    Qmljs.Context.eval context
+      "Promise.resolve(40).then((value) => value + 2)"
+  in
+  ignore (Qmljs.Promise.await ~yield_every:1 promise : Qmljs.Value.t);
+  expect_array_failpoint "promise hooks array failpoint" 4
+    (fun () -> ignore (Qmljs.Runtime.take_promise_hooks runtime))
 
 let test_with_preserves_body_and_cleanup_failures () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -691,6 +735,8 @@ let test_async_host_callback_closed_context_crash env =
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
+  ; "C stubs initialize OCaml arrays before allocating elements"
+  , test_c_stubs_initialize_ocaml_arrays_before_allocating_elements
   ; "with preserves body and cleanup failures"
   , test_with_preserves_body_and_cleanup_failures
   ; "sync host callback timeout is preemptive"
