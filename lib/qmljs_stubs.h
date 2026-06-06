@@ -94,6 +94,8 @@ struct qmljs_atom {
 value qmljs_alloc_runtime(JSRuntime *rt, struct qmljs_runtime_state *state);
 value qmljs_alloc_context(value runtime, JSContext *ctx);
 value qmljs_alloc_value(value context, JSValue js_value);
+value qmljs_alloc_value_with_exact_int(value context, JSValue js_value,
+                                      int64_t exact_int);
 value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom);
 
 void qmljs_raise_string(const char *message);
@@ -114,6 +116,7 @@ JSContext *qmljs_context(value context);
 struct qmljs_runtime_state *qmljs_context_state(value context);
 JSValueConst qmljs_context_bigint_constructor(value context);
 JSValue qmljs_js_value(value wrapped);
+int qmljs_value_exact_int(value wrapped, int64_t *out);
 const char *qmljs_js_value_for_context(value context, value wrapped, JSValue *out);
 JSAtom qmljs_js_atom(value wrapped);
 void qmljs_update_stack_top(JSContext *ctx);
