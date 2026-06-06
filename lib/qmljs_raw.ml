@@ -320,6 +320,7 @@ external value_to_bool : context -> value -> bool = "qml_value_to_bool"
 external value_to_int : context -> value -> int = "qml_value_to_int"
 external value_to_float : context -> value -> float = "qml_value_to_float"
 external value_to_string : context -> value -> string = "qml_value_to_string"
+external bigint_of_string : context -> string -> value = "qml_bigint_of_string"
 external value_call : context -> value -> value array -> value = "qml_value_call"
 
 external value_strict_equal : context -> value -> value -> bool

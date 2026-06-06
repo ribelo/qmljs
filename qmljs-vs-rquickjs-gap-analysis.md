@@ -74,6 +74,8 @@ Keep this as a focused qmljs gap:
 - [x] Explicit non-coercing conversion by default, with separate named helpers for
   JavaScript coercion where qmljs intentionally exposes it.
 - [x] Structured conversion failures using Qmljs.Error.t, not string exceptions.
+- [x] Bigint.of_string treats input as data and does not splice it into
+  executable JavaScript source.
 - [x] Round-trip tests that match JavaScript semantics for null, undefined, arrays,
   objects, BigInt, typed arrays, and exceptions.
 

@@ -1773,6 +1773,47 @@ CAMLprim value qml_value_to_string(value context, value wrapped)
   CAMLreturn(result);
 }
 
+CAMLprim value qml_bigint_of_string(value context, value input)
+{
+  CAMLparam2(context, input);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+
+  JSValue global = JS_GetGlobalObject(ctx);
+  if (JS_IsException(global)) {
+    qml_raise_exception(ctx);
+  }
+  JSValue constructor = JS_GetPropertyStr(ctx, global, "BigInt");
+  JS_FreeValue(ctx, global);
+  if (JS_IsException(constructor)) {
+    qml_raise_exception(ctx);
+  }
+  if (!JS_IsFunction(ctx, constructor)) {
+    JS_FreeValue(ctx, constructor);
+    qml_raise_string("BigInt constructor is not available");
+  }
+
+  JSValue argument =
+    JS_NewStringLen(ctx, String_val(input), caml_string_length(input));
+  if (JS_IsException(argument)) {
+    JS_FreeValue(ctx, constructor);
+    qml_raise_exception(ctx);
+  }
+
+  JSValueConst argv[1] = { argument };
+  JSValue result = JS_Call(ctx, constructor, JS_UNDEFINED, 1, argv);
+  JS_FreeValue(ctx, argument);
+  JS_FreeValue(ctx, constructor);
+  if (JS_IsException(result)) {
+    qml_raise_exception(ctx);
+  }
+  if (!JS_IsBigInt(result)) {
+    JS_FreeValue(ctx, result);
+    qml_raise_string("BigInt constructor did not return a BigInt");
+  }
+  CAMLreturn(qml_alloc_value(context, result));
+}
+
 CAMLprim value qml_value_call(value context, value function, value args)
 {
   CAMLparam3(context, function, args);

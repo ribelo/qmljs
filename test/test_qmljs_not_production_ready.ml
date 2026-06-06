@@ -78,6 +78,25 @@ let test_timeout_preserves_original_structured_stack () =
   check_int "runtime reusable after preserved timeout" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
 
+let test_bigint_of_string_does_not_execute_code () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore (Qmljs.Context.eval context "globalThis.pwned = 0" : Qmljs.value);
+  let result =
+    Qmljs.Error.capture (fun () ->
+        ignore
+          (Qmljs.Bigint.of_string context "1; globalThis.pwned = 42; 2"
+           : Qmljs.value))
+  in
+  check_int "Bigint.of_string did not run injected code" 0
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.pwned"));
+  (match result with
+   | Ok _ -> fail "Bigint.of_string accepted executable input"
+   | Error _ -> ());
+  check_string "valid Bigint.of_string still works" "9007199254740993"
+    (Qmljs.Bigint.to_string
+       (Qmljs.Bigint.of_string context "9007199254740993"))
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -396,6 +415,8 @@ let tests env =
   , test_eval_with_timeout_does_not_drain_microtasks_on_success
   ; "timeout preserves original structured stack"
   , test_timeout_preserves_original_structured_stack
+  ; "Bigint.of_string does not execute code"
+  , test_bigint_of_string_does_not_execute_code
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved
