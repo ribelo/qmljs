@@ -37,7 +37,21 @@ let bool context value =
   ; raw = Qmljs_raw.value_bool (Qmljs_types.context_raw context) value
   }
 
+(* JS numbers are IEEE-754 doubles: only integers with |n| <= 2^53 - 1
+   (Number.MAX_SAFE_INTEGER) survive as exact JS values. OCaml's native int is
+   63-bit, so larger magnitudes cannot be represented faithfully as a JS number.
+   Rather than silently round (corrupting the value) or smuggle a BigInt (which
+   breaks Number arithmetic, JSON, and to_float), [int] fails loudly and points
+   the caller at [Bigint] for exact large integers. *)
+let max_safe_integer = 9007199254740991 (* 2^53 - 1 *)
+
 let int context value =
+  if value < -max_safe_integer || value > max_safe_integer then
+    invalid_arg
+      (Printf.sprintf
+         "Qmljs.Value.int: %d is outside the JS safe-integer range \
+          [-(2^53-1), 2^53-1]; use Qmljs.Bigint.of_int64 for exact large integers"
+         value);
   { Qmljs_types.context
   ; raw = Qmljs_raw.value_int (Qmljs_types.context_raw context) value
   }

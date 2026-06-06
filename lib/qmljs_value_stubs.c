@@ -6,8 +6,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define QMLJS_MAX_SAFE_INTEGER 9007199254740991LL
-
 CAMLprim value qmljs_value_undefined(value context)
 {
   CAMLparam1(context);
@@ -37,13 +35,12 @@ CAMLprim value qmljs_value_int(value context, value input)
   CAMLparam2(context, input);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
-  int64_t integer = Long_val(input);
-  JSValue result = JS_NewInt64(ctx, integer);
+  /* Value.int delivers a JS Number. The OCaml wrapper (Qmljs_value.int) has
+     already rejected magnitudes above MAX_SAFE_INTEGER, so every value that
+     reaches here is exactly representable as a double. */
+  JSValue result = JS_NewInt64(ctx, Long_val(input));
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);
-  }
-  if (integer < -QMLJS_MAX_SAFE_INTEGER || integer > QMLJS_MAX_SAFE_INTEGER) {
-    CAMLreturn(qmljs_alloc_value_with_exact_int(context, result, integer));
   }
   CAMLreturn(qmljs_alloc_value(context, result));
 }
@@ -1863,9 +1860,6 @@ CAMLprim value qmljs_value_to_int(value context, value wrapped)
   JSContext *ctx = qmljs_context(context);
   qmljs_ensure_same_context(context, wrapped);
   qmljs_update_stack_top(ctx);
-  if (qmljs_value_exact_int(wrapped, &result)) {
-    CAMLreturn(Val_long((intnat)result));
-  }
   JSValueConst js_value = qmljs_js_value(wrapped);
   if (JS_IsBigInt(js_value)) {
     int bigint_result = qmljs_bigint_to_ocaml_int(ctx, js_value, &result);

@@ -139,8 +139,6 @@ struct qmljs_value_handle {
   struct qmljs_runtime_state *state;
   struct qmljs_context_handle *context;
   JSValue value;
-  int has_exact_int;
-  int64_t exact_int;
   atomic_int live;
   int linked;
   struct qmljs_value_handle *prev;
@@ -1091,8 +1089,7 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   CAMLreturn(block);
 }
 
-static value qmljs_alloc_value_internal(value context, JSValue js_value,
-                                      int has_exact_int, int64_t exact_int)
+value qmljs_alloc_value(value context, JSValue js_value)
 {
   CAMLparam1(context);
   CAMLlocal1(block);
@@ -1106,8 +1103,6 @@ static value qmljs_alloc_value_internal(value context, JSValue js_value,
   handle->state = state;
   handle->context = context_handle;
   handle->value = js_value;
-  handle->has_exact_int = has_exact_int;
-  handle->exact_int = exact_int;
   atomic_init(&handle->live, 1);
   handle->linked = 0;
   handle->prev = NULL;
@@ -1124,17 +1119,6 @@ static value qmljs_alloc_value_internal(value context, JSValue js_value,
   }
   Qml_value_val(block)->handle = handle;
   CAMLreturn(block);
-}
-
-value qmljs_alloc_value(value context, JSValue js_value)
-{
-  return qmljs_alloc_value_internal(context, js_value, 0, 0);
-}
-
-value qmljs_alloc_value_with_exact_int(value context, JSValue js_value,
-                                      int64_t exact_int)
-{
-  return qmljs_alloc_value_internal(context, js_value, 1, exact_int);
 }
 
 value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)
@@ -1776,23 +1760,6 @@ JSValue qmljs_js_value(value wrapped)
     qmljs_raise_string("QuickJS value is closed");
   }
   return handle->value;
-}
-
-int qmljs_value_exact_int(value wrapped, int64_t *out)
-{
-  struct qmljs_value *wrapped_value = Qml_value_val(wrapped);
-  struct qmljs_value_handle *handle = wrapped_value->handle;
-  if (handle == NULL) {
-    return 0;
-  }
-  if (atomic_load_explicit(&handle->live, memory_order_acquire) == 0) {
-    return 0;
-  }
-  if (handle->has_exact_int == 0) {
-    return 0;
-  }
-  *out = handle->exact_int;
-  return 1;
 }
 
 const char *qmljs_js_value_for_context(value context, value wrapped, JSValue *out)

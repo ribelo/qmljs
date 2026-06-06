@@ -181,7 +181,19 @@ module Value : sig
   val undefined : Context.t -> t
   val null : Context.t -> t
   val bool : Context.t -> bool -> t
+
+  (** [int ctx n] creates a JS [Number] from the OCaml int [n].
+
+      JS numbers are IEEE-754 doubles, so only integers with
+      [abs n <= 9_007_199_254_740_991] ([Number.MAX_SAFE_INTEGER], i.e.
+      [2^53 - 1]) are representable exactly. OCaml's native int is 63-bit and can
+      hold larger magnitudes, which a JS number cannot store without loss, so
+      [int] raises [Invalid_argument] for [abs n > MAX_SAFE_INTEGER] rather than
+      silently rounding. Use {!Bigint.of_int64} when you need an exact large
+      integer (as a JS [BigInt], with BigInt — not Number — semantics). *)
   val int : Context.t -> int -> t
+
+  (** [float ctx x] creates a JS [Number] from [x] with no range restriction. *)
   val float : Context.t -> float -> t
   val string : Context.t -> string -> t
   val object_ : t -> t
@@ -190,6 +202,12 @@ module Value : sig
   val typed_array : t -> t
 
   val to_bool : t -> bool
+
+  (** [to_int t] reads [t] as an OCaml int. Numbers follow JS [ToInteger]
+      (truncation toward zero); a [BigInt] is read exactly. Raises if the
+      integer value falls outside the OCaml int range. Because {!int} only
+      accepts safe-range integers, [to_int (int ctx n) = n] holds for every [n]
+      that {!int} accepts. *)
   val to_int : t -> int
   val to_float : t -> float
   val to_string : t -> string
