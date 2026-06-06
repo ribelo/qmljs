@@ -20,6 +20,13 @@ let expect_structured_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected structured error")
   | Error error -> assert_error error
 
+let host_error ~message ~metadata =
+  match Qmljs.Error.capture (fun () ->
+    raise (Qmljs.Error.host ~message ~metadata))
+  with
+  | Ok _ -> fail "host error helper did not raise"
+  | Error error -> error
+
 let test_sync_host_callback_timeout_is_preemptive () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -163,6 +170,63 @@ let test_user_error_message_interrupted_is_javascript_error () =
     ; "stack overflow"
     ; "Maximum call stack size exceeded"
     ]
+
+let test_native_module_host_error_metadata_survives () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let failing_module =
+    Qmljs.Module.Native.define
+      (fun declarations -> Qmljs.Module.Native.declare declarations "default")
+      ~evaluate:(fun _exports ->
+        raise
+          (Qmljs.Error.host ~message:"boom"
+             ~metadata:[ "request_id", "m-1" ]))
+  in
+  Qmljs.Module.declare_native context ~name:"native:metadata-fail"
+    failing_module;
+  expect_structured_error "native module host metadata"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"native-metadata-fail.mjs" context
+           {|import value from "native:metadata-fail"; export default value;|}
+         : Qmljs.Module.namespace))
+    (fun error ->
+      check_kind "native module host metadata kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "native module host metadata message" "boom"
+        (Qmljs.Error.message error);
+      check_bool "native module host metadata survives" true
+        (List.mem ("request_id", "m-1") (Qmljs.Error.metadata error));
+      check_bool "native module host frame survives" true
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"native:metadata-fail"))
+
+let test_module_loader_host_error_metadata_survives () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let loader_error =
+    host_error ~message:"loader boom" ~metadata:[ "request_id", "l-1" ]
+  in
+  let loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier ~attributes:_ -> Ok specifier)
+      ~load:(fun _request -> Error loader_error)
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  expect_structured_error "module loader host metadata"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"loader-metadata-fail.mjs" context
+           {|import value from "loader:metadata-fail"; export default value;|}
+         : Qmljs.Module.namespace))
+    (fun error ->
+      check_kind "module loader host metadata kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "module loader host metadata message" "loader boom"
+        (Qmljs.Error.message error);
+      check_bool "module loader host metadata survives" true
+        (List.mem ("request_id", "l-1") (Qmljs.Error.metadata error));
+      check_bool "module loader host frame survives" true
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"module_loader.load"))
 
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -490,6 +554,10 @@ let tests env =
   , test_nul_in_public_string_keys_is_not_silently_truncated
   ; "user error message interrupted is JavaScript error"
   , test_user_error_message_interrupted_is_javascript_error
+  ; "native module host error metadata survives"
+  , test_native_module_host_error_metadata_survives
+  ; "module loader host error metadata survives"
+  , test_module_loader_host_error_metadata_survives
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved

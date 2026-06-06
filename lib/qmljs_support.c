@@ -896,6 +896,12 @@ static int qml_error_kind_of_marker(const char *marker)
   if (strcmp(marker, "timeout") == 0) {
     return 6;
   }
+  if (strcmp(marker, "closed_handle") == 0) {
+    return 7;
+  }
+  if (strcmp(marker, "wrong_domain") == 0) {
+    return 8;
+  }
   return 0;
 }
 

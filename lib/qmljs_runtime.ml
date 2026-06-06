@@ -278,27 +278,21 @@ let set_module_loader t loader =
   let attributes_to_list (attributes : (string * string) array) =
     Array.to_list attributes
   in
-  let marker error specifier =
-    let kind, denied_specifier =
-      match Qmljs_error.Structured.kind error with
-      | Policy_violation { denied_module_specifier } ->
-          ( "policy_violation"
-          , Option.value denied_module_specifier ~default:specifier )
-      | Host_callback_defect -> "host_callback_defect", ""
-      | Out_of_memory -> "out_of_memory", ""
-      | Stack_overflow -> "stack_overflow", ""
-      | Resource_limit -> "resource_limit", ""
-      | Timeout -> "timeout", ""
-      | Closed_handle -> "closed_handle", ""
-      | Wrong_domain -> "wrong_domain", ""
-      | JavaScript -> "javascript", ""
-    in
-    Qmljs_error.Structured.message error, kind, denied_specifier
+  let marker ~ocaml_frame error specifier =
+    Qmljs_error.Structured.to_marker
+      ~denied_specifier_default:specifier
+      ~ocaml_frame
+      error
   in
   let normalize base specifier attributes =
     let attributes = attributes_to_list attributes in
-    match loader.Qmljs_types.normalize ~base ~specifier ~attributes with
-    | Ok normalized ->
+    match
+      Qmljs_error.Structured.capture (fun () ->
+        loader.Qmljs_types.normalize ~base ~specifier ~attributes)
+    with
+    | Error error ->
+        Error (marker ~ocaml_frame:"module_loader.normalize" error specifier)
+    | Ok (Ok normalized) ->
         let request =
           { Qmljs_types.base
           ; specifier
@@ -308,7 +302,8 @@ let set_module_loader t loader =
         in
         Hashtbl.replace loader.Qmljs_types.requests normalized request;
         Ok normalized
-    | Error error -> Error (marker error specifier)
+    | Ok (Error error) ->
+        Error (marker ~ocaml_frame:"module_loader.normalize" error specifier)
   in
   let load normalized attributes =
     let attributes = attributes_to_list attributes in
@@ -322,9 +317,15 @@ let set_module_loader t loader =
           ; attributes
           }
     in
-    match loader.Qmljs_types.load request with
-    | Ok _ as result -> result
-    | Error error -> Error (marker error normalized)
+    match
+      Qmljs_error.Structured.capture (fun () ->
+        loader.Qmljs_types.load request)
+    with
+    | Error error ->
+        Error (marker ~ocaml_frame:"module_loader.load" error normalized)
+    | Ok (Ok _ as result) -> result
+    | Ok (Error error) ->
+        Error (marker ~ocaml_frame:"module_loader.load" error normalized)
   in
   Qmljs_raw.runtime_install_module_loader
     (Qmljs_types.runtime_raw t)

@@ -154,23 +154,6 @@ type native_exports =
   ; raw : Qmljs_raw.native_exports
   }
 
-let error_marker error =
-  let kind, denied_specifier =
-    match Qmljs_error.Structured.kind error with
-    | Policy_violation { denied_module_specifier } ->
-        ( "policy_violation"
-        , Option.value denied_module_specifier ~default:"" )
-    | Host_callback_defect -> "host_callback_defect", ""
-    | Out_of_memory -> "out_of_memory", ""
-    | Stack_overflow -> "stack_overflow", ""
-    | Resource_limit -> "resource_limit", ""
-    | Timeout -> "timeout", ""
-    | Closed_handle -> "closed_handle", ""
-    | Wrong_domain -> "wrong_domain", ""
-    | JavaScript -> "javascript", ""
-  in
-  Qmljs_error.Structured.message error, kind, denied_specifier
-
 module Native = struct
   type exports = native_exports
 
@@ -216,7 +199,8 @@ let declare_native context ~name (native : Native.t) =
     let exports = { context; raw = raw_exports } in
     match Qmljs_error.Structured.capture (fun () -> native.evaluate exports) with
     | Ok () -> Ok ()
-    | Error error -> Error (error_marker error)
+    | Error error ->
+        Error (Qmljs_error.Structured.to_marker ~ocaml_frame:name error)
   in
   Qmljs_raw.module_declare_native
     (Qmljs_types.context_raw context)

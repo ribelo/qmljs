@@ -43,10 +43,10 @@ external runtime_install_module_loader :
   (string option ->
    string ->
    (string * string) array ->
-   (string, string * string * string) result) ->
+   (string, Qmljs_error.marker) result) ->
   (string ->
    (string * string) array ->
-   (string option, string * string * string) result) ->
+   (string option, Qmljs_error.marker) result) ->
   unit
   = "qml_runtime_install_module_loader"
 
@@ -101,7 +101,7 @@ external module_declare_native :
   context ->
   string ->
   string array ->
-  (native_exports -> (unit, string * string * string) result) ->
+  (native_exports -> (unit, Qmljs_error.marker) result) ->
   unit
   = "qml_module_declare_native"
 

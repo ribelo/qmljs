@@ -104,6 +104,8 @@ Keep these module gaps:
 - [x] import.meta and namespace object access for evaluated modules.
 - [x] Rejected top-level-await module evaluation frees eval promises before
   raising the structured rejection.
+- [x] Native module evaluation failures preserve structured metadata, cause
+  chains, and OCaml frame data.
 
 Do not carry over rquickjs's module_init! macro or dynamic-library module
 loading as qmljs root-package requirements. QuickJS bytecode read/write support
@@ -130,6 +132,8 @@ Keep these loader gaps:
   loaders.
 - [x] Tests for relative resolution, root escape denial, JSON modules, unknown
   attributes, and repeated imports.
+- [x] Loader callback failures preserve structured metadata, cause chains, and
+  OCaml frame data.
 
 Do not keep rquickjs tuple composition, PHF bundle loaders, compile-time bundle
 macros, or native dynamic-library loading as qmljs gaps.

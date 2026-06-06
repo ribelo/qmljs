@@ -44,6 +44,17 @@ static int qml_define_string_property(JSContext *ctx, JSValueConst object,
   return JS_DefinePropertyValueStr(ctx, object, name, string, JS_PROP_C_W_E);
 }
 
+static int qml_define_ocaml_string_property(JSContext *ctx, JSValueConst object,
+                                            const char *name, value input)
+{
+  JSValue string =
+    JS_NewStringLen(ctx, String_val(input), caml_string_length(input));
+  if (JS_IsException(string)) {
+    return -1;
+  }
+  return JS_DefinePropertyValueStr(ctx, object, name, string, JS_PROP_C_W_E);
+}
+
 static JSValue qml_throw_marked_error(JSContext *ctx, const char *message,
                                       const char *kind,
                                       const char *denied_specifier)
@@ -60,6 +71,136 @@ static JSValue qml_throw_marked_error(JSContext *ctx, const char *message,
                                   denied_specifier) < 0)) {
     JS_FreeValue(ctx, error);
     return JS_EXCEPTION;
+  }
+  return JS_Throw(ctx, error);
+}
+
+enum {
+  QML_ERROR_MARKER_NAME = 0,
+  QML_ERROR_MARKER_MESSAGE = 1,
+  QML_ERROR_MARKER_KIND = 2,
+  QML_ERROR_MARKER_DENIED_SPECIFIER = 3,
+  QML_ERROR_MARKER_STACK = 4,
+  QML_ERROR_MARKER_OCAML_FRAME = 5,
+  QML_ERROR_MARKER_METADATA = 6,
+  QML_ERROR_MARKER_CAUSE = 7
+};
+
+static int qml_define_error_marker_metadata(JSContext *ctx,
+                                            JSValueConst error,
+                                            value metadata)
+{
+  mlsize_t length = Wosize_val(metadata);
+  if (length == 0) {
+    return 0;
+  }
+
+  JSValue js_metadata = JS_NewArray(ctx);
+  if (JS_IsException(js_metadata)) {
+    return -1;
+  }
+
+  for (mlsize_t i = 0; i < length; i++) {
+    value pair = Field(metadata, i);
+    value key = Field(pair, 0);
+    value item = Field(pair, 1);
+    JSValue js_pair = JS_NewArray(ctx);
+    if (JS_IsException(js_pair)) {
+      JS_FreeValue(ctx, js_metadata);
+      return -1;
+    }
+
+    JSValue js_key =
+      JS_NewStringLen(ctx, String_val(key), caml_string_length(key));
+    JSValue js_item =
+      JS_NewStringLen(ctx, String_val(item), caml_string_length(item));
+    if (JS_IsException(js_key) || JS_IsException(js_item)) {
+      JS_FreeValue(ctx, js_item);
+      JS_FreeValue(ctx, js_key);
+      JS_FreeValue(ctx, js_pair);
+      JS_FreeValue(ctx, js_metadata);
+      return -1;
+    }
+    if (JS_SetPropertyUint32(ctx, js_pair, 0, js_key) < 0) {
+      JS_FreeValue(ctx, js_item);
+      JS_FreeValue(ctx, js_pair);
+      JS_FreeValue(ctx, js_metadata);
+      return -1;
+    }
+    if (JS_SetPropertyUint32(ctx, js_pair, 1, js_item) < 0) {
+      JS_FreeValue(ctx, js_pair);
+      JS_FreeValue(ctx, js_metadata);
+      return -1;
+    }
+    if (JS_SetPropertyUint32(ctx, js_metadata, (uint32_t)i, js_pair) < 0) {
+      JS_FreeValue(ctx, js_metadata);
+      return -1;
+    }
+  }
+
+  return JS_DefinePropertyValueStr(ctx, error, "_qmljs_metadata", js_metadata,
+                                   JS_PROP_C_W_E);
+}
+
+static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth);
+
+static int qml_define_error_marker_cause(JSContext *ctx, JSValueConst error,
+                                         value cause, int depth)
+{
+  if (cause == Val_int(0) || depth >= 64) {
+    return 0;
+  }
+
+  JSValue js_cause = qml_error_marker_to_js(ctx, Field(cause, 0), depth + 1);
+  if (JS_IsException(js_cause)) {
+    return -1;
+  }
+  return JS_DefinePropertyValueStr(ctx, error, "cause", js_cause,
+                                   JS_PROP_C_W_E);
+}
+
+static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth)
+{
+  JSValue error = JS_NewError(ctx);
+  if (JS_IsException(error)) {
+    return error;
+  }
+
+  value name = Field(marker, QML_ERROR_MARKER_NAME);
+  value message = Field(marker, QML_ERROR_MARKER_MESSAGE);
+  value kind = Field(marker, QML_ERROR_MARKER_KIND);
+  value denied_specifier = Field(marker, QML_ERROR_MARKER_DENIED_SPECIFIER);
+  value stack = Field(marker, QML_ERROR_MARKER_STACK);
+  value ocaml_frame = Field(marker, QML_ERROR_MARKER_OCAML_FRAME);
+  value metadata = Field(marker, QML_ERROR_MARKER_METADATA);
+  value cause = Field(marker, QML_ERROR_MARKER_CAUSE);
+
+  if ((caml_string_length(name) > 0 &&
+       qml_define_ocaml_string_property(ctx, error, "name", name) < 0) ||
+      qml_define_ocaml_string_property(ctx, error, "message", message) < 0 ||
+      qml_define_ocaml_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
+      (caml_string_length(denied_specifier) > 0 &&
+       qml_define_ocaml_string_property(
+         ctx, error, "_qmljs_denied_module_specifier", denied_specifier) < 0) ||
+      (caml_string_length(stack) > 0 &&
+       qml_define_ocaml_string_property(ctx, error, "stack", stack) < 0) ||
+      (caml_string_length(ocaml_frame) > 0 &&
+       qml_define_ocaml_string_property(ctx, error, "_qmljs_ocaml_frame",
+                                        ocaml_frame) < 0) ||
+      qml_define_error_marker_metadata(ctx, error, metadata) < 0 ||
+      qml_define_error_marker_cause(ctx, error, cause, depth) < 0) {
+    JS_FreeValue(ctx, error);
+    return JS_EXCEPTION;
+  }
+
+  return error;
+}
+
+static JSValue qml_throw_error_marker(JSContext *ctx, value marker)
+{
+  JSValue error = qml_error_marker_to_js(ctx, marker, 0);
+  if (JS_IsException(error)) {
+    return error;
   }
   return JS_Throw(ctx, error);
 }
@@ -157,14 +298,7 @@ static int qml_native_module_eval(JSContext *ctx, JSModuleDef *module)
 
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
-    value message = Field(error, 0);
-    value kind = Field(error, 1);
-    value denied_specifier = Field(error, 2);
-    (void)qml_throw_marked_error(
-      ctx, String_val(message), String_val(kind),
-      caml_string_length(denied_specifier) == 0
-        ? NULL
-        : String_val(denied_specifier));
+    (void)qml_throw_error_marker(ctx, error);
     CAMLreturnT(int, -1);
   }
 
@@ -329,9 +463,6 @@ static char *qml_module_loader_normalize(JSContext *ctx,
   value some;
   value base_string;
   value error;
-  value message;
-  value kind;
-  value denied_specifier;
 
   if (module_base_name == NULL) {
     roots[0] = Val_int(0);
@@ -366,14 +497,7 @@ static char *qml_module_loader_normalize(JSContext *ctx,
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
     roots[5] = error;
-    message = Field(error, 0);
-    kind = Field(error, 1);
-    denied_specifier = Field(error, 2);
-    (void)qml_throw_marked_error(
-      ctx, String_val(message), String_val(kind),
-      caml_string_length(denied_specifier) == 0
-        ? NULL
-        : String_val(denied_specifier));
+    (void)qml_throw_error_marker(ctx, error);
     CAMLreturnT(char *, NULL);
   }
 
@@ -512,9 +636,6 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   CAMLlocalN(roots, 7);
   value result;
   value error;
-  value message;
-  value kind;
-  value denied_specifier;
   value source_option;
   value source;
 
@@ -552,14 +673,7 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
     roots[3] = error;
-    message = Field(error, 0);
-    kind = Field(error, 1);
-    denied_specifier = Field(error, 2);
-    (void)qml_throw_marked_error(
-      ctx, String_val(message), String_val(kind),
-      caml_string_length(denied_specifier) == 0
-        ? NULL
-        : String_val(denied_specifier));
+    (void)qml_throw_error_marker(ctx, error);
     CAMLreturnT(JSModuleDef *, NULL);
   }
 

@@ -29,6 +29,17 @@ and structured =
   ; metadata : (string * string) list
   }
 
+type marker =
+  { marker_name : string
+  ; marker_message : string
+  ; marker_kind : string
+  ; marker_denied_specifier : string
+  ; marker_stack : string
+  ; marker_ocaml_frame : string
+  ; marker_metadata : (string * string) array
+  ; marker_cause : marker option
+  }
+
 exception Error of string
 exception Host_error of string * (string * string) list
 exception Structured_error of structured
@@ -93,6 +104,8 @@ let kind_of_code denied_specifier = function
   | 4 -> Policy_violation_kind denied_specifier
   | 5 -> Host_callback_defect_kind
   | 6 -> Timeout_kind
+  | 7 -> Closed_handle_kind
+  | 8 -> Wrong_domain_kind
   | _ -> JavaScript
 
 (* Construct one level of a structured error. Called by the C boundary while
@@ -161,6 +174,56 @@ module Structured = struct
   let of_timeout message = make ~kind:Timeout_kind message
   let timeout_with_cause ~message cause =
     make ~kind:Timeout_kind ~cause message
+
+  let marker_kind_of_kind ?denied_specifier_default = function
+    | Policy_violation_kind specifier ->
+        let denied_specifier =
+          match specifier, denied_specifier_default with
+          | "", Some default -> default
+          | _ -> specifier
+        in
+        "policy_violation", denied_specifier
+    | Host_callback_defect_kind -> "host_callback_defect", ""
+    | Out_of_memory_kind -> "out_of_memory", ""
+    | Stack_overflow_kind -> "stack_overflow", ""
+    | Resource_limit_kind -> "resource_limit", ""
+    | Timeout_kind -> "timeout", ""
+    | Closed_handle_kind -> "closed_handle", ""
+    | Wrong_domain_kind -> "wrong_domain", ""
+    | JavaScript -> "javascript", ""
+
+  let first_ocaml_frame (frames : frame list) =
+    List.find_map
+      (fun frame ->
+        match frame.kind with
+        | Js_frame -> None
+        | Ocaml_frame ->
+            Some
+              (if String.equal frame.function_name "" then frame.raw
+               else frame.function_name))
+      frames
+
+  let rec to_marker ?denied_specifier_default ?(ocaml_frame = "") (t : t) =
+    let marker_kind, marker_denied_specifier =
+      marker_kind_of_kind ?denied_specifier_default t.kind
+    in
+    let marker_ocaml_frame =
+      match first_ocaml_frame t.frames with
+      | Some frame when not (String.equal frame "") -> frame
+      | _ -> ocaml_frame
+    in
+    { marker_name = t.name
+    ; marker_message = t.message
+    ; marker_kind
+    ; marker_denied_specifier
+    ; marker_stack = t.stack
+    ; marker_ocaml_frame
+    ; marker_metadata = Array.of_list t.metadata
+    ; marker_cause =
+        Option.map
+          (fun cause -> to_marker ?denied_specifier_default cause)
+          t.cause
+    }
 
   let of_exception = function
     | Structured_error error -> error
