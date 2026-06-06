@@ -72,7 +72,7 @@ CAMLprim value qml_test_reject_arg_count(value argc)
   CAMLreturn(Val_unit);
 }
 
-void qml_argv_check(value context, value wrapped)
+void qmljs_argv_check(value context, value wrapped)
 {
   JSValue js_value;
   const char *error = qml_js_value_for_context(context, wrapped, &js_value);

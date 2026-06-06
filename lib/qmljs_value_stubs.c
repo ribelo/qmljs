@@ -1863,7 +1863,7 @@ CAMLprim value qml_value_call(value context, value function, value args)
   JSValueConst *argv = NULL;
   if (arg_count > 0) {
     for (size_t i = 0; i < arg_count; i++) {
-      qml_argv_check(context, Field(args, i));
+      qmljs_argv_check(context, Field(args, i));
     }
     argv = qml_alloc_argv(arg_count);
     for (size_t i = 0; i < arg_count; i++) {

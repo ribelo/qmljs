@@ -112,7 +112,7 @@ void qml_leave_ocaml_callback(struct qml_runtime_state *state);
 JSValueConst *qml_alloc_argv(size_t argc);
 void qml_free_argv(JSValueConst *argv);
 int qml_argc_of_size(size_t argc);
-void qml_argv_check(value context, value wrapped);
+void qmljs_argv_check(value context, value wrapped);
 void qml_argv_set(value context, JSValueConst *argv, size_t index,
                   value wrapped);
 int qml_set_property_ocaml_string(JSContext *ctx, JSValueConst object,
