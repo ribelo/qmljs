@@ -1,6 +1,7 @@
 #include "qmljs_stubs.h"
 
 #include <caml/printexc.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -559,13 +560,14 @@ static void qml_ensure_function(JSContext *ctx, JSValueConst value)
 
 static JSValueConst *qml_function_args(value context, value args, int *argc)
 {
-  *argc = (int)Wosize_val(args);
+  size_t arg_count = Wosize_val(args);
+  *argc = qml_argc_of_size(arg_count);
   if (*argc == 0) {
     return NULL;
   }
-  JSValueConst *argv = qml_alloc_argv((size_t)*argc);
-  for (int i = 0; i < *argc; i++) {
-    qml_argv_set(context, argv, (size_t)i, Field(args, i));
+  JSValueConst *argv = qml_alloc_argv(arg_count);
+  for (size_t i = 0; i < arg_count; i++) {
+    qml_argv_set(context, argv, i, Field(args, i));
   }
   return argv;
 }
@@ -633,10 +635,14 @@ CAMLprim value qml_function_defer(value context, value function, value this_,
   JSValue js_this = qml_js_value(this_);
   qml_ensure_function(ctx, js_function);
 
-  int argc = (int)Wosize_val(args) + 2;
+  size_t arg_count = Wosize_val(args);
+  int argc =
+    qml_argc_of_size(arg_count > (size_t)INT_MAX - 2
+                       ? (size_t)INT_MAX + 1
+                       : arg_count + 2);
   JSValueConst *argv = qml_alloc_argv((size_t)argc);
-  for (int i = 0; i < argc - 2; i++) {
-    qml_argv_set(context, argv, (size_t)i, Field(args, i));
+  for (size_t i = 0; i < arg_count; i++) {
+    qml_argv_set(context, argv, i, Field(args, i));
   }
   argv[argc - 2] = js_this;
   argv[argc - 1] = js_function;

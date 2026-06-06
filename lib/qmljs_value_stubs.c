@@ -1858,16 +1858,17 @@ CAMLprim value qml_value_call(value context, value function, value args)
   qml_update_stack_top(ctx);
   qml_ensure_same_context(context, function);
   JSValue js_function = qml_js_value(function);
-  mlsize_t argc = Wosize_val(args);
+  size_t arg_count = Wosize_val(args);
+  int argc = qml_argc_of_size(arg_count);
   JSValueConst *argv = NULL;
-  if (argc > 0) {
-    argv = qml_alloc_argv((size_t)argc);
-    for (mlsize_t i = 0; i < argc; i++) {
-      qml_argv_set(context, argv, (size_t)i, Field(args, i));
+  if (arg_count > 0) {
+    argv = qml_alloc_argv(arg_count);
+    for (size_t i = 0; i < arg_count; i++) {
+      qml_argv_set(context, argv, i, Field(args, i));
     }
   }
 
-  JSValue result = JS_Call(ctx, js_function, JS_UNDEFINED, (int)argc, argv);
+  JSValue result = JS_Call(ctx, js_function, JS_UNDEFINED, argc, argv);
   if (argv != NULL) {
     qml_free_argv(argv);
   }

@@ -20,12 +20,25 @@ let expect_structured_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected structured error")
   | Error error -> assert_error error
 
+external test_reject_arg_count : nativeint -> unit
+  = "qml_test_reject_arg_count"
+
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
     raise (Qmljs.Error.host ~message ~metadata))
   with
   | Ok _ -> fail "host error helper did not raise"
   | Error error -> error
+
+let test_call_argument_count_over_int_max_is_rejected () =
+  expect_structured_error "oversized argument count"
+    (fun () -> test_reject_arg_count (Int64.to_nativeint 2_147_483_648L))
+    (fun error ->
+      check_kind "oversized argument count kind"
+        Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+      check_string "oversized argument count message"
+        "function argument count exceeds QuickJS argc range"
+        (Qmljs.Error.message error))
 
 let test_with_preserves_body_and_cleanup_failures () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -612,7 +625,9 @@ let test_eio_queued_host_jobs_are_scoped env =
   check_bool "stale queued host job did not run" false !stale_ran
 
 let tests env =
-  [ "with preserves body and cleanup failures"
+  [ "call argument count over int max is rejected"
+  , test_call_argument_count_over_int_max_is_rejected
+  ; "with preserves body and cleanup failures"
   , test_with_preserves_body_and_cleanup_failures
   ; "sync host callback timeout is preemptive"
   , test_sync_host_callback_timeout_is_preemptive

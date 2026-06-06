@@ -1,5 +1,6 @@
 #include "qmljs_stubs.h"
 
+#include <limits.h>
 #include <string.h>
 
 /* Diagnostics count live OCaml wrappers and selected native resources whose
@@ -50,6 +51,25 @@ void qml_free_argv(JSValueConst *argv)
     atomic_fetch_sub_explicit(&qml_live_argv_arrays, 1, memory_order_relaxed);
     caml_stat_free(argv);
   }
+}
+
+int qml_argc_of_size(size_t argc)
+{
+  if (argc > (size_t)INT_MAX) {
+    qml_raise_string("function argument count exceeds QuickJS argc range");
+  }
+  return (int)argc;
+}
+
+CAMLprim value qml_test_reject_arg_count(value argc)
+{
+  CAMLparam1(argc);
+  intnat count = Nativeint_val(argc);
+  if (count < 0) {
+    qml_raise_string("function argument count exceeds QuickJS argc range");
+  }
+  (void)qml_argc_of_size((size_t)count);
+  CAMLreturn(Val_unit);
 }
 
 void qml_argv_set(value context, JSValueConst *argv, size_t index,

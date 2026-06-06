@@ -216,6 +216,8 @@ Keep these gaps:
   than reject with Printexc.to_string only.
 - [x] Native argv temporaries are released when call, construct, defer, or value
   call argument validation fails.
+- [x] Function call, construct, defer, and value-call paths reject argument counts
+  outside QuickJS's int argc range before casting or allocating argv.
 
 Do not port rquickjs's Func, MutFn, OnceFn, Rest, This, Opt, IntoArg, or
 IntoJsFunc traits. OCaml can expose these as explicit callback records or helper
