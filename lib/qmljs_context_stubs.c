@@ -2,6 +2,8 @@
 
 #include <stdio.h>
 
+#define QML_MODULE_EVAL_JOB_LIMIT 1000000
+
 CAMLprim value qml_context_create(value runtime)
 {
   CAMLparam1(runtime);
@@ -123,8 +125,35 @@ static void qml_raise_rejected_promise(JSContext *ctx, JSValue promise)
 
 static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
 {
-  if (JS_IsPromise(result) &&
-      JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
+  if (!JS_IsPromise(result)) {
+    return;
+  }
+
+  JSRuntime *rt = JS_GetRuntime(ctx);
+  int jobs = 0;
+  while (JS_PromiseState(ctx, result) == JS_PROMISE_PENDING &&
+         JS_IsJobPending(rt)) {
+    if (jobs >= QML_MODULE_EVAL_JOB_LIMIT) {
+      JS_FreeValue(ctx, result);
+      qml_raise_string("QuickJS promise job limit exceeded");
+    }
+    JSContext *job_ctx = NULL;
+    JS_UpdateStackTop(rt);
+    int job_result = JS_ExecutePendingJob(rt, &job_ctx);
+    if (job_result < 0) {
+      JS_FreeValue(ctx, result);
+      if (job_ctx != NULL) {
+        qml_raise_exception(job_ctx);
+      }
+      qml_raise_string("QuickJS job failed");
+    }
+    if (job_result == 0) {
+      break;
+    }
+    jobs++;
+  }
+
+  if (JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
     qml_raise_rejected_promise(ctx, result);
   }
 }

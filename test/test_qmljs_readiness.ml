@@ -110,6 +110,50 @@ let test_rejected_module_eval_leaks () =
   check_int64 "rejected module eval memory-used count"
     before.memory_used_count after.memory_used_count
 
+let test_rejected_module_eval_frees_eval_result () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let source =
+    {|await Promise.reject(new Error("boom"));
+      export default 1;|}
+  in
+  let expect_rejection label eval =
+    Qmljs.Context.with_ runtime @@ fun context ->
+    expect_error label
+      (fun () -> eval context)
+      (fun error ->
+        check_string (label ^ " message") "boom" (Qmljs.Error.message error))
+  in
+  let eval_all () =
+    expect_rejection "Context.eval_module rejected TLA" (fun context ->
+      ignore
+        (Qmljs.Context.eval_module ~filename:"rejected-tla-context.mjs"
+           context source
+         : Qmljs.value));
+    expect_rejection "Module.eval rejected TLA" (fun context ->
+      let namespace =
+        Qmljs.Module.eval ~filename:"rejected-tla-module.mjs" context source
+      in
+      ignore (Qmljs.Module.default namespace : Qmljs.value));
+    expect_rejection "Module.eval_with_meta rejected TLA" (fun context ->
+      let evaluated =
+        Qmljs.Module.eval_with_meta ~filename:"rejected-tla-meta.mjs"
+          context source
+      in
+      ignore (Qmljs.Module.default evaluated.namespace : Qmljs.value))
+  in
+  eval_all ();
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  for _ = 1 to 100 do
+    eval_all ()
+  done;
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  check_int64 "rejected module eval_result object count" before.obj_count
+    after.obj_count;
+  check_int64 "rejected module eval_result memory-used count"
+    before.memory_used_count after.memory_used_count
+
 let test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime () =
   let before = Qmljs.Diagnostics.snapshot () in
   for i = 1 to 16 do
@@ -337,6 +381,7 @@ let () =
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_rejected_module_eval_leaks ();
+  test_rejected_module_eval_frees_eval_result ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
   test_wrong_context_call_arguments_do_not_leak_native_argv ();
   test_array_of_values_wrong_context_does_not_leak_partial_array ();

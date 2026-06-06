@@ -96,6 +96,8 @@ Keep these module gaps:
 - [x] Export declaration and export value setting without source-string generation.
 - [x] Dynamic import() from OCaml, with structured failure on loader rejection.
 - [x] import.meta and namespace object access for evaluated modules.
+- [x] Rejected top-level-await module evaluation frees eval promises before
+  raising the structured rejection.
 
 Do not carry over rquickjs's module_init! macro or dynamic-library module
 loading as qmljs root-package requirements. QuickJS bytecode read/write support
