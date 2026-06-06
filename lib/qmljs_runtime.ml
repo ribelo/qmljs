@@ -46,31 +46,79 @@ type promise_hook =
   ; has_parent : bool
   }
 
+type domain_runtimes =
+  { mutable runtimes : t Weak.t }
+
+let close_runtime_noerr runtime =
+  try
+    ignore (Qmljs_raw.runtime_close (Qmljs_types.runtime_raw runtime) : bool)
+  with
+  | _ -> ()
+
+let close_domain_runtimes domain =
+  for i = 0 to Weak.length domain.runtimes - 1 do
+    match Weak.get domain.runtimes i with
+    | None -> ()
+    | Some runtime -> close_runtime_noerr runtime
+  done
+
+let compact_domain_runtimes domain =
+  let live =
+    List.init (Weak.length domain.runtimes) Fun.id
+    |> List.filter_map (fun i -> Weak.get domain.runtimes i)
+  in
+  let next_length = max 16 (List.length live * 2) in
+  let runtimes = Weak.create next_length in
+  List.iteri (fun i runtime -> Weak.set runtimes i (Some runtime)) live;
+  domain.runtimes <- runtimes
+
+let add_domain_runtime domain runtime =
+  let rec first_empty i =
+    if i = Weak.length domain.runtimes then None
+    else
+      match Weak.get domain.runtimes i with
+      | None -> Some i
+      | Some _ -> first_empty (i + 1)
+  in
+  match first_empty 0 with
+  | Some i -> Weak.set domain.runtimes i (Some runtime)
+  | None ->
+      compact_domain_runtimes domain;
+      (match first_empty 0 with
+       | Some i -> Weak.set domain.runtimes i (Some runtime)
+       | None -> invalid_arg "could not register qmljs runtime cleanup")
+
 let register_domain_cleanup =
   let cleanup_key =
     Domain.DLS.new_key (fun () ->
+      let domain = { runtimes = Weak.create 16 } in
       Domain.at_exit (fun () ->
+        close_domain_runtimes domain;
         for _ = 1 to 3 do
           Gc.full_major ();
           Qmljs_raw.runtime_drain_deferred_runtimes ()
         done);
-      ())
+      domain)
   in
   fun () -> Domain.DLS.get cleanup_key
 
 let create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit () =
-  register_domain_cleanup ();
+  let domain = register_domain_cleanup () in
   let raw = Qmljs_raw.runtime_create () in
   Option.iter (Qmljs_raw.runtime_set_memory_limit raw) memory_limit;
   Option.iter (Qmljs_raw.runtime_set_max_stack_size raw) max_stack_size;
-  { Qmljs_types.raw
-  ; host_jobs = Queue.create ()
-  ; driver = None
-  ; module_loader = None
-  ; memory_limit
-  ; max_stack_size
-  ; promise_job_limit
-  }
+  let runtime =
+    { Qmljs_types.raw
+    ; host_jobs = Queue.create ()
+    ; driver = None
+    ; module_loader = None
+    ; memory_limit
+    ; max_stack_size
+    ; promise_job_limit
+    }
+  in
+  add_domain_runtime domain runtime;
+  runtime
 
 let create () = create_with_limits ()
 

@@ -320,6 +320,8 @@ Keep these runtime gaps:
   structured errors without violating the driver model.
 - [x] Runtime.with_ and Context.with_ report cleanup failures, and preserve body
   failures with cleanup failures attached as suppressed structured data.
+- [x] Owner-domain exit closes live runtimes before the domain disappears, so
+  cross-domain survivor wrappers cannot strand deferred native runtime releases.
 
 Do not keep custom Rust allocators or Rust global allocator integration as a
 current qmljs requirement. Add allocator customization only if there is a

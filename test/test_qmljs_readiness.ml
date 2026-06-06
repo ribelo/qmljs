@@ -204,6 +204,26 @@ let test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime (
     (Qmljs.Diagnostics.native_runtimes after);
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_deferred_runtime_after_owner_domain_exit_is_not_leaked () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  let survivor = ref None in
+  let domain =
+    Domain.spawn (fun () ->
+        let runtime = Qmljs.Runtime.create () in
+        let context = Qmljs.Context.create runtime in
+        Qmljs.Value.string context "owner-domain-survivor")
+  in
+  survivor := Some (Domain.join domain);
+  survivor := None;
+  for _ = 1 to 8 do
+    Gc.full_major ()
+  done;
+  let after = Qmljs.Diagnostics.snapshot () in
+  check_int "native runtimes after owner-domain survivor"
+    (Qmljs.Diagnostics.native_runtimes before)
+    (Qmljs.Diagnostics.native_runtimes after);
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let test_cross_domain_runtime_close_rejected () =
   let runtime = Qmljs.Runtime.create () in
   let result =
@@ -452,6 +472,7 @@ let () =
   test_rejected_module_eval_leaks ();
   test_rejected_module_eval_frees_eval_result ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
+  test_deferred_runtime_after_owner_domain_exit_is_not_leaked ();
   test_cross_domain_runtime_close_rejected ();
   test_wrong_context_call_arguments_do_not_leak_native_argv ();
   test_array_of_values_wrong_context_does_not_leak_partial_array ();
