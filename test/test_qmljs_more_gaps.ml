@@ -1468,6 +1468,49 @@ let test_filesystem_loader_rejects_symlink_escape () =
           check_int "context reusable after symlink escape" 2
             (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))))
 
+let test_loader_request_attributes_are_per_import_not_stale () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let load_requests = ref [] in
+  let loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier ~attributes ->
+        if String.equal specifier "as-json" then begin
+          check_bool "json import attributes reach normalize" true
+            (List.mem ("type", "json") attributes);
+          Ok "shared-data"
+        end else if String.equal specifier "as-js" then begin
+          check_bool "js import attributes reach normalize" true
+            (List.mem ("type", "js") attributes);
+          Ok "shared-data"
+        end else Ok specifier)
+      ~load:(fun request ->
+        load_requests := request :: !load_requests;
+        if List.mem ("type", "json") request.Qmljs.Module.Loader.attributes
+        then Ok (Some {|{"answer":41}|})
+        else if List.mem ("type", "js") request.attributes
+        then Ok (Some "export default { answer: 41 };")
+        else Ok None)
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  expect_structured_error "loader request attribute conflict"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"stale-loader-request-main.js" context
+           {|import jsData from "as-js" with { type: "js" };
+             import jsonData from "as-json" with { type: "json" };
+             export default jsonData.answer + jsData.answer;|}
+         : Qmljs.Module.namespace))
+    (fun error ->
+      check_bool "attribute conflict is policy violation" true
+        (Qmljs.Error.is_policy_violation error);
+      check_string "attribute conflict specifier" "as-json"
+        (Qmljs.Error.denied_module_specifier_exn error));
+  check_bool "incompatible shared module is not loaded twice" true
+    (List.length !load_requests <= 1);
+  check_int "context reusable after loader request conflict" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
 let test_module_loader_filesystem_api () =
   with_temp_loader_dir @@ fun root ->
   mkdir (Filename.concat root "pages");
@@ -1710,6 +1753,8 @@ let tests =
   ; "array API", test_array_api
   ; "bigint readback API", test_bigint_readback_api
   ; "native module API", test_native_module_api
+  ; "loader request attributes are per import"
+  , test_loader_request_attributes_are_per_import_not_stale
   ; "filesystem loader rejects symlink escape"
   , test_filesystem_loader_rejects_symlink_escape
   ; "module loader filesystem API", test_module_loader_filesystem_api

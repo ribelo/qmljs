@@ -134,6 +134,8 @@ Keep these loader gaps:
   attributes, and repeated imports.
 - [x] Filesystem loader scanning does not follow symlinks out of the configured
   root.
+- [x] Repeated imports that normalize to the same module reject incompatible
+  import attributes instead of reusing stale request metadata.
 - [x] Loader callback failures preserve structured metadata, cause chains, and
   OCaml frame data.
 

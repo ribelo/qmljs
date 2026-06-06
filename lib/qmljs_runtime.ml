@@ -278,6 +278,13 @@ let set_module_loader t loader =
   let attributes_to_list (attributes : (string * string) array) =
     Array.to_list attributes
   in
+  let same_attributes left right =
+    List.equal
+      (fun (left_name, left_value) (right_name, right_value) ->
+        String.equal left_name right_name && String.equal left_value right_value)
+      (List.sort compare left)
+      (List.sort compare right)
+  in
   let marker ~ocaml_frame error specifier =
     Qmljs_error.Structured.to_marker
       ~denied_specifier_default:specifier
@@ -300,8 +307,15 @@ let set_module_loader t loader =
           ; attributes
           }
         in
-        Hashtbl.replace loader.Qmljs_types.requests normalized request;
-        Ok normalized
+        (match Hashtbl.find_opt loader.Qmljs_types.requests normalized with
+         | Some previous when not (same_attributes previous.attributes attributes) ->
+             Error
+               (marker ~ocaml_frame:"module_loader.normalize"
+                  (Qmljs_error.Structured.of_policy specifier)
+                  specifier)
+         | _ ->
+             Hashtbl.replace loader.Qmljs_types.requests normalized request;
+             Ok normalized)
     | Ok (Error error) ->
         Error (marker ~ocaml_frame:"module_loader.normalize" error specifier)
   in
@@ -309,8 +323,8 @@ let set_module_loader t loader =
     let attributes = attributes_to_list attributes in
     let request =
       match Hashtbl.find_opt loader.Qmljs_types.requests normalized with
-      | Some request -> request
-      | None ->
+      | Some request when same_attributes request.attributes attributes -> request
+      | Some _ | None ->
           { Qmljs_types.base = None
           ; specifier = normalized
           ; normalized
