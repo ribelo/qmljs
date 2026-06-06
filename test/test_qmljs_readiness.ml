@@ -4,6 +4,10 @@ let check_int label expected actual =
   if actual <> expected then
     fail (Printf.sprintf "%s: expected %d, got %d" label expected actual)
 
+let check_int64 label expected actual =
+  if Int64.compare expected actual <> 0 then
+    fail (Printf.sprintf "%s: expected %Ld, got %Ld" label expected actual)
+
 let check_string label expected actual =
   if not (String.equal expected actual) then
     fail (Printf.sprintf "%s: expected %S, got %S" label expected actual)
@@ -72,6 +76,36 @@ let test_gc_finalizers_do_not_call_quickjs_reentrantly () =
    ignore (Qmljs.Context.eval context "undefined" : Qmljs.value));
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
+let test_rejected_module_eval_leaks () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let source =
+    "export default 0; throw new Error('module boom');"
+  in
+  let eval_rejected_module () =
+    Qmljs.Context.with_ runtime @@ fun context ->
+    expect_error "rejected module evaluation"
+      (fun () ->
+        ignore
+          (Qmljs.Context.eval_module ~filename:"rejected-module-leak.mjs"
+             context source
+           : Qmljs.value))
+      (fun error ->
+        check_string "rejected module message" "module boom"
+          (Qmljs.Error.message error))
+  in
+  eval_rejected_module ();
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  for _ = 1 to 100 do
+    eval_rejected_module ()
+  done;
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  check_int64 "rejected module eval object count" before.obj_count
+    after.obj_count;
+  check_int64 "rejected module eval memory-used count"
+    before.memory_used_count after.memory_used_count
 
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -221,6 +255,7 @@ let () =
   Eio_main.run @@ fun env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
+  test_rejected_module_eval_leaks ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();

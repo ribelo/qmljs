@@ -113,14 +113,15 @@ CAMLprim value qml_context_eval(value context, value source, value filename, val
   CAMLreturn(qml_alloc_value(context, result));
 }
 
-static void qml_raise_rejected_promise(JSContext *ctx, JSValueConst promise)
+static void qml_raise_rejected_promise(JSContext *ctx, JSValue promise)
 {
   JSValue reason = JS_PromiseResult(ctx, promise);
+  JS_FreeValue(ctx, promise);
   (void)JS_Throw(ctx, reason);
   qml_raise_exception(ctx);
 }
 
-static void qml_check_module_eval_result(JSContext *ctx, JSValueConst result)
+static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
 {
   if (JS_IsPromise(result) &&
       JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
