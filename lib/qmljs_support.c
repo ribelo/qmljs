@@ -1322,34 +1322,60 @@ static int qmljs_same_stack_line(const char *left, size_t left_length,
   return left_length == right_length && memcmp(left, right, left_length) == 0;
 }
 
-static int qmljs_stack_has_repeated_frame(const char *stack)
+static size_t qmljs_stack_first_lines(const char *stack, const char **lines,
+                                    size_t *lengths, size_t capacity)
 {
   if (stack == NULL) {
     return 0;
   }
 
-  const char *previous = NULL;
-  size_t previous_length = 0;
-  int repeated = 1;
+  size_t count = 0;
   const char *line = stack;
-  while (*line != '\0') {
+  while (*line != '\0' && count < capacity) {
     const char *end = strchr(line, '\n');
     size_t length = end == NULL ? strlen(line) : (size_t)(end - line);
-    if (previous != NULL &&
-        qmljs_same_stack_line(previous, previous_length, line, length)) {
-      repeated++;
-      if (repeated >= 4) {
-        return 1;
-      }
-    } else {
-      repeated = 1;
+    while (length > 0 &&
+           (line[length - 1] == '\n' || line[length - 1] == '\r')) {
+      length--;
     }
-    previous = line;
-    previous_length = length;
+    if (length > 0) {
+      lines[count] = line;
+      lengths[count] = length;
+      count++;
+    }
     if (end == NULL) {
       break;
     }
     line = end + 1;
+  }
+  return count;
+}
+
+static int qmljs_stack_starts_with_repeating_cycle(const char *stack)
+{
+  const char *lines[12];
+  size_t lengths[12];
+  size_t count =
+    qmljs_stack_first_lines(stack, lines, lengths,
+                           sizeof(lines) / sizeof(lines[0]));
+
+  for (size_t cycle = 1; cycle <= 4; cycle++) {
+    size_t required = cycle * 3;
+    if (count < required) {
+      continue;
+    }
+    int matches = 1;
+    for (size_t index = cycle; index < required; index++) {
+      if (!qmljs_same_stack_line(lines[index], lengths[index],
+                                 lines[index % cycle],
+                                 lengths[index % cycle])) {
+        matches = 0;
+        break;
+      }
+    }
+    if (matches) {
+      return 1;
+    }
   }
   return 0;
 }
@@ -1379,7 +1405,7 @@ static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
       (strstr(message, "stack overflow") != NULL ||
        strstr(message, "Maximum call stack size exceeded") != NULL) &&
       (is_uncatchable || max_stack_size_active ||
-       qmljs_stack_has_repeated_frame(stack))) {
+       qmljs_stack_starts_with_repeating_cycle(stack))) {
     return 2;
   }
   if (is_uncatchable && strcmp(name, "InternalError") == 0 &&
