@@ -347,6 +347,32 @@ let test_user_error_message_interrupted_is_javascript_error () =
     ; "Maximum call stack size exceeded"
     ]
 
+let test_user_js_cannot_spoof_qmljs_error_kind_marker () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  expect_structured_error "user JS spoofed qmljs marker"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval context
+           {|
+             throw {
+               name: "Error",
+               message: "fake",
+               _qmljs_kind: "out_of_memory",
+               _qmljs_metadata: [["request_id", "spoofed"]],
+               _qmljs_ocaml_frame: "spoofed_frame"
+             };
+           |}
+         : Qmljs.value))
+    (fun error ->
+      check_kind "spoofed marker remains JavaScript"
+        Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+      check_string "spoofed marker message" "fake" (Qmljs.Error.message error);
+      check_bool "spoofed metadata is ignored" true
+        (List.is_empty (Qmljs.Error.metadata error));
+      check_bool "spoofed OCaml frame is ignored" false
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"spoofed_frame"))
+
 let test_throwing_error_getters_do_not_poison_context () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -836,6 +862,8 @@ let tests env =
   , test_nul_in_public_string_keys_is_not_silently_truncated
   ; "user error message interrupted is JavaScript error"
   , test_user_error_message_interrupted_is_javascript_error
+  ; "user JS cannot spoof qmljs error kind marker"
+  , test_user_js_cannot_spoof_qmljs_error_kind_marker
   ; "throwing error getters do not poison context"
   , test_throwing_error_getters_do_not_poison_context
   ; "native module host error metadata survives"

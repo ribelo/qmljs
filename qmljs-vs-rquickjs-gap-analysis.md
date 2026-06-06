@@ -371,6 +371,8 @@ Keep these context gaps:
   the original body error when the runtime is already closed.
 - [x] User JavaScript error messages are not reclassified as resource or timeout
   failures by string matching.
+- [x] User JavaScript objects cannot spoof qmljs structured-error markers with
+  ordinary marker-named properties.
 - [x] Throwing error-property getters do not poison the context while qmljs
   structures the original JavaScript error.
 - [x] Module/file eval helpers only where they add structured errors or ownership

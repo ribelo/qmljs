@@ -134,6 +134,104 @@ struct qmljs_atom_handle {
   struct qmljs_atom_handle *next;
 };
 
+static void qmljs_clear_pending_exception(JSContext *ctx);
+
+static const JSClassDef qmljs_error_marker_class_def = {
+  .class_name = "QmljsErrorMarker",
+};
+
+static struct qmljs_runtime_state *qmljs_state_of_context(JSContext *ctx)
+{
+  if (ctx == NULL) {
+    return NULL;
+  }
+  return JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
+}
+
+static int qmljs_ensure_error_marker_class(JSContext *ctx,
+                                         struct qmljs_runtime_state *state)
+{
+  if (state == NULL) {
+    JS_ThrowInternalError(ctx, "qmljs runtime state is not available");
+    return -1;
+  }
+  if (!state->error_marker_class_registered) {
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    JSClassID class_id = JS_NewClassID(rt, &state->error_marker_class_id);
+    if (JS_NewClass(rt, class_id, &qmljs_error_marker_class_def) < 0) {
+      JS_ThrowInternalError(ctx, "could not register qmljs error marker class");
+      return -1;
+    }
+    state->error_marker_class_registered = 1;
+  }
+  return 0;
+}
+
+JSValue qmljs_new_error_marker(JSContext *ctx)
+{
+  struct qmljs_runtime_state *state = qmljs_state_of_context(ctx);
+  if (qmljs_ensure_error_marker_class(ctx, state) < 0) {
+    return JS_EXCEPTION;
+  }
+
+  JSValue error = JS_NewObjectClass(ctx, state->error_marker_class_id);
+  if (JS_IsException(error)) {
+    return error;
+  }
+  if (JS_SetOpaque(error, state) < 0) {
+    JS_FreeValue(ctx, error);
+    JS_ThrowInternalError(ctx, "could not brand qmljs error marker");
+    return JS_EXCEPTION;
+  }
+
+  JSValue stack_source = JS_NewError(ctx);
+  if (JS_IsException(stack_source)) {
+    qmljs_clear_pending_exception(ctx);
+  } else {
+    JSValue prototype = JS_GetPrototype(ctx, stack_source);
+    if (JS_IsException(prototype)) {
+      qmljs_clear_pending_exception(ctx);
+      prototype = JS_UNDEFINED;
+    }
+    if (!JS_IsUndefined(prototype)) {
+      if (JS_SetPrototype(ctx, error, prototype) < 0) {
+        JS_FreeValue(ctx, prototype);
+        JS_FreeValue(ctx, stack_source);
+        JS_FreeValue(ctx, error);
+        return JS_EXCEPTION;
+      }
+      JS_FreeValue(ctx, prototype);
+    }
+
+    JSValue stack = JS_GetPropertyStr(ctx, stack_source, "stack");
+    if (JS_IsException(stack)) {
+      qmljs_clear_pending_exception(ctx);
+      stack = JS_UNDEFINED;
+    }
+    if (!JS_IsUndefined(stack)) {
+      if (JS_DefinePropertyValueStr(ctx, error, "stack", stack,
+                                    JS_PROP_C_W_E) < 0) {
+        JS_FreeValue(ctx, stack_source);
+        JS_FreeValue(ctx, error);
+        return JS_EXCEPTION;
+      }
+      stack = JS_UNDEFINED;
+    }
+    JS_FreeValue(ctx, stack);
+    JS_FreeValue(ctx, stack_source);
+  }
+  return error;
+}
+
+int qmljs_is_error_marker(JSContext *ctx, JSValueConst value)
+{
+  struct qmljs_runtime_state *state = qmljs_state_of_context(ctx);
+  if (state == NULL || !state->error_marker_class_registered) {
+    return 0;
+  }
+  return JS_GetOpaque(value, state->error_marker_class_id) == state;
+}
+
 static void qmljs_lock_lists(struct qmljs_runtime_state *state)
 {
   while (atomic_flag_test_and_set_explicit(&state->list_lock,
@@ -1089,6 +1187,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   const char *kind_marker = NULL;
   const char *denied_specifier = NULL;
   int kind = 0;
+  int trusted_marker = 0;
 
   if (JS_IsNull(js_exception)) {
     kind = 1;
@@ -1099,19 +1198,26 @@ static value qmljs_build_structured_exception(JSContext *ctx,
     name = qmljs_property_cstring(ctx, js_exception, "name", &js_name);
     message = qmljs_property_cstring(ctx, js_exception, "message", &js_message);
     stack = qmljs_property_cstring(ctx, js_exception, "stack", &js_stack);
-    ocaml_frame = qmljs_property_cstring(ctx, js_exception, "_qmljs_ocaml_frame",
-                                       &js_ocaml_frame);
-    kind_marker =
-      qmljs_property_cstring(ctx, js_exception, "_qmljs_kind", &js_kind);
-    denied_specifier =
-      qmljs_property_cstring(ctx, js_exception, "_qmljs_denied_module_specifier",
-                           &js_denied_specifier);
-    js_metadata = JS_GetPropertyStr(ctx, js_exception, "_qmljs_metadata");
-    if (JS_IsException(js_metadata)) {
-      qmljs_clear_pending_exception(ctx);
-      js_metadata = JS_UNDEFINED;
+    trusted_marker = qmljs_is_error_marker(ctx, js_exception);
+    if (trusted_marker) {
+      ocaml_frame =
+        qmljs_property_cstring(ctx, js_exception, "_qmljs_ocaml_frame",
+                             &js_ocaml_frame);
+      kind_marker =
+        qmljs_property_cstring(ctx, js_exception, "_qmljs_kind", &js_kind);
+      denied_specifier =
+        qmljs_property_cstring(ctx, js_exception,
+                             "_qmljs_denied_module_specifier",
+                             &js_denied_specifier);
+      js_metadata = JS_GetPropertyStr(ctx, js_exception, "_qmljs_metadata");
+      if (JS_IsException(js_metadata)) {
+        qmljs_clear_pending_exception(ctx);
+        js_metadata = JS_UNDEFINED;
+      }
+      metadata = qmljs_metadata_array(ctx, js_metadata);
+    } else {
+      metadata = caml_alloc(0, 0);
     }
-    metadata = qmljs_metadata_array(ctx, js_metadata);
 
     js_cause = JS_GetPropertyStr(ctx, js_exception, "cause");
     if (JS_IsException(js_cause) || JS_IsUndefined(js_cause) ||
@@ -1136,7 +1242,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
     fallback_message = exception_text;
   }
 
-  kind = qmljs_error_kind_of_marker(kind_marker);
+  kind = trusted_marker ? qmljs_error_kind_of_marker(kind_marker) : 0;
   if (kind == 0 && JS_IsNull(js_exception)) {
     kind = 1;
   }

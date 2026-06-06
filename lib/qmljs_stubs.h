@@ -59,6 +59,8 @@ struct qmljs_runtime_state {
   int host_function_class_registered;
   JSClassID native_module_class_id;
   int native_module_class_registered;
+  JSClassID error_marker_class_id;
+  int error_marker_class_registered;
   _Atomic(struct qmljs_deferred_value *) deferred_values;
   _Atomic(struct qmljs_deferred_atom *) deferred_atoms;
   _Atomic(struct qmljs_deferred_context *) deferred_contexts;
@@ -112,6 +114,8 @@ void qmljs_drain_deferred_runtimes(void);
 void qmljs_drain_class_finalizers(struct qmljs_runtime_state *state);
 void qmljs_enter_ocaml_callback(struct qmljs_runtime_state *state);
 void qmljs_leave_ocaml_callback(struct qmljs_runtime_state *state);
+JSValue qmljs_new_error_marker(JSContext *ctx);
+int qmljs_is_error_marker(JSContext *ctx, JSValueConst value);
 JSValueConst *qmljs_alloc_argv(size_t argc);
 void qmljs_free_argv(JSValueConst *argv);
 int qmljs_argc_of_size(size_t argc);

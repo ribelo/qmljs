@@ -134,7 +134,7 @@ static JSValue qmljs_throw_marked_error(JSContext *ctx, const char *message,
                                       const char *kind,
                                       const char *denied_specifier)
 {
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     return error;
   }
@@ -236,7 +236,7 @@ static int qmljs_define_error_marker_cause(JSContext *ctx, JSValueConst error,
 
 static JSValue qmljs_error_marker_to_js(JSContext *ctx, value marker, int depth)
 {
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     return error;
   }
@@ -873,6 +873,8 @@ CAMLprim value qmljs_runtime_create(value unit)
   state->host_function_class_registered = 0;
   state->native_module_class_id = 0;
   state->native_module_class_registered = 0;
+  state->error_marker_class_id = 0;
+  state->error_marker_class_registered = 0;
   atomic_init(&state->deferred_values, NULL);
   atomic_init(&state->deferred_atoms, NULL);
   atomic_init(&state->deferred_contexts, NULL);
@@ -883,6 +885,7 @@ CAMLprim value qmljs_runtime_create(value unit)
     caml_stat_free(state);
     qmljs_raise_string("could not allocate QuickJS runtime");
   }
+  JS_SetRuntimeOpaque(rt, state);
   JS_SetInterruptHandler(rt, qmljs_interrupt_handler, state);
   CAMLreturn(qmljs_alloc_runtime(rt, state));
 }

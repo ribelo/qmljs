@@ -90,7 +90,7 @@ static JSValue qmljs_throw_ocaml_exception(JSContext *ctx, value exception,
     message_length = strlen(fallback);
   }
 
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     if (fallback != NULL) {
       caml_stat_free(fallback);
@@ -318,7 +318,7 @@ static int qmljs_define_metadata_property(JSContext *ctx, JSValueConst object,
 
 static JSValue qmljs_throw_host_deadline_error(JSContext *ctx)
 {
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     return error;
   }
@@ -335,7 +335,7 @@ static JSValue qmljs_throw_host_deadline_error(JSContext *ctx)
 static JSValue qmljs_throw_host_defect_message(JSContext *ctx, const char *message,
                                              const char *name)
 {
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     return error;
   }
@@ -355,7 +355,7 @@ CAMLprim value qmljs_function_host_error(value context, value name, value messag
   CAMLparam4(context, name, message, metadata);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
-  JSValue error = JS_NewError(ctx);
+  JSValue error = qmljs_new_error_marker(ctx);
   if (JS_IsException(error)) {
     qmljs_raise_exception(ctx);
   }
