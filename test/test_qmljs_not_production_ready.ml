@@ -27,6 +27,51 @@ let host_error ~message ~metadata =
   | Ok _ -> fail "host error helper did not raise"
   | Error error -> error
 
+let test_with_preserves_body_and_cleanup_failures () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let success_cleanup = ref None in
+  let body_and_cleanup = ref None in
+  Qmljs.Function.set_global context ~name:"probe_brackets" ~arity:0 (fun _args ->
+      success_cleanup :=
+        Some
+          (Qmljs.Error.capture (fun () ->
+             Qmljs.Context.with_ runtime @@ fun _inner -> ()));
+      body_and_cleanup :=
+        Some
+          (Qmljs.Error.capture (fun () ->
+             Qmljs.Context.with_ runtime @@ fun _inner ->
+             raise
+               (Qmljs.Error.host ~message:"body boom"
+                  ~metadata:[ "phase", "body" ])));
+      Qmljs.Value.int context 0);
+  ignore (Qmljs.Context.eval context "probe_brackets()" : Qmljs.value);
+  (match !success_cleanup with
+   | Some (Error error) ->
+       check_kind "cleanup failure on success kind" Qmljs.Error.Resource_limit
+         (Qmljs.Error.kind error);
+       check_string "cleanup failure on success message"
+         "QuickJS context close was deferred" (Qmljs.Error.message error)
+   | Some (Ok ()) -> fail "context close failure on success was ignored"
+   | None -> fail "success cleanup result was not captured");
+  (match !body_and_cleanup with
+   | Some (Error error) ->
+       check_kind "body failure kind survives"
+         Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+       check_string "body failure message survives" "body boom"
+         (Qmljs.Error.message error);
+       check_bool "body failure metadata survives" true
+         (List.mem ("phase", "body") (Qmljs.Error.metadata error));
+       let suppressed = Qmljs.Error.suppressed error in
+       check_int "cleanup failure is suppressed" 1 (List.length suppressed);
+       let cleanup = List.hd suppressed in
+       check_kind "suppressed cleanup failure kind"
+         Qmljs.Error.Resource_limit (Qmljs.Error.kind cleanup);
+       check_string "suppressed cleanup failure message"
+         "QuickJS context close was deferred" (Qmljs.Error.message cleanup)
+   | Some (Ok ()) -> fail "body failure was ignored"
+   | None -> fail "body cleanup result was not captured")
+
 let test_sync_host_callback_timeout_is_preemptive () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -567,7 +612,9 @@ let test_eio_queued_host_jobs_are_scoped env =
   check_bool "stale queued host job did not run" false !stale_ran
 
 let tests env =
-  [ "sync host callback timeout is preemptive"
+  [ "with preserves body and cleanup failures"
+  , test_with_preserves_body_and_cleanup_failures
+  ; "sync host callback timeout is preemptive"
   , test_sync_host_callback_timeout_is_preemptive
   ; "eval_with_timeout does not drain microtasks on success"
   , test_eval_with_timeout_does_not_drain_microtasks_on_success

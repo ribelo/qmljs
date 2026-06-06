@@ -186,18 +186,28 @@ let with_ ?memory_limit ?max_stack_size ?promise_job_limit f =
   let runtime =
     create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit ()
   in
-  let close () =
+  let close_error () =
     let runtime_raw = Qmljs_types.runtime_raw runtime in
-    ignore (Qmljs_raw.runtime_close runtime_raw : bool)
+    try
+      if Qmljs_raw.runtime_close runtime_raw then None
+      else
+        Some
+          (Qmljs_error.Structured.of_resource_limit
+             "QuickJS runtime close was deferred")
+    with
+    | exn -> Some (Qmljs_error.Structured.of_exception exn)
   in
   match f runtime with
   | result ->
-      close ();
-      result
+      (match close_error () with
+       | None -> result
+       | Some error -> Qmljs_error.Structured.raise error)
   | exception exn ->
       let backtrace = Printexc.get_raw_backtrace () in
-      (try close () with _ -> ());
-      Printexc.raise_with_backtrace exn backtrace
+      (match close_error () with
+       | None -> Printexc.raise_with_backtrace exn backtrace
+       | Some cleanup ->
+           Qmljs_error.Structured.raise_with_suppressed exn backtrace [ cleanup ])
 
 let is_job_pending t =
   Qmljs_raw.runtime_is_job_pending (Qmljs_types.runtime_raw t)

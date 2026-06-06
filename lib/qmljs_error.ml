@@ -25,6 +25,7 @@ and structured =
   ; stack : string
   ; frames : frame list
   ; cause : structured option
+  ; suppressed : structured list
   ; kind : kind
   ; metadata : (string * string) list
   }
@@ -86,13 +87,14 @@ let ocaml_frames = function
   | "" -> []
   | function_name -> [ { kind = Ocaml_frame; function_name; raw = function_name } ]
 
-let make ?(name = "") ?(stack = "") ?(ocaml_frame = "") ?cause ~kind
-    ?(metadata = []) message =
+let make ?(name = "") ?(stack = "") ?(ocaml_frame = "") ?cause
+    ?(suppressed = []) ~kind ?(metadata = []) message =
   { name
   ; message
   ; stack
   ; frames = js_frames stack @ ocaml_frames ocaml_frame
   ; cause
+  ; suppressed
   ; kind
   ; metadata
   }
@@ -174,6 +176,10 @@ module Structured = struct
   let of_timeout message = make ~kind:Timeout_kind message
   let timeout_with_cause ~message cause =
     make ~kind:Timeout_kind ~cause message
+  let with_suppressed t suppressed =
+    match suppressed with
+    | [] -> t
+    | _ -> { t with suppressed = t.suppressed @ suppressed }
 
   let marker_kind_of_kind ?denied_specifier_default = function
     | Policy_violation_kind specifier ->
@@ -241,10 +247,15 @@ module Structured = struct
     try Stdlib.Result.Ok (fn ()) with
     | exn -> Stdlib.Result.Error (of_exception exn)
 
+  let raise_with_suppressed exn backtrace suppressed =
+    let error = with_suppressed (of_exception exn) suppressed in
+    Printexc.raise_with_backtrace (Structured_error error) backtrace
+
   let host ~message ~metadata = Host_error (message, metadata)
   let message t = t.message
   let metadata t = t.metadata
   let cause t = t.cause
+  let suppressed t = t.suppressed
   let cause_exn t =
     match t.cause with
     | Some cause -> cause

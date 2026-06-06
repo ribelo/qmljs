@@ -304,6 +304,8 @@ Keep these runtime gaps:
 - [x] Runtime info string.
 - [x] Promise rejection tracker and promise lifecycle hooks, if they can report
   structured errors without violating the driver model.
+- [x] Runtime.with_ and Context.with_ report cleanup failures, and preserve body
+  failures with cleanup failures attached as suppressed structured data.
 
 Do not keep custom Rust allocators or Rust global allocator integration as a
 current qmljs requirement. Add allocator customization only if there is a

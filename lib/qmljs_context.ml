@@ -48,19 +48,28 @@ let create_raw ?(intrinsics = []) runtime =
 
 let with_context create runtime f =
   let context = create runtime in
-  let close () =
+  let close_error () =
     let context_raw = Qmljs_types.context_raw context in
-    if not (Qmljs_raw.context_close context_raw) then
-      raise (Qmljs_error.Error "QuickJS context close was deferred")
+    try
+      if Qmljs_raw.context_close context_raw then None
+      else
+        Some
+          (Qmljs_error.Structured.of_resource_limit
+             "QuickJS context close was deferred")
+    with
+    | exn -> Some (Qmljs_error.Structured.of_exception exn)
   in
   match f context with
   | result ->
-      close ();
-      result
+      (match close_error () with
+       | None -> result
+       | Some error -> Qmljs_error.Structured.raise error)
   | exception exn ->
       let backtrace = Printexc.get_raw_backtrace () in
-      (try close () with _ -> ());
-      Printexc.raise_with_backtrace exn backtrace
+      (match close_error () with
+       | None -> Printexc.raise_with_backtrace exn backtrace
+       | Some cleanup ->
+           Qmljs_error.Structured.raise_with_suppressed exn backtrace [ cleanup ])
 
 let with_ runtime f = with_context create runtime f
 

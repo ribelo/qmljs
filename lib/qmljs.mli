@@ -260,6 +260,7 @@ module Error : sig
   val kind : t -> kind
   val metadata : t -> (string * string) list
   val cause : t -> t option
+  val suppressed : t -> t list
   val cause_exn : t -> t
   val raise : t -> 'a
   val has_js_frame : t -> function_name:string -> bool
