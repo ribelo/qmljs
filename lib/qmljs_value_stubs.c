@@ -3,6 +3,7 @@
 #include <caml/bigarray.h>
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 CAMLprim value qmljs_value_undefined(value context)
@@ -1085,6 +1086,13 @@ CAMLprim value qmljs_symbol_well_known(value context, value name)
   JS_FreeValue(ctx, symbol);
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);
+  }
+  if (!JS_IsSymbol(result)) {
+    char message[128];
+    snprintf(message, sizeof(message), "Symbol.%s is not a symbol",
+             String_val(name));
+    JS_FreeValue(ctx, result);
+    qmljs_raise_string(message);
   }
   CAMLreturn(qmljs_alloc_value(context, result));
 }

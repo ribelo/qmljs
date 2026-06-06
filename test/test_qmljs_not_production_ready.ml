@@ -376,6 +376,19 @@ let test_nul_in_public_string_keys_is_not_silently_truncated () =
     (Qmljs.Value.to_int
        (Qmljs.Context.eval context "Symbol.keyFor(globalThis.nulSymbol).charCodeAt(1)"))
 
+let test_well_known_symbol_rejects_tampered_symbol_property () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore
+    (Qmljs.Context.eval context "globalThis.Symbol = { iterator: 123 }"
+     : Qmljs.value);
+  expect_structured_error "tampered well-known symbol property"
+    (fun () -> ignore (Qmljs.Symbol.iterator context : Qmljs.Symbol.t))
+    (fun error ->
+      check_string "tampered well-known symbol property message"
+        "Symbol.iterator is not a symbol"
+        (Qmljs.Error.message error))
+
 let test_object_keys_preserves_nul_in_property_names () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -941,6 +954,8 @@ let tests env =
   , test_json_stringify_undefined_is_error_not_string
   ; "NUL in public string keys is not silently truncated"
   , test_nul_in_public_string_keys_is_not_silently_truncated
+  ; "well-known symbol rejects tampered Symbol property"
+  , test_well_known_symbol_rejects_tampered_symbol_property
   ; "Object.keys preserves NUL in property names"
   , test_object_keys_preserves_nul_in_property_names
   ; "user error message interrupted is JavaScript error"
