@@ -12,6 +12,9 @@ let check_string label expected actual =
   if not (String.equal expected actual) then
     fail (Printf.sprintf "%s: expected %S, got %S" label expected actual)
 
+let check_kind label expected actual =
+  if expected <> actual then fail (label ^ ": unexpected error kind")
+
 let expect_structured_error label fn assert_error =
   match Qmljs.Error.capture fn with
   | Ok _ -> fail (label ^ ": expected structured error")
@@ -79,7 +82,9 @@ let test_same_runtime_cross_context_object_set_is_rejected () =
   let object_ = Qmljs.Object.create right in
   expect_structured_error "cross-context object set"
     (fun () -> Qmljs.Object.set object_ ~name:"foreign" foreign)
-    (fun _error -> ())
+    (fun error ->
+      check_kind "cross-context object set kind" Qmljs.Error.Wrong_domain
+        (Qmljs.Error.kind error))
 
 let test_same_runtime_cross_context_function_call_is_rejected () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -89,7 +94,9 @@ let test_same_runtime_cross_context_function_call_is_rejected () =
   let add1 = Qmljs.Context.eval right "(x) => x + 1" in
   expect_structured_error "cross-context function call arg"
     (fun () -> Qmljs.Value.call add1 [| foreign |])
-    (fun _error -> ())
+    (fun error ->
+      check_kind "cross-context function call kind" Qmljs.Error.Wrong_domain
+        (Qmljs.Error.kind error))
 
 let test_json_import_attribute_loads_json_module () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -107,106 +114,125 @@ let test_json_import_attribute_loads_json_module () =
   in
   check_int "json module default" 42 (Qmljs.Module.default_export_to_int value)
 
-let missing_api name signature =
-  fail (Printf.sprintf "%s API is not designed/implemented yet:\n%s" name signature)
-
 let test_error_kind_and_metadata_api () =
-  missing_api "structured error kind/metadata"
-    {|
-      module Qmljs.Error : sig
-        type kind =
-          [ `JavaScript
-          | `Host_callback_defect
-          | `Policy_violation of { denied_module_specifier : string option }
-          | `Out_of_memory
-          | `Stack_overflow
-          | `Resource_limit
-          | `Timeout
-          | `Closed_handle
-          | `Wrong_domain
-          ]
-
-        val kind : t -> kind
-        val metadata : t -> (string * string) list
-        val cause : t -> t option
-      end
-    |}
+  expect_structured_error "host structured metadata"
+    (fun () ->
+      raise
+        (Qmljs.Error.host ~message:"host boom"
+           ~metadata:[ "phase", "callback"; "id", "42" ]))
+    (fun error ->
+      check_string "host error message" "host boom" (Qmljs.Error.message error);
+      check_kind "host error kind" Qmljs.Error.Host_callback_defect
+        (Qmljs.Error.kind error);
+      check_bool "metadata contains id" true
+        (List.mem ("id", "42") (Qmljs.Error.metadata error));
+      check_bool "host error has no cause" true
+        (Qmljs.Error.cause error = None))
 
 let test_structured_promise_await_api () =
-  missing_api "structured promise await"
-    {|
-      module Qmljs.Promise : sig
-        val await_result :
-          ?yield_every:int ->
-          value ->
-          (value, Qmljs.Error.t) result
-
-        val await_exn :
-          ?yield_every:int ->
-          value ->
-          value
-      end
-    |}
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let fulfilled =
+    Qmljs.Context.eval context "Promise.resolve(41).then(x => x + 1)"
+  in
+  (match Qmljs.Promise.await_result fulfilled with
+   | Ok value -> check_int "fulfilled promise" 42 (Qmljs.Value.to_int value)
+   | Error error ->
+       fail ("fulfilled promise returned error: " ^ Qmljs.Error.message error));
+  let rejected =
+    Qmljs.Context.eval context
+      {|
+        function rejector() {
+          return Promise.reject(new Error("structured boom"));
+        }
+        rejector();
+      |}
+  in
+  (match Qmljs.Promise.await_result rejected with
+   | Ok _ -> fail "rejected promise returned Ok"
+   | Error error ->
+       check_string "rejection message" "structured boom"
+         (Qmljs.Error.message error);
+       check_bool "rejection stack" true
+         (Qmljs.Error.has_js_frame error ~function_name:"rejector"));
+  expect_structured_error "await_exn rejection"
+    (fun () -> Qmljs.Promise.await_exn rejected)
+    (fun error ->
+      check_string "await_exn rejection message" "structured boom"
+        (Qmljs.Error.message error))
 
 let test_object_introspection_api () =
-  missing_api "object introspection"
-    {|
-      module Qmljs.Object : sig
-        type descriptor =
-          { value : value option
-          ; writable : bool option
-          ; enumerable : bool
-          ; configurable : bool
-          ; get : value option
-          ; set : value option
-          }
-
-        val get : t -> key:value -> value
-        val has : t -> key:value -> bool
-        val delete : t -> key:value -> bool
-        val get_own_property_descriptor : t -> key:value -> descriptor option
-      end
-    |}
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let object_ = Qmljs.Object.create context in
+  let key = Qmljs.Value.string context "answer" in
+  Qmljs.Object.define_data_property object_ ~key
+    ~value:(Qmljs.Value.int context 42)
+    ~writable:false ~enumerable:true ~configurable:false;
+  check_bool "object has answer" true (Qmljs.Object.has object_ ~key);
+  check_int "object get answer" 42
+    (Qmljs.Value.to_int (Qmljs.Object.get object_ ~key));
+  (match Qmljs.Object.get_own_property_descriptor object_ ~key with
+   | None -> fail "missing answer descriptor"
+   | Some descriptor ->
+       check_int "descriptor value" 42
+         (Qmljs.Value.to_int (Option.get descriptor.value));
+       check_bool "descriptor writable" false (Option.get descriptor.writable);
+       check_bool "descriptor enumerable" true descriptor.enumerable;
+       check_bool "descriptor configurable" false descriptor.configurable;
+       check_bool "descriptor getter absent" true (descriptor.get = None);
+       check_bool "descriptor setter absent" true (descriptor.set = None));
+  let tmp = Qmljs.Value.string context "tmp" in
+  Qmljs.Object.set object_ ~name:"tmp" (Qmljs.Value.int context 7);
+  check_bool "object has tmp" true (Qmljs.Object.has object_ ~key:tmp);
+  check_bool "delete tmp" true (Qmljs.Object.delete object_ ~key:tmp);
+  check_bool "tmp deleted" false (Qmljs.Object.has object_ ~key:tmp)
 
 let test_module_namespace_api () =
-  missing_api "module namespace"
-    {|
-      module Qmljs.Module : sig
-        type namespace
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let loader =
+    Qmljs.Module.Loader.memory
+      [ "dep", "export const named = 40; export default 2;" ]
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  let namespace =
+    Qmljs.Module.eval context
+      {|
+        import base, { named } from "dep";
+        export const answer = named + base;
+        export default answer;
+      |}
+  in
+  check_int "module default" 42
+    (Qmljs.Value.to_int (Qmljs.Module.default namespace));
+  (match Qmljs.Module.get namespace ~name:"answer" with
+   | Some value -> check_int "module named export" 42 (Qmljs.Value.to_int value)
+   | None -> fail "missing module named export");
+  let keys = Qmljs.Module.keys namespace in
+  check_bool "module keys include default" true (List.mem "default" keys);
+  check_bool "module keys include answer" true (List.mem "answer" keys)
 
-        val eval :
-          ?filename:string ->
-          Qmljs.Context.t ->
-          string ->
-          namespace
+let test_eio_scoped_driver_api env =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver runtime context ->
+      check_int "idle driver drain" 0 (Qmljs.Eio.drain_until_idle driver);
+      let promise =
+        Qmljs.Context.eval context "Promise.resolve(21).then(x => x * 2)"
+      in
+      let drained = Qmljs.Eio.drain_until_idle driver in
+      if drained < 1 then fail "driver did not drain a pending promise job";
+      check_int "driven promise result" 42
+        (Qmljs.Value.to_int (Qmljs.Promise.result promise));
+      Qmljs.Eio.cancel driver;
+      check_bool "driver cancel requests interrupt" true
+        (Qmljs.Runtime.interrupt_requested runtime);
+      Qmljs.Runtime.clear_interrupt runtime;
+      check_int "runtime reusable after driver cancel" 42
+        (Qmljs.Value.to_int (Qmljs.Context.eval context "6 * 7")))
 
-        val default : namespace -> value
-        val get : namespace -> name:string -> value option
-        val keys : namespace -> string list
-      end
-    |}
-
-let test_eio_scoped_driver_api () =
-  missing_api "Eio scoped driver"
-    {|
-      module Qmljs.Eio : sig
-        type driver
-
-        val with_runtime :
-          sw:Eio.Switch.t ->
-          clock:_ Eio.Time.clock ->
-          ?memory_limit:int ->
-          ?max_stack_size:int ->
-          ?promise_job_limit:int ->
-          (driver -> Qmljs.Runtime.t -> Qmljs.Context.t -> 'a) ->
-          'a
-
-        val cancel : driver -> unit
-        val drain_until_idle : driver -> int
-      end
-    |}
-
-let tests =
+let tests env =
   [ "sync host callback timeout is preemptive"
   , test_sync_host_callback_timeout_is_preemptive
   ; "promise rejection preserves JS stack"
@@ -223,23 +249,16 @@ let tests =
   ; "structured promise await API", test_structured_promise_await_api
   ; "object introspection API", test_object_introspection_api
   ; "module namespace API", test_module_namespace_api
-  ; "Eio scoped driver API", test_eio_scoped_driver_api
+  ; "Eio scoped driver API", (fun () -> test_eio_scoped_driver_api env)
   ]
 
 let () =
-  Eio_main.run @@ fun _env ->
-  let failures = ref [] in
+  Eio_main.run @@ fun env ->
   List.iter
     (fun (name, test) ->
       match test () with
-      | () -> Printf.eprintf "UNEXPECTED PASS: %s\n%!" name
+      | () -> Printf.eprintf "PASS: %s\n%!" name
       | exception exn ->
-          failures := (name, Printexc.to_string exn) :: !failures;
-          Printf.eprintf "RED: %s: %s\n%!" name (Printexc.to_string exn))
-    tests;
-  match List.rev !failures with
-  | [] -> fail "all production-gap tests unexpectedly passed"
-  | failures ->
-      Printf.eprintf "%d production-readiness gaps still fail as expected\n%!"
-        (List.length failures);
-      exit 1
+          Printf.eprintf "FAIL: %s: %s\n%!" name (Printexc.to_string exn);
+          raise exn)
+    (tests env)

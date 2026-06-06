@@ -7,9 +7,10 @@ binding responsibility:
 
 - `Qmljs_runtime`: runtime creation, QuickJS job execution, and queued host
   jobs.
-- `Qmljs_context`: context creation, eval, global object access, and global
-  property installation.
-- `Qmljs_value`: primitive construction, conversion, and function calls.
+- `Qmljs_context`: context creation, eval, module namespace eval, global object
+  access, and global property installation.
+- `Qmljs_value`: primitive construction, conversion, object introspection, and
+  function calls.
 - `Qmljs_function`: synchronous host functions and Eio-driven host promise
   functions.
 - `Qmljs_promise`: promise creation, state, result, and Eio-compatible await.
@@ -44,21 +45,28 @@ wrappers keep their normal lifetime.
 
 ## Async Model
 
-QuickJS promise jobs are driven by `Qmljs.Async.drain_jobs` and
-`Qmljs.Promise.await`. Synchronous host callbacks must not perform Eio
-effects because they are called through a C frame.
+QuickJS promise jobs are driven by one owner-domain driver at a time:
+`Qmljs.Async.drain_jobs`, `Qmljs.Promise.await`, or an explicit
+`Qmljs.Eio.with_runtime ~sw ~clock` driver. Synchronous host callbacks must not
+perform Eio effects because they are called through a C frame.
 
 `Qmljs.Context.eval` and `Qmljs.Context.eval_with_timeout` always execute on the
 runtime owner domain. `eval_with_timeout` installs a native monotonic deadline
 read by QuickJS's interrupt handler; it never moves the runtime, context, or
 value graph to another domain. This interrupts JavaScript bytecode execution.
-It cannot interrupt a host callback that is blocked inside native C or OCaml
-while QuickJS is not polling the interrupt handler.
+While a deadline is armed, synchronous host callbacks are rejected before entry
+with a structured resource-limit error. Use `Qmljs.Function.set_global_async`
+for Eio work or callbacks that may block.
 
-For Eio work, use `Qmljs.Function.set_global_async`. It returns a JavaScript
-Promise immediately and queues the OCaml callback on the runtime. The queued job
-is run by `Qmljs.Async.drain_jobs` or `Qmljs.Promise.await`, where Eio
-effects are legal.
+`Qmljs.Function.set_global_async` returns a JavaScript Promise immediately and
+queues the OCaml callback on the runtime. The queued job is run by
+`Qmljs.Async.drain_jobs`, `Qmljs.Promise.await`, or `Qmljs.Eio.drain_until_idle`,
+where Eio effects are legal.
+
+Promise rejection uses the same structured error path as thrown JavaScript
+exceptions. `Qmljs.Promise.await_result` returns `(value, Qmljs.Error.t) result`
+and `Qmljs.Promise.await_exn` raises a structured error through the public
+`Qmljs.Error` facade.
 
 ## Allocation Evidence
 
@@ -78,6 +86,8 @@ Current evidence:
 ## Current Limitations
 
 - `Context.eval` is synchronous and owner-domain bound.
-- The module loader supports in-memory ES modules, policy denial, and the
-  `type: "js"` import attribute. Full bytecode loading is not exposed yet.
+- The module loader supports in-memory ES modules, policy denial, `type: "js"`,
+  and `type: "json"` import attributes. Full bytecode loading is not exposed yet.
+- Module namespace objects are available through `Qmljs.Module.eval`,
+  `Qmljs.Module.default`, `Qmljs.Module.get`, and `Qmljs.Module.keys`.
 - Classes and bytecode APIs are not exposed yet.

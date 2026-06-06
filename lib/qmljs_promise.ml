@@ -44,7 +44,18 @@ let create context =
   , { Qmljs_types.context; raw = resolve }
   , { Qmljs_types.context; raw = reject } )
 
-let await ?yield_every promise =
+let structured_rejection reason =
+  let context = Qmljs_types.value_context reason in
+  match
+    Qmljs_error.Structured.capture (fun () ->
+        Qmljs_raw.value_raise_as_exception
+          (Qmljs_types.context_raw context)
+          (Qmljs_types.value_raw reason))
+  with
+  | Error error -> error
+  | Ok () -> Qmljs_error.Structured.of_legacy_error "promise rejected"
+
+let await_result ?yield_every promise =
   let runtime =
     Qmljs_types.context_runtime (Qmljs_types.value_context promise)
   in
@@ -52,10 +63,8 @@ let await ?yield_every promise =
     ignore (Qmljs_async.drain_jobs ?yield_every runtime : int);
     match state promise with
     | Not_a_promise -> invalid_arg "value is not a promise"
-    | Fulfilled -> result promise
-    | Rejected ->
-        let reason = result promise in
-        raise (Qmljs_error.Error (Qmljs_value.to_string reason))
+    | Fulfilled -> Ok (result promise)
+    | Rejected -> Error (structured_rejection (result promise))
     | Pending ->
         (match runtime.Qmljs_types.driver with
          | Some driver when not driver.Qmljs_types.closed ->
@@ -64,5 +73,12 @@ let await ?yield_every promise =
         loop ()
   in
   match state promise with
-  | Not_a_promise -> promise
+  | Not_a_promise -> Ok promise
   | Pending | Fulfilled | Rejected -> loop ()
+
+let await_exn ?yield_every promise =
+  match await_result ?yield_every promise with
+  | Ok value -> value
+  | Error error -> Qmljs_error.Structured.raise error
+
+let await = await_exn

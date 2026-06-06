@@ -45,6 +45,9 @@ external context_eval : context -> string -> string -> int -> value
 external context_eval_module : context -> string -> string -> value
   = "qml_context_eval_module"
 
+external context_eval_module_namespace : context -> string -> string -> value
+  = "qml_context_eval_module_namespace"
+
 external context_global : context -> value = "qml_context_global"
 external context_set_global : context -> string -> value -> unit = "qml_context_set_global"
 
@@ -60,8 +63,21 @@ external value_string : context -> string -> value = "qml_value_string"
 external object_create : context -> value = "qml_object_create"
 external object_set : context -> value -> string -> value -> unit = "qml_object_set"
 
+external object_get : context -> value -> value -> value = "qml_object_get"
+external object_has : context -> value -> value -> bool = "qml_object_has"
+external object_delete : context -> value -> value -> bool = "qml_object_delete"
+
 external object_define_data_property : context -> value -> value -> value -> int -> unit
   = "qml_object_define_data_property"
+
+external object_get_own_property_descriptor :
+  context ->
+  value ->
+  value ->
+  (value option * bool option * bool * bool * value option * value option) option
+  = "qml_object_get_own_property_descriptor"
+
+external object_keys : context -> value -> string array = "qml_object_keys"
 
 external array_of_values : context -> value array -> value = "qml_array_of_values"
 external symbol_global : context -> string -> value = "qml_symbol_global"
@@ -81,6 +97,9 @@ external value_promise_state : context -> value -> int = "qml_value_promise_stat
 
 external value_promise_result : context -> value -> value
   = "qml_value_promise_result"
+
+external value_raise_as_exception : context -> value -> unit
+  = "qml_value_raise_as_exception"
 
 external promise_create : context -> value * value * value = "qml_promise_create"
 

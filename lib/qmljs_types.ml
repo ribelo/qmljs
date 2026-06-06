@@ -7,6 +7,8 @@ type driver =
   { sw : Eio.Switch.t
   ; condition : Eio.Condition.t
   ; mutable closed : bool
+  ; drain_until_idle : unit -> int
+  ; cancel : unit -> unit
   }
 
 type runtime =

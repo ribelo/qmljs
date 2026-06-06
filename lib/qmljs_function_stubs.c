@@ -114,6 +114,32 @@ static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
   CAMLreturnT(JSValue, JS_Throw(ctx, error));
 }
 
+static int qml_define_string_property(JSContext *ctx, JSValueConst object,
+                                      const char *name, const char *value)
+{
+  JSValue string = JS_NewString(ctx, value);
+  if (JS_IsException(string)) {
+    return -1;
+  }
+  return JS_DefinePropertyValueStr(ctx, object, name, string, JS_PROP_C_W_E);
+}
+
+static JSValue qml_throw_host_deadline_error(JSContext *ctx)
+{
+  JSValue error = JS_NewError(ctx);
+  if (JS_IsException(error)) {
+    return error;
+  }
+  if (qml_define_string_property(ctx, error, "message",
+                                 "JavaScript execution timed out") < 0 ||
+      qml_define_string_property(ctx, error, "_qmljs_kind",
+                                 "resource_limit") < 0) {
+    JS_FreeValue(ctx, error);
+    return JS_EXCEPTION;
+  }
+  return JS_Throw(ctx, error);
+}
+
 static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
                              JSValueConst *argv, int magic, void *opaque)
 {
@@ -123,6 +149,14 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
   CAMLparam0();
   CAMLlocal2(args, result);
   struct qml_callback *callback = opaque;
+  struct qml_runtime_state *state = qml_context_state(callback->context);
+
+  if (atomic_load_explicit(&state->interrupt_deadline_ns,
+                           memory_order_relaxed) > 0) {
+    atomic_store_explicit(&state->interrupt_requested, 1,
+                          memory_order_relaxed);
+    CAMLreturnT(JSValue, qml_throw_host_deadline_error(ctx));
+  }
 
   args = caml_alloc(argc, 0);
   for (int i = 0; i < argc; i++) {
@@ -140,7 +174,7 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
     CAMLreturnT(JSValue, exception);
   }
 
-  qml_ensure_same_runtime(qml_context_state(callback->context), result);
+  qml_ensure_same_context(callback->context, result);
   JSValue js_result = JS_DupValue(ctx, qml_js_value(result));
   CAMLreturnT(JSValue, js_result);
 }

@@ -97,7 +97,7 @@ static int qml_check_import_attributes(JSContext *ctx, void *opaque,
     JS_FreeValue(ctx, type);
     return -1;
   }
-  int ok = strcmp(type_string, "js") == 0;
+  int ok = strcmp(type_string, "js") == 0 || strcmp(type_string, "json") == 0;
   JS_FreeCString(ctx, type_string);
   JS_FreeValue(ctx, type);
 
@@ -108,11 +108,71 @@ static int qml_check_import_attributes(JSContext *ctx, void *opaque,
   return 0;
 }
 
+static int qml_import_attribute_is_json(JSContext *ctx,
+                                        JSValueConst attributes,
+                                        int *is_json)
+{
+  *is_json = 0;
+  if (JS_IsUndefined(attributes) || JS_IsNull(attributes)) {
+    return 0;
+  }
+
+  JSValue type = JS_GetPropertyStr(ctx, attributes, "type");
+  if (JS_IsException(type)) {
+    return -1;
+  }
+  if (JS_IsUndefined(type) || JS_IsNull(type)) {
+    JS_FreeValue(ctx, type);
+    return 0;
+  }
+
+  const char *type_string = JS_ToCString(ctx, type);
+  if (type_string == NULL) {
+    JS_FreeValue(ctx, type);
+    return -1;
+  }
+  *is_json = strcmp(type_string, "json") == 0;
+  JS_FreeCString(ctx, type_string);
+  JS_FreeValue(ctx, type);
+  return 0;
+}
+
+static JSValue qml_compile_loaded_module(JSContext *ctx,
+                                         struct qml_module_entry *entry,
+                                         const char *module_name,
+                                         int is_json)
+{
+  if (!is_json) {
+    return JS_Eval(ctx, entry->source, entry->source_length, module_name,
+                   JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+  }
+
+  static const char prefix[] = "export default ";
+  static const char suffix[] = ";";
+  size_t prefix_length = sizeof(prefix) - 1;
+  size_t suffix_length = sizeof(suffix) - 1;
+  size_t source_length = prefix_length + entry->source_length + suffix_length;
+  char *source = caml_stat_alloc(source_length);
+  memcpy(source, prefix, prefix_length);
+  memcpy(source + prefix_length, entry->source, entry->source_length);
+  memcpy(source + prefix_length + entry->source_length, suffix, suffix_length);
+
+  JSValue compiled = JS_Eval(ctx, source, source_length, module_name,
+                             JS_EVAL_TYPE_MODULE |
+                               JS_EVAL_FLAG_COMPILE_ONLY);
+  caml_stat_free(source);
+  return compiled;
+}
+
 static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
                                     void *opaque, JSValueConst attributes)
 {
-  (void)attributes;
   struct qml_module_loader *loader = opaque;
+  int is_json = 0;
+  if (qml_import_attribute_is_json(ctx, attributes, &is_json) < 0) {
+    return NULL;
+  }
+
   int denied = qml_module_loader_denies(ctx, loader, module_name);
   if (denied < 0) {
     return NULL;
@@ -127,8 +187,7 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
     struct qml_module_entry *entry = &loader->entries[i];
     if (strcmp(entry->specifier, module_name) == 0) {
       JSValue compiled =
-        JS_Eval(ctx, entry->source, entry->source_length, module_name,
-                JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        qml_compile_loaded_module(ctx, entry, module_name, is_json);
       if (JS_IsException(compiled)) {
         return NULL;
       }

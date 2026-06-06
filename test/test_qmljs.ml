@@ -140,10 +140,11 @@ let test_await_promise () =
 let test_rejected_promise () =
   with_context @@ fun _runtime context ->
   let promise = Qmljs.Context.eval context "Promise.reject(new Error('bad'))" in
-  match Qmljs.Promise.await ~yield_every:1 promise with
-  | _ -> fail "expected rejected promise"
-  | exception Qmljs.Error message ->
-      if not (String.contains message 'b') then fail "missing rejection reason"
+  expect_structured_error "expected rejected promise"
+    (fun () -> Qmljs.Promise.await ~yield_every:1 promise)
+    (fun error ->
+      if not (String.contains (Qmljs.Error.message error) 'b') then
+        fail "missing rejection reason")
 
 let test_host_function () =
   with_context @@ fun _runtime context ->
@@ -179,10 +180,11 @@ let test_async_host_function_error () =
       Eio.Fiber.yield ();
       raise (Failure "async host boom"));
   let promise = Qmljs.Context.eval context "later_fail()" in
-  match Qmljs.Promise.await ~yield_every:1 promise with
-  | _ -> fail "expected async host rejection"
-  | exception Qmljs.Error message ->
-      if not (String.contains message 'b') then fail "missing async host error"
+  expect_structured_error "expected async host rejection"
+    (fun () -> Qmljs.Promise.await ~yield_every:1 promise)
+    (fun error ->
+      if not (String.contains (Qmljs.Error.message error) 'b') then
+        fail "missing async host error")
 
 let test_cancel_pending_await () =
   with_context @@ fun _runtime context ->

@@ -94,10 +94,25 @@ end
 module Error : sig
   type t
 
+  type kind =
+    | JavaScript
+    | Host_callback_defect
+    | Policy_violation of { denied_module_specifier : string option }
+    | Out_of_memory
+    | Stack_overflow
+    | Resource_limit
+    | Timeout
+    | Closed_handle
+    | Wrong_domain
+
   val capture : (unit -> 'a) -> ('a, t) result
   val host : message:string -> metadata:(string * string) list -> exn
   val message : t -> string
+  val kind : t -> kind
+  val metadata : t -> (string * string) list
+  val cause : t -> t option
   val cause_exn : t -> t
+  val raise : t -> 'a
   val has_js_frame : t -> function_name:string -> bool
   val has_ocaml_frame : t -> function_name:string -> bool
   val is_policy_violation : t -> bool
@@ -115,14 +130,39 @@ module Diagnostics : sig
 end
 
 module Eio : sig
-  val with_runtime : (Runtime.t -> Context.t -> 'a) -> 'a
+  type driver
+
+  val with_runtime :
+    sw:Eio.Switch.t ->
+    clock:_ Eio.Time.clock ->
+    ?memory_limit:int ->
+    ?max_stack_size:int ->
+    ?promise_job_limit:int ->
+    (driver -> Runtime.t -> Context.t -> 'a) ->
+    'a
+
+  val cancel : driver -> unit
+  val drain_until_idle : driver -> int
 end
 
 module Object : sig
   type t = value
 
+  type descriptor =
+    { value : value option
+    ; writable : bool option
+    ; enumerable : bool
+    ; configurable : bool
+    ; get : value option
+    ; set : value option
+    }
+
   val create : Context.t -> t
   val set : t -> name:string -> value -> unit
+  val get : t -> key:value -> value
+  val has : t -> key:value -> bool
+  val delete : t -> key:value -> bool
+  val get_own_property_descriptor : t -> key:value -> descriptor option
   val define_data_property :
     t ->
     key:value ->
@@ -164,6 +204,8 @@ module Typed_array : sig
 end
 
 module Module : sig
+  type namespace
+
   module Loader : sig
     type t = module_loader
 
@@ -171,6 +213,10 @@ module Module : sig
     val deny : (string -> bool) -> t -> t
   end
 
+  val eval : ?filename:string -> Context.t -> string -> namespace
+  val default : namespace -> value
+  val get : namespace -> name:string -> value option
+  val keys : namespace -> string list
   val default_export_to_int : value -> int
 end
 
@@ -208,6 +254,12 @@ module Promise : sig
   val state : value -> state
   val result : value -> value
   val create : Context.t -> value * value * value
+  val await_result :
+    ?yield_every:int ->
+    value ->
+    (value, Error.t) result
+
+  val await_exn : ?yield_every:int -> value -> value
   val await : ?yield_every:int -> value -> value
 end
 

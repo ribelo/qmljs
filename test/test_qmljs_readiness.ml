@@ -58,12 +58,13 @@ let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   let value = Qmljs.Context.eval context "21 * 2" in
   check_int "runtime reusable after exception" 42 (Qmljs.Value.to_int value)
 
-let test_eio_many_runtimes_cancel_cleanly_without_races () =
+let test_eio_many_runtimes_cancel_cleanly_without_races env =
   Eio.Switch.run @@ fun sw ->
   let results = Eio.Stream.create 128 in
   for i = 1 to 128 do
     Eio.Fiber.fork ~sw (fun () ->
-        Qmljs.Eio.with_runtime (fun _runtime context ->
+        Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+          (fun _driver _runtime context ->
             Qmljs.Function.set_global_async context ~name:"later" ~arity:1
               (fun args ->
                 Eio.Fiber.yield ();
@@ -175,10 +176,10 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
   check_int "runtime recovers after limits" 42 (Qmljs.Value.to_int value)
 
 let () =
-  Eio_main.run @@ fun _env ->
+  Eio_main.run @@ fun env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
-  test_eio_many_runtimes_cancel_cleanly_without_races ();
+  test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();
   test_module_loader_policy_and_import_attributes_are_enforced ();
   test_resource_limits_reject_hostile_scripts_and_recover ()

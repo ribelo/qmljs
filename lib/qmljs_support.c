@@ -620,7 +620,7 @@ static value qml_build_structured_exception(JSContext *ctx,
 {
   CAMLparam0();
   CAMLlocalN(args, 7);
-  CAMLlocal2(cause, result);
+  CAMLlocal3(cause, nested, result);
   JSValue js_name = JS_UNDEFINED;
   JSValue js_message = JS_UNDEFINED;
   JSValue js_stack = JS_UNDEFINED;
@@ -657,15 +657,14 @@ static value qml_build_structured_exception(JSContext *ctx,
 
     js_cause = JS_GetPropertyStr(ctx, js_exception, "cause");
     if (JS_IsException(js_cause) || JS_IsUndefined(js_cause) ||
-        JS_IsNull(js_cause) || depth >= 16) {
+        JS_IsNull(js_cause) || depth >= 64) {
       if (JS_IsException(js_cause)) {
         js_cause = JS_UNDEFINED;
       }
       cause = Val_int(0);
     } else {
-      value nested =
-        qml_build_structured_exception(ctx, js_cause, depth + 1,
-                                       make_structured);
+      nested = qml_build_structured_exception(ctx, js_cause, depth + 1,
+                                              make_structured);
       cause = qml_some(nested);
     }
   } else {
@@ -735,6 +734,35 @@ static value qml_build_structured_exception(JSContext *ctx,
   CAMLreturn(result);
 }
 
+static void qml_raise_structured_value(JSContext *ctx, JSValueConst js_exception)
+{
+  CAMLparam0();
+  CAMLlocal1(structured);
+  static const value *make_structured = NULL;
+  static const value *raise_structured = NULL;
+
+  if (make_structured == NULL) {
+    make_structured = caml_named_value("qmljs.make_structured");
+  }
+  if (raise_structured == NULL) {
+    raise_structured = caml_named_value("qmljs.raise_structured");
+  }
+  if (make_structured == NULL || raise_structured == NULL) {
+    qml_raise_string("JavaScript exception");
+  }
+
+  structured = qml_build_structured_exception(ctx, js_exception, 0,
+                                              make_structured);
+
+  value result = caml_callback_exn(*raise_structured, structured);
+  if (Is_exception_result(result)) {
+    caml_raise(Extract_exception(result));
+  }
+
+  qml_raise_string("JavaScript exception callback returned unexpectedly");
+  CAMLreturn0;
+}
+
 void qml_raise_exception(JSContext *ctx)
 {
   CAMLparam0();
@@ -765,6 +793,11 @@ void qml_raise_exception(JSContext *ctx)
 
   qml_raise_string("JavaScript exception callback returned unexpectedly");
   CAMLreturn0;
+}
+
+void qml_raise_value_exception(JSContext *ctx, JSValueConst exception)
+{
+  qml_raise_structured_value(ctx, exception);
 }
 
 JSRuntime *qml_runtime(value runtime)
@@ -823,6 +856,22 @@ void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped)
   }
   if (actual->state != expected) {
     qml_raise_string("QuickJS value belongs to a different runtime");
+  }
+}
+
+void qml_ensure_same_context(value context, value wrapped)
+{
+  struct qml_context_handle *expected = Qml_context_val(context)->handle;
+  struct qml_value_handle *actual = Qml_value_val(wrapped)->handle;
+  if (expected == NULL) {
+    qml_raise_string("QuickJS context is closed");
+  }
+  if (actual == NULL ||
+      atomic_load_explicit(&actual->live, memory_order_acquire) == 0) {
+    qml_raise_string("QuickJS value is closed");
+  }
+  if (actual->context != expected) {
+    qml_raise_string("QuickJS value belongs to a different context");
   }
 }
 

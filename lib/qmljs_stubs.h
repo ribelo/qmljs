@@ -64,6 +64,7 @@ value qml_alloc_value(value context, JSValue js_value);
 
 void qml_raise_string(const char *message);
 void qml_raise_exception(JSContext *ctx);
+void qml_raise_value_exception(JSContext *ctx, JSValueConst exception);
 
 JSRuntime *qml_runtime(value runtime);
 JSContext *qml_context(value context);
@@ -72,6 +73,7 @@ JSValue qml_js_value(value wrapped);
 void qml_update_stack_top(JSContext *ctx);
 void qml_ensure_owner(struct qml_runtime_state *state);
 void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped);
+void qml_ensure_same_context(value context, value wrapped);
 void qml_drain_deferred(struct qml_runtime_state *state);
 
 /* Refcounted state lifetime. */

@@ -5,6 +5,9 @@ type kind =
   | Stack_overflow_kind
   | Resource_limit_kind
   | Host_callback_defect_kind
+  | Timeout_kind
+  | Closed_handle_kind
+  | Wrong_domain_kind
 
 and frame_kind =
   | Js_frame
@@ -23,6 +26,7 @@ and structured =
   ; frames : frame list
   ; cause : structured option
   ; kind : kind
+  ; metadata : (string * string) list
   }
 
 exception Error of string
@@ -70,13 +74,14 @@ let ocaml_frames = function
   | function_name -> [ { kind = Ocaml_frame; function_name; raw = function_name } ]
 
 let make ?(name = "") ?(stack = "") ?(ocaml_frame = "") ?cause ~kind
-    message =
+    ?(metadata = []) message =
   { name
   ; message
   ; stack
   ; frames = js_frames stack @ ocaml_frames ocaml_frame
   ; cause
   ; kind
+  ; metadata
   }
 
 let kind_of_code denied_specifier = function
@@ -110,7 +115,33 @@ let () =
 module Structured = struct
   type t = structured
 
-  let of_legacy_error message = make ~kind:JavaScript message
+  type kind =
+    | JavaScript
+    | Host_callback_defect
+    | Policy_violation of { denied_module_specifier : string option }
+    | Out_of_memory
+    | Stack_overflow
+    | Resource_limit
+    | Timeout
+    | Closed_handle
+    | Wrong_domain
+
+  let option_of_nonempty = function
+    | "" -> None
+    | value -> Some value
+
+  let of_legacy_error message =
+    let kind =
+      if find_substring ~needle:"closed" message then Closed_handle_kind
+      else if find_substring ~needle:"different context" message
+              || find_substring ~needle:"different runtime" message
+              || find_substring ~needle:"non-owner domain" message
+      then Wrong_domain_kind
+      else if find_substring ~needle:"timed out" message then Timeout_kind
+      else JavaScript
+    in
+    make ~kind message
+
   let of_policy specifier = make ~kind:(Policy_violation_kind specifier) specifier
   let of_out_of_memory () = make ~kind:Out_of_memory_kind "out of memory"
   let of_stack_overflow () = make ~kind:Stack_overflow_kind "stack overflow"
@@ -123,17 +154,36 @@ module Structured = struct
     | Out_of_memory -> Stdlib.Result.Error (of_out_of_memory ())
     | Stack_overflow -> Stdlib.Result.Error (of_stack_overflow ())
     | Resource_limit message -> Stdlib.Result.Error (of_resource_limit message)
-    | Host_error (message, _metadata) ->
-        Stdlib.Result.Error (make ~kind:Host_callback_defect_kind message)
+    | Host_error (message, metadata) ->
+        Stdlib.Result.Error
+          (make ~kind:Host_callback_defect_kind ~metadata message)
     | Error message -> Stdlib.Result.Error (of_legacy_error message)
     | exn -> Stdlib.Result.Error (of_legacy_error (Printexc.to_string exn))
 
   let host ~message ~metadata = Host_error (message, metadata)
   let message t = t.message
+  let metadata t = t.metadata
+  let cause t = t.cause
   let cause_exn t =
     match t.cause with
     | Some cause -> cause
     | None -> invalid_arg "error has no cause"
+
+  let raise t = raise (Structured_error t)
+
+  let kind (t : t) =
+    match t.kind with
+    | JavaScript -> JavaScript
+    | Host_callback_defect_kind -> Host_callback_defect
+    | Policy_violation_kind specifier ->
+        Policy_violation
+          { denied_module_specifier = option_of_nonempty specifier }
+    | Out_of_memory_kind -> Out_of_memory
+    | Stack_overflow_kind -> Stack_overflow
+    | Resource_limit_kind -> Resource_limit
+    | Timeout_kind -> Timeout
+    | Closed_handle_kind -> Closed_handle
+    | Wrong_domain_kind -> Wrong_domain
 
   let rec has_frame kind t ~function_name =
     List.exists
@@ -172,7 +222,7 @@ module Structured = struct
 
   let is_resource_limit (t : t) =
     match t.kind with
-    | Resource_limit_kind | Out_of_memory_kind | Stack_overflow_kind -> true
+    | Resource_limit_kind | Timeout_kind | Out_of_memory_kind | Stack_overflow_kind -> true
     | _ -> false
 
   let is_host_callback_defect (t : t) =
