@@ -5,3 +5,7 @@
 (test
  (name test_qmljs_readiness)
  (libraries qmljs eio_main))
+
+(test
+ (name test_qmljs_not_production_ready)
+ (libraries qmljs eio_main unix))
