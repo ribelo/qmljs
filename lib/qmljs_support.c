@@ -1292,21 +1292,30 @@ static int qmljs_error_kind_of_marker(const char *marker)
   return 0;
 }
 
-static int qmljs_error_kind_of_engine_error(const char *name,
+static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
+                                          const char *name,
                                           const char *message,
                                           int is_uncatchable)
 {
   if (name == NULL || message == NULL) {
     return 0;
   }
+  int memory_limit_active =
+    state != NULL &&
+    atomic_load_explicit(&state->memory_limit_active, memory_order_acquire);
+  int max_stack_size_active =
+    state != NULL &&
+    atomic_load_explicit(&state->max_stack_size_active, memory_order_acquire);
   if (strcmp(name, "InternalError") == 0 &&
-      strcmp(message, "out of memory") == 0) {
+      strcmp(message, "out of memory") == 0 &&
+      (is_uncatchable || memory_limit_active)) {
     return 1;
   }
   if ((strcmp(name, "InternalError") == 0 ||
        strcmp(name, "RangeError") == 0) &&
       (strstr(message, "stack overflow") != NULL ||
-       strstr(message, "Maximum call stack size exceeded") != NULL)) {
+       strstr(message, "Maximum call stack size exceeded") != NULL) &&
+      (is_uncatchable || max_stack_size_active)) {
     return 2;
   }
   if (is_uncatchable && strcmp(name, "InternalError") == 0 &&
@@ -1421,6 +1430,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   int trusted_marker = 0;
   int trusted_engine_error = 0;
   int trusted_uncatchable_error = 0;
+  struct qmljs_runtime_state *state = qmljs_state_of_context(ctx);
 
   if (JS_IsNull(js_exception)) {
     kind = 1;
@@ -1483,7 +1493,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   }
   if (kind == 0 && trusted_engine_error) {
     kind =
-      qmljs_error_kind_of_engine_error(name, message,
+      qmljs_error_kind_of_engine_error(state, name, message,
                                      trusted_uncatchable_error);
   }
 

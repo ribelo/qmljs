@@ -437,6 +437,25 @@ let test_user_internalerror_interrupted_is_javascript_error () =
       check_string "user InternalError interrupted message" "interrupted"
         (Qmljs.Error.message error))
 
+let test_user_constructed_engine_named_errors_are_javascript_errors () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  [ "InternalError", "out of memory"
+  ; "RangeError", "Maximum call stack size exceeded"
+  ]
+  |> List.iter (fun (constructor, message) ->
+    expect_structured_error ("user constructed " ^ constructor)
+      (fun () ->
+        ignore
+          (Qmljs.Context.eval context
+             (Printf.sprintf "throw new %s(%S)" constructor message)
+           : Qmljs.value))
+      (fun error ->
+        check_kind (constructor ^ " remains JavaScript")
+          Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+        check_string (constructor ^ " message") message
+          (Qmljs.Error.message error)))
+
 let test_user_js_cannot_spoof_qmljs_error_kind_marker () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -962,6 +981,8 @@ let tests env =
   , test_user_error_message_interrupted_is_javascript_error
   ; "user InternalError interrupted is JavaScript error"
   , test_user_internalerror_interrupted_is_javascript_error
+  ; "user constructed engine-named errors are JavaScript errors"
+  , test_user_constructed_engine_named_errors_are_javascript_errors
   ; "user JS cannot spoof qmljs error kind marker"
   , test_user_js_cannot_spoof_qmljs_error_kind_marker
   ; "throwing error getters do not poison context"

@@ -47,6 +47,8 @@ struct qmljs_runtime_state {
   struct qmljs_atom_handle *atoms;
   atomic_int interrupt_requested;
   atomic_llong interrupt_deadline_ns;
+  atomic_int memory_limit_active;
+  atomic_int max_stack_size_active;
   char *runtime_info;                /* retained for JS_SetRuntimeInfo */
   void *module_loader;               /* struct qmljs_module_loader *, owner-freed */
   int promise_rejection_tracking;

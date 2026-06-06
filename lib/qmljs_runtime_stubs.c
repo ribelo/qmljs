@@ -878,6 +878,8 @@ CAMLprim value qmljs_runtime_create(value unit)
   state->atoms = NULL;
   atomic_init(&state->interrupt_requested, 0);
   atomic_init(&state->interrupt_deadline_ns, 0);
+  atomic_init(&state->memory_limit_active, 0);
+  atomic_init(&state->max_stack_size_active, 0);
   state->runtime_info = NULL;
   state->module_loader = NULL;
   state->promise_rejection_tracking = 0;
@@ -916,6 +918,9 @@ CAMLprim value qmljs_runtime_set_memory_limit(value runtime, value limit)
     qmljs_raise_string("memory limit must be non-negative");
   }
   JS_SetMemoryLimit(qmljs_runtime(runtime), (size_t)bytes);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  atomic_store_explicit(&state->memory_limit_active, bytes > 0,
+                        memory_order_release);
   CAMLreturn(Val_unit);
 }
 
@@ -927,6 +932,9 @@ CAMLprim value qmljs_runtime_set_max_stack_size(value runtime, value size)
     qmljs_raise_string("max stack size must be non-negative");
   }
   JS_SetMaxStackSize(qmljs_runtime(runtime), (size_t)bytes);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  atomic_store_explicit(&state->max_stack_size_active, bytes > 0,
+                        memory_order_release);
   CAMLreturn(Val_unit);
 }
 
