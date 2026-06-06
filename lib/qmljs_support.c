@@ -854,17 +854,43 @@ void qml_raise_string(const char *message)
   CAMLreturn0;
 }
 
+static void qml_clear_pending_exception(JSContext *ctx)
+{
+  JSValue exception = JS_GetException(ctx);
+  JS_FreeValue(ctx, exception);
+}
+
+static const char *qml_cstring_or_clear_exception(JSContext *ctx,
+                                                  JSValueConst value)
+{
+  const char *string = JS_ToCString(ctx, value);
+  if (string == NULL) {
+    qml_clear_pending_exception(ctx);
+  }
+  return string;
+}
+
+static const char *qml_optional_cstring(JSContext *ctx, JSValueConst value)
+{
+  if (JS_IsException(value)) {
+    qml_clear_pending_exception(ctx);
+    return NULL;
+  }
+  return qml_cstring_or_clear_exception(ctx, value);
+}
+
 static const char *qml_property_cstring(JSContext *ctx, JSValueConst object,
                                         const char *name, JSValue *slot)
 {
   *slot = JS_GetPropertyStr(ctx, object, name);
   if (JS_IsException(*slot) || JS_IsUndefined(*slot) || JS_IsNull(*slot)) {
     if (JS_IsException(*slot)) {
+      qml_clear_pending_exception(ctx);
       *slot = JS_UNDEFINED;
     }
     return NULL;
   }
-  return JS_ToCString(ctx, *slot);
+  return qml_cstring_or_clear_exception(ctx, *slot);
 }
 
 static value qml_copy_optional_string(const char *text)
@@ -950,6 +976,7 @@ static value qml_metadata_array(JSContext *ctx, JSValueConst js_metadata)
   JSValue js_length = JS_GetPropertyStr(ctx, js_metadata, "length");
   if (JS_IsException(js_length) ||
       JS_ToUint32(ctx, &length, js_length) < 0) {
+    qml_clear_pending_exception(ctx);
     JS_FreeValue(ctx, js_length);
     CAMLreturn(caml_alloc(0, 0));
   }
@@ -963,6 +990,9 @@ static value qml_metadata_array(JSContext *ctx, JSValueConst js_metadata)
   for (uint32_t i = 0; i < length; i++) {
     JSValue js_pair = JS_GetPropertyUint32(ctx, js_metadata, i);
     if (JS_IsException(js_pair) || !JS_IsObject(js_pair)) {
+      if (JS_IsException(js_pair)) {
+        qml_clear_pending_exception(ctx);
+      }
       JS_FreeValue(ctx, js_pair);
       pair = caml_alloc_tuple(2);
       Store_field(pair, 0, Val_unit);
@@ -977,10 +1007,8 @@ static value qml_metadata_array(JSContext *ctx, JSValueConst js_metadata)
 
     JSValue js_key = JS_GetPropertyUint32(ctx, js_pair, 0);
     JSValue js_value = JS_GetPropertyUint32(ctx, js_pair, 1);
-    const char *key_string =
-      JS_IsException(js_key) ? NULL : JS_ToCString(ctx, js_key);
-    const char *value_string =
-      JS_IsException(js_value) ? NULL : JS_ToCString(ctx, js_value);
+    const char *key_string = qml_optional_cstring(ctx, js_key);
+    const char *value_string = qml_optional_cstring(ctx, js_value);
 
     key = caml_copy_string(key_string == NULL ? "" : key_string);
     value_ = caml_copy_string(value_string == NULL ? "" : value_string);
@@ -1047,6 +1075,7 @@ static value qml_build_structured_exception(JSContext *ctx,
                            &js_denied_specifier);
     js_metadata = JS_GetPropertyStr(ctx, js_exception, "_qmljs_metadata");
     if (JS_IsException(js_metadata)) {
+      qml_clear_pending_exception(ctx);
       js_metadata = JS_UNDEFINED;
     }
     metadata = qml_metadata_array(ctx, js_metadata);
@@ -1055,6 +1084,7 @@ static value qml_build_structured_exception(JSContext *ctx,
     if (JS_IsException(js_cause) || JS_IsUndefined(js_cause) ||
         JS_IsNull(js_cause) || depth >= 64) {
       if (JS_IsException(js_cause)) {
+        qml_clear_pending_exception(ctx);
         js_cause = JS_UNDEFINED;
       }
       cause = Val_int(0);
@@ -1068,7 +1098,7 @@ static value qml_build_structured_exception(JSContext *ctx,
     metadata = caml_alloc(0, 0);
   }
 
-  exception_text = JS_ToCString(ctx, js_exception);
+  exception_text = qml_cstring_or_clear_exception(ctx, js_exception);
   if ((message == NULL || message[0] == '\0') && exception_text != NULL) {
     fallback_message = exception_text;
   }

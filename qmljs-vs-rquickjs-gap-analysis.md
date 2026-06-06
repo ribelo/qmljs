@@ -329,6 +329,8 @@ Keep these context gaps:
   when an interrupt flag and JS exception are both present.
 - [x] User JavaScript error messages are not reclassified as resource or timeout
   failures by string matching.
+- [x] Throwing error-property getters do not poison the context while qmljs
+  structures the original JavaScript error.
 - [x] Module/file eval helpers only where they add structured errors or ownership
   behavior beyond ordinary OCaml file reading.
 

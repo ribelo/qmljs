@@ -171,6 +171,33 @@ let test_user_error_message_interrupted_is_javascript_error () =
     ; "Maximum call stack size exceeded"
     ]
 
+let test_throwing_error_getters_do_not_poison_context () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  expect_structured_error "throwing error getters"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval context
+           {|
+             throw {
+               get name() { throw new Error("name boom"); },
+               get message() { throw new Error("getter boom"); },
+               get stack() { throw new Error("stack boom"); },
+               get _qmljs_kind() { throw new Error("kind boom"); },
+               get _qmljs_metadata() { throw new Error("metadata boom"); },
+               get cause() { throw new Error("cause boom"); },
+               toString() { return "outer"; }
+             };
+           |}
+         : Qmljs.value))
+    (fun error ->
+      check_kind "throwing getters keep original kind"
+        Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+      check_string "throwing getters keep fallback message" "outer"
+        (Qmljs.Error.message error));
+  check_int "context reusable after throwing getters" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
 let test_native_module_host_error_metadata_survives () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -554,6 +581,8 @@ let tests env =
   , test_nul_in_public_string_keys_is_not_silently_truncated
   ; "user error message interrupted is JavaScript error"
   , test_user_error_message_interrupted_is_javascript_error
+  ; "throwing error getters do not poison context"
+  , test_throwing_error_getters_do_not_poison_context
   ; "native module host error metadata survives"
   , test_native_module_host_error_metadata_survives
   ; "module loader host error metadata survives"
