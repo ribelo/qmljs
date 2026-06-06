@@ -269,6 +269,27 @@ let test_typed_array_family_api () =
       check_kind "typed array invalid length kind" Qmljs.Error.JavaScript
         (Qmljs.Error.kind error))
 
+let test_typed_array_index_over_uint32_rejected () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer = Qmljs.Array_buffer.of_bytes_copy context (Bytes.make 4 '\000') in
+  let view =
+    Qmljs.Typed_array.Int16Array.of_array_buffer ~byte_offset:0 ~length:2 buffer
+  in
+  let oversized_index = 0x1_0000_0000 in
+  let assert_oversized_index label error =
+    check_string (label ^ " message")
+      "typed array index exceeds supported property range"
+      (Qmljs.Error.message error)
+  in
+  expect_structured_error "typed array get over UINT32_MAX"
+    (fun () ->
+      ignore (Qmljs.Typed_array.Int16Array.get view oversized_index : int))
+    (assert_oversized_index "typed array get over UINT32_MAX");
+  expect_structured_error "typed array set over UINT32_MAX"
+    (fun () -> Qmljs.Typed_array.Int16Array.set view oversized_index 7)
+    (assert_oversized_index "typed array set over UINT32_MAX")
+
 let test_array_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -319,6 +340,8 @@ let tests =
   ; "array buffer API", test_array_buffer_api
   ; "uint8 array buffer interop API", test_uint8_array_buffer_interop_api
   ; "typed array family API", test_typed_array_family_api
+  ; "typed array index over UINT32_MAX is rejected"
+  , test_typed_array_index_over_uint32_rejected
   ; "array API", test_array_api
   ; "bigint readback API", test_bigint_readback_api
   ]

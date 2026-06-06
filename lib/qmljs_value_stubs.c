@@ -1321,6 +1321,9 @@ static uint32_t qmljs_typed_array_index(JSContext *ctx, JSValueConst js_value,
   if (offset < 0) {
     qmljs_raise_string("typed array index is negative");
   }
+  if ((uint64_t)offset > UINT32_MAX) {
+    qmljs_raise_string("typed array index exceeds supported property range");
+  }
   size_t length = qmljs_typed_array_element_length(ctx, js_value, array_type);
   if ((uint64_t)offset >= length) {
     qmljs_raise_string("typed array index out of bounds");

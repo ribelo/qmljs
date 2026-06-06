@@ -176,6 +176,8 @@ Keep these binary-data gaps:
 - [x] Typed array creation from ArrayBuffer with offset/length checks.
 - [x] Access to a typed array's backing ArrayBuffer, byte offset, byte length, and
   element length.
+- [x] Typed array element access rejects OCaml indexes above QuickJS' supported
+  uint32 property-index range instead of truncating.
 
 Zero-copy external memory should not be the default. Add it only with explicit
 ownership rules, owner-domain checks, finalization tests, and allocation
