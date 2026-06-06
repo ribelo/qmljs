@@ -847,6 +847,29 @@ let test_async_host_callback_rejection_is_structured () =
       check_bool "async host OCaml frame" true
         (Qmljs.Error.has_ocaml_frame error ~function_name:"later_host_fail")
 
+let test_async_host_callback_foreign_return_rejects_structured () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let left = Qmljs.Context.create runtime in
+  let right = Qmljs.Context.create runtime in
+  let foreign = Qmljs.Value.int right 41 in
+  Qmljs.Function.set_global_async left ~name:"bad_async" ~arity:0
+    (fun _args ->
+      Eio.Fiber.yield ();
+      foreign);
+  let promise = Qmljs.Context.eval left "bad_async()" in
+  (match Qmljs.Promise.await_result ~yield_every:1 promise with
+   | Ok _ -> fail "async foreign host return unexpectedly resolved"
+   | Error error ->
+       check_kind "async foreign host return kind"
+         Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+       check_string "async foreign host return message"
+         "QuickJS value belongs to a different context"
+         (Qmljs.Error.message error);
+       check_bool "async foreign host return frame" true
+         (Qmljs.Error.has_ocaml_frame error ~function_name:"bad_async"));
+  check_int "runtime reusable after async foreign return" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval left "1 + 1"))
+
 let test_function_defer_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -1649,6 +1672,8 @@ let tests =
   , test_function_call_constructor_and_metadata_api
   ; "async host callback rejection is structured"
   , test_async_host_callback_rejection_is_structured
+  ; "async host callback foreign return rejects structured"
+  , test_async_host_callback_foreign_return_rejects_structured
   ; "function defer API", test_function_defer_api
   ; "host class API", test_host_class_api
   ; "iterable API", test_iterable_api

@@ -253,7 +253,7 @@ let test_eio_scoped_driver_api env =
 let test_eio_promise_helper_api env =
   Eio.Switch.run @@ fun sw ->
   Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver _runtime context ->
+    (fun driver runtime context ->
       let fulfilled =
         Qmljs.Eio.promise driver context (fun () ->
             Eio.Fiber.yield ();
@@ -263,6 +263,22 @@ let test_eio_promise_helper_api env =
        | Ok value -> check_int "Eio promise fulfilled" 42 (Qmljs.Value.to_int value)
        | Error error ->
            fail ("Eio promise rejected: " ^ Qmljs.Error.message error));
+      let foreign_context = Qmljs.Context.create runtime in
+      let foreign = Qmljs.Value.int foreign_context 41 in
+      let foreign_return =
+        Qmljs.Eio.promise ~name:"eio_foreign_return" driver context
+          (fun () ->
+            Eio.Fiber.yield ();
+            foreign)
+      in
+      (match Qmljs.Promise.await_result foreign_return with
+       | Ok _ -> fail "Eio foreign return unexpectedly fulfilled"
+       | Error error ->
+           check_kind "Eio foreign return kind"
+             Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+           check_string "Eio foreign return message"
+             "QuickJS value belongs to a different context"
+             (Qmljs.Error.message error));
       let rejected =
         Qmljs.Eio.promise ~name:"eio_promise_fail" driver context (fun () ->
             Eio.Fiber.yield ();

@@ -64,11 +64,20 @@ let reject_with_exn context reject name exn =
   in
   ignore (Qmljs_value.call reject [| reason |] : Qmljs_value.t)
 
+let reject_with_exn_noerr context reject name exn =
+  try reject_with_exn context reject name exn with
+  | _ -> ()
+
+let resolve_or_reject context ~name ~resolve ~reject result =
+  match Qmljs_value.call resolve [| result |] with
+  | _ -> ()
+  | exception exn -> reject_with_exn_noerr context reject name exn
+
 let set_global_async context ~name ~arity callback =
   set_global context ~name ~arity @@ fun args ->
   let promise, resolve, reject = Qmljs_promise.create context in
   let on_cancel () =
-    reject_with_exn context reject name
+    reject_with_exn_noerr context reject name
       (Qmljs_error.Structured.host
          ~message:"async host callback cancelled"
          ~metadata:[ "function", name; "cancelled", "true" ])
@@ -77,9 +86,11 @@ let set_global_async context ~name ~arity callback =
     ~on_cancel
     (Qmljs_types.context_runtime context)
     (fun () ->
-      match callback args with
-      | result -> ignore (Qmljs_value.call resolve [| result |] : Qmljs_value.t)
-      | exception exn -> reject_with_exn context reject name exn);
+      try
+        let result = callback args in
+        resolve_or_reject context ~name ~resolve ~reject result
+      with
+      | exn -> reject_with_exn_noerr context reject name exn);
   promise
 
 let call ?this_ t args =

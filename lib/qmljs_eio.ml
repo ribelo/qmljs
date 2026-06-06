@@ -19,6 +19,15 @@ let reject_with_exn context reject name exn =
   in
   ignore (Qmljs_value.call reject [| reason |] : Qmljs_value.t)
 
+let reject_with_exn_noerr context reject name exn =
+  try reject_with_exn context reject name exn with
+  | _ -> ()
+
+let resolve_or_reject context ~name ~resolve ~reject result =
+  match Qmljs_value.call resolve [| result |] with
+  | _ -> ()
+  | exception exn -> reject_with_exn_noerr context reject name exn
+
 let enqueue_settlement ?on_cancel driver runtime job =
   if not driver.Qmljs_types.closed then
     Qmljs_runtime.enqueue_host_job ?on_cancel runtime (fun () ->
@@ -33,19 +42,19 @@ let promise ?(name = "Qmljs.Eio.promise") driver context fn =
       match fn () with
       | result ->
           let on_cancel () =
-            reject_with_exn context reject name
+            reject_with_exn_noerr context reject name
               (Eio.Cancel.Cancelled (Failure "Eio driver cancelled"))
           in
           enqueue_settlement ~on_cancel driver runtime (fun () ->
-              ignore (Qmljs_value.call resolve [| result |] : Qmljs_value.t))
+              resolve_or_reject context ~name ~resolve ~reject result)
       | exception (Eio.Cancel.Cancelled _ as exn) ->
           Eio.Cancel.protect (fun () ->
               enqueue_settlement driver runtime (fun () ->
-                  reject_with_exn context reject name exn))
+                  reject_with_exn_noerr context reject name exn))
       | exception exn ->
           enqueue_settlement driver runtime (fun () ->
-              reject_with_exn context reject name exn));
-  promise
+              reject_with_exn_noerr context reject name exn));
+    promise
 
 let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
     ?promise_job_limit f =
