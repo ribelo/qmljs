@@ -12,6 +12,7 @@
 #include <quickjs.h>
 
 #include <stdatomic.h>
+#include <stddef.h>
 
 struct qml_deferred_value;
 struct qml_deferred_atom;
@@ -108,6 +109,10 @@ void qml_drain_deferred(struct qml_runtime_state *state);
 void qml_drain_deferred_runtimes(void);
 void qml_enter_ocaml_callback(struct qml_runtime_state *state);
 void qml_leave_ocaml_callback(struct qml_runtime_state *state);
+JSValueConst *qml_alloc_argv(size_t argc);
+void qml_free_argv(JSValueConst *argv);
+void qml_argv_set(value context, JSValueConst *argv, size_t index,
+                  value wrapped);
 
 /* Refcounted state lifetime. */
 void qml_state_ref(struct qml_runtime_state *state);

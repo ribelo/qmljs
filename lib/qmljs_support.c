@@ -2,13 +2,14 @@
 
 #include <string.h>
 
-/* Diagnostics count live OCaml wrappers (custom blocks). They increment on
-   allocation and decrement in the finalizer, so a full GC returns them to the
-   baseline. They measure wrapper leaks, not native bytes. */
+/* Diagnostics count live OCaml wrappers and selected native resources whose
+   lifetime should return to baseline at safe boundaries. This is leak evidence,
+   not a native heap profiler. */
 static atomic_int qml_live_runtime_wrappers;
 static atomic_int qml_live_context_wrappers;
 static atomic_int qml_live_value_wrappers;
 static atomic_int qml_live_native_runtimes;
+static atomic_int qml_live_argv_arrays;
 
 struct qml_deferred_value {
   struct qml_runtime_state *state;
@@ -35,6 +36,33 @@ struct qml_deferred_runtime {
 
 static _Atomic(struct qml_deferred_runtime *) qml_deferred_runtimes;
 static atomic_int qml_deferred_runtime_drain_depth;
+
+JSValueConst *qml_alloc_argv(size_t argc)
+{
+  JSValueConst *argv = caml_stat_alloc(sizeof(JSValueConst) * argc);
+  atomic_fetch_add_explicit(&qml_live_argv_arrays, 1, memory_order_relaxed);
+  return argv;
+}
+
+void qml_free_argv(JSValueConst *argv)
+{
+  if (argv != NULL) {
+    atomic_fetch_sub_explicit(&qml_live_argv_arrays, 1, memory_order_relaxed);
+    caml_stat_free(argv);
+  }
+}
+
+void qml_argv_set(value context, JSValueConst *argv, size_t index,
+                  value wrapped)
+{
+  JSValue js_value;
+  const char *error = qml_js_value_for_context(context, wrapped, &js_value);
+  if (error != NULL) {
+    qml_free_argv(argv);
+    qml_raise_string(error);
+  }
+  argv[index] = js_value;
+}
 
 struct qml_context_handle {
   struct qml_runtime_state *state;
@@ -791,6 +819,13 @@ CAMLprim value qml_diagnostics_live_native_runtimes(value unit)
   (void)unit;
   return Val_int(
     atomic_load_explicit(&qml_live_native_runtimes, memory_order_relaxed));
+}
+
+CAMLprim value qml_diagnostics_live_argv_arrays(value unit)
+{
+  (void)unit;
+  return Val_int(
+    atomic_load_explicit(&qml_live_argv_arrays, memory_order_relaxed));
 }
 
 void qml_raise_string(const char *message)

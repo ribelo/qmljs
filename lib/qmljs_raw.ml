@@ -357,3 +357,7 @@ external diagnostics_live_values : unit -> int = "qml_diagnostics_live_values"
 external diagnostics_live_native_runtimes : unit -> int
   = "qml_diagnostics_live_native_runtimes"
 [@@noalloc]
+
+external diagnostics_live_argv_arrays : unit -> int
+  = "qml_diagnostics_live_argv_arrays"
+[@@noalloc]

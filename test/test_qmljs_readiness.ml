@@ -131,6 +131,34 @@ let test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime (
     (Qmljs.Diagnostics.native_runtimes after);
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_wrong_context_call_arguments_do_not_leak_native_argv () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   let left = Qmljs.Context.create runtime in
+   let right = Qmljs.Context.create runtime in
+   let foreign = Qmljs.Value.int right 41 in
+   let fn = Qmljs.Context.eval left "(function Box(x) { this.x = x; return x + 1; })" in
+   let expect_wrong_context label fn =
+     expect_error label fn (fun error ->
+       check_bool (label ^ " kind") true
+         (Qmljs.Error.kind error = Qmljs.Error.Wrong_domain);
+       check_string (label ^ " message")
+         "QuickJS value belongs to a different context"
+         (Qmljs.Error.message error))
+   in
+   for _ = 1 to 128 do
+     expect_wrong_context "Function.call foreign arg" (fun () ->
+       ignore (Qmljs.Function.call fn [| foreign |] : Qmljs.value));
+     expect_wrong_context "Function.construct foreign arg" (fun () ->
+       ignore (Qmljs.Function.construct fn [| foreign |] : Qmljs.value));
+     expect_wrong_context "Function.defer foreign arg" (fun () ->
+       Qmljs.Function.defer fn [| foreign |]);
+     expect_wrong_context "Value.call foreign arg" (fun () ->
+       ignore (Qmljs.Value.call fn [| foreign |] : Qmljs.value))
+   done);
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -281,6 +309,7 @@ let () =
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_rejected_module_eval_leaks ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
+  test_wrong_context_call_arguments_do_not_leak_native_argv ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();

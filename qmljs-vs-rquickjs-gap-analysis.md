@@ -196,6 +196,8 @@ Keep these gaps:
   qmljs driver.
 - [x] Async host callback failures should preserve structured host defects rather
   than reject with Printexc.to_string only.
+- [x] Native argv temporaries are released when call, construct, defer, or value
+  call argument validation fails.
 
 Do not port rquickjs's Func, MutFn, OnceFn, Rest, This, Opt, IntoArg, or
 IntoJsFunc traits. OCaml can expose these as explicit callback records or helper

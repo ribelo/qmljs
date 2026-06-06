@@ -563,10 +563,9 @@ static JSValueConst *qml_function_args(value context, value args, int *argc)
   if (*argc == 0) {
     return NULL;
   }
-  JSValueConst *argv = caml_stat_alloc(sizeof(JSValueConst) * (size_t)*argc);
+  JSValueConst *argv = qml_alloc_argv((size_t)*argc);
   for (int i = 0; i < *argc; i++) {
-    qml_ensure_same_context(context, Field(args, i));
-    argv[i] = qml_js_value(Field(args, i));
+    qml_argv_set(context, argv, (size_t)i, Field(args, i));
   }
   return argv;
 }
@@ -579,14 +578,15 @@ CAMLprim value qml_function_call(value context, value function, value this_,
   qml_update_stack_top(ctx);
   qml_ensure_same_context(context, function);
   qml_ensure_same_context(context, this_);
-  qml_ensure_function(ctx, qml_js_value(function));
+  JSValue js_function = qml_js_value(function);
+  JSValue js_this = qml_js_value(this_);
+  qml_ensure_function(ctx, js_function);
 
   int argc = 0;
   JSValueConst *argv = qml_function_args(context, args, &argc);
-  JSValue result =
-    JS_Call(ctx, qml_js_value(function), qml_js_value(this_), argc, argv);
+  JSValue result = JS_Call(ctx, js_function, js_this, argc, argv);
   if (argv != NULL) {
-    caml_stat_free(argv);
+    qml_free_argv(argv);
   }
   if (JS_IsException(result)) {
     qml_raise_exception(ctx);
@@ -600,12 +600,13 @@ CAMLprim value qml_function_construct(value context, value function, value args)
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
   qml_ensure_same_context(context, function);
+  JSValue js_function = qml_js_value(function);
 
   int argc = 0;
   JSValueConst *argv = qml_function_args(context, args, &argc);
-  JSValue result = JS_CallConstructor(ctx, qml_js_value(function), argc, argv);
+  JSValue result = JS_CallConstructor(ctx, js_function, argc, argv);
   if (argv != NULL) {
-    caml_stat_free(argv);
+    qml_free_argv(argv);
   }
   if (JS_IsException(result)) {
     qml_raise_exception(ctx);
@@ -628,19 +629,20 @@ CAMLprim value qml_function_defer(value context, value function, value this_,
   qml_update_stack_top(ctx);
   qml_ensure_same_context(context, function);
   qml_ensure_same_context(context, this_);
-  qml_ensure_function(ctx, qml_js_value(function));
+  JSValue js_function = qml_js_value(function);
+  JSValue js_this = qml_js_value(this_);
+  qml_ensure_function(ctx, js_function);
 
   int argc = (int)Wosize_val(args) + 2;
-  JSValueConst *argv = caml_stat_alloc(sizeof(JSValueConst) * (size_t)argc);
+  JSValueConst *argv = qml_alloc_argv((size_t)argc);
   for (int i = 0; i < argc - 2; i++) {
-    qml_ensure_same_context(context, Field(args, i));
-    argv[i] = qml_js_value(Field(args, i));
+    qml_argv_set(context, argv, (size_t)i, Field(args, i));
   }
-  argv[argc - 2] = qml_js_value(this_);
-  argv[argc - 1] = qml_js_value(function);
+  argv[argc - 2] = js_this;
+  argv[argc - 1] = js_function;
 
   int result = JS_EnqueueJob(ctx, qml_defer_call_job, argc, argv);
-  caml_stat_free(argv);
+  qml_free_argv(argv);
   if (result < 0) {
     qml_raise_exception(ctx);
   }
