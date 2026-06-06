@@ -13,21 +13,7 @@ CAMLprim value qml_context_create(value runtime)
 CAMLprim value qml_context_close(value context)
 {
   CAMLparam1(context);
-  struct qml_context *wrapped = Qml_context_val(context);
-  struct qml_runtime_state *state = wrapped->state;
-  if (wrapped->ctx == NULL) {
-    CAMLreturn(Val_true);
-  }
-  qml_ensure_owner(state);
-  /* Free any values whose wrappers were already collected, then free this
-     context deterministically on the owner domain. Values that escaped the
-     scope keep their JSValues live; they are released later with
-     JS_FreeValueRT, which does not need this context. */
-  qml_drain_deferred(state);
-  JS_FreeContext(wrapped->ctx);
-  wrapped->ctx = NULL;
-  atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
-  CAMLreturn(Val_true);
+  CAMLreturn(Val_bool(qml_context_close_native(context)));
 }
 
 CAMLprim value qml_context_eval(value context, value source, value filename, value flags)
@@ -95,7 +81,7 @@ CAMLprim value qml_context_set_global(value context, value name, value wrapped)
   CAMLparam3(context, name, wrapped);
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   JSValue global = JS_GetGlobalObject(ctx);
   if (JS_IsException(global)) {
     qml_raise_exception(ctx);

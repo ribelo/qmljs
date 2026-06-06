@@ -21,6 +21,105 @@ struct qml_deferred_context {
   struct qml_deferred_context *next;
 };
 
+struct qml_context_handle {
+  struct qml_runtime_state *state;
+  JSContext *ctx;
+  atomic_int live;
+  int linked;
+  struct qml_context_handle *prev;
+  struct qml_context_handle *next;
+};
+
+struct qml_value_handle {
+  struct qml_runtime_state *state;
+  struct qml_context_handle *context;
+  JSValue value;
+  atomic_int live;
+  int linked;
+  struct qml_value_handle *prev;
+  struct qml_value_handle *next;
+};
+
+static void qml_lock_lists(struct qml_runtime_state *state)
+{
+  while (atomic_flag_test_and_set_explicit(&state->list_lock,
+                                           memory_order_acquire)) {
+  }
+}
+
+static void qml_unlock_lists(struct qml_runtime_state *state)
+{
+  atomic_flag_clear_explicit(&state->list_lock, memory_order_release);
+}
+
+static void qml_link_context(struct qml_runtime_state *state,
+                             struct qml_context_handle *handle)
+{
+  qml_lock_lists(state);
+  handle->prev = NULL;
+  handle->next = state->contexts;
+  if (state->contexts != NULL) {
+    state->contexts->prev = handle;
+  }
+  state->contexts = handle;
+  handle->linked = 1;
+  qml_unlock_lists(state);
+}
+
+static void qml_unlink_context(struct qml_runtime_state *state,
+                               struct qml_context_handle *handle)
+{
+  qml_lock_lists(state);
+  if (handle->linked) {
+    if (handle->prev != NULL) {
+      handle->prev->next = handle->next;
+    } else {
+      state->contexts = handle->next;
+    }
+    if (handle->next != NULL) {
+      handle->next->prev = handle->prev;
+    }
+    handle->prev = NULL;
+    handle->next = NULL;
+    handle->linked = 0;
+  }
+  qml_unlock_lists(state);
+}
+
+static void qml_link_value(struct qml_runtime_state *state,
+                           struct qml_value_handle *handle)
+{
+  qml_lock_lists(state);
+  handle->prev = NULL;
+  handle->next = state->values;
+  if (state->values != NULL) {
+    state->values->prev = handle;
+  }
+  state->values = handle;
+  handle->linked = 1;
+  qml_unlock_lists(state);
+}
+
+static void qml_unlink_value(struct qml_runtime_state *state,
+                             struct qml_value_handle *handle)
+{
+  qml_lock_lists(state);
+  if (handle->linked) {
+    if (handle->prev != NULL) {
+      handle->prev->next = handle->next;
+    } else {
+      state->values = handle->next;
+    }
+    if (handle->next != NULL) {
+      handle->next->prev = handle->prev;
+    }
+    handle->prev = NULL;
+    handle->next = NULL;
+    handle->linked = 0;
+  }
+  qml_unlock_lists(state);
+}
+
 void qml_state_ref(struct qml_runtime_state *state)
 {
   atomic_fetch_add_explicit(&state->refs, 1, memory_order_relaxed);
@@ -96,6 +195,84 @@ static void qml_defer_context(struct qml_runtime_state *state, JSContext *ctx)
     memory_order_acquire));
 }
 
+static void qml_release_value_for_scope(struct qml_value_handle *handle)
+{
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
+    return;
+  }
+  qml_unlink_value(state, handle);
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      != 0 && state->rt != NULL) {
+    JS_FreeValueRT(state->rt, handle->value);
+  }
+  handle->value = JS_UNDEFINED;
+  atomic_fetch_sub_explicit(&state->live_values, 1, memory_order_relaxed);
+}
+
+static void qml_release_context_for_scope(struct qml_context_handle *handle)
+{
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
+    return;
+  }
+  qml_unlink_context(state, handle);
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      != 0 && handle->ctx != NULL) {
+    JS_FreeContext(handle->ctx);
+  }
+  handle->ctx = NULL;
+  atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
+}
+
+static void qml_release_context_values_for_scope(
+  struct qml_runtime_state *state, struct qml_context_handle *context)
+{
+  struct qml_value_handle *current;
+  do {
+    current = NULL;
+    qml_lock_lists(state);
+    for (struct qml_value_handle *value = state->values; value != NULL;
+         value = value->next) {
+      if (value->context == context &&
+          atomic_load_explicit(&value->live, memory_order_acquire) != 0) {
+        current = value;
+        break;
+      }
+    }
+    qml_unlock_lists(state);
+    if (current != NULL) {
+      qml_release_value_for_scope(current);
+    }
+  } while (current != NULL);
+}
+
+static void qml_release_all_values_for_scope(struct qml_runtime_state *state)
+{
+  struct qml_value_handle *current;
+  do {
+    qml_lock_lists(state);
+    current = state->values;
+    qml_unlock_lists(state);
+    if (current != NULL) {
+      qml_release_value_for_scope(current);
+    }
+  } while (current != NULL);
+}
+
+static void qml_release_all_contexts_for_scope(struct qml_runtime_state *state)
+{
+  struct qml_context_handle *current;
+  do {
+    qml_lock_lists(state);
+    current = state->contexts;
+    qml_unlock_lists(state);
+    if (current != NULL) {
+      qml_release_context_for_scope(current);
+    }
+  } while (current != NULL);
+}
+
 void qml_drain_deferred(struct qml_runtime_state *state)
 {
   if (state == NULL || Caml_state != state->owner_domain) {
@@ -147,6 +324,9 @@ int qml_runtime_free_native(struct qml_runtime_state *state)
       == 0) {
     return 1;
   }
+  qml_drain_deferred(state);
+  qml_release_all_values_for_scope(state);
+  qml_release_all_contexts_for_scope(state);
   if (atomic_load_explicit(&state->open_contexts, memory_order_acquire) != 0
       || atomic_load_explicit(&state->live_values, memory_order_acquire) != 0) {
     return 0;
@@ -177,30 +357,51 @@ static void qml_runtime_finalize(value v)
 static void qml_context_finalize(value v)
 {
   struct qml_context *context = Qml_context_val(v);
-  struct qml_runtime_state *state = context->state;
   atomic_fetch_sub_explicit(&qml_live_context_wrappers, 1, memory_order_relaxed);
-  if (state == NULL) {
+  struct qml_context_handle *handle = context->handle;
+  if (handle == NULL) {
     return;
   }
-  if (context->ctx != NULL) {
-    qml_defer_context(state, context->ctx);
-    context->ctx = NULL;
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
+    qml_unlink_context(state, handle);
+    if (Caml_state == state->owner_domain &&
+        atomic_load_explicit(&state->native_runtime_alive,
+                             memory_order_acquire) != 0) {
+      JS_FreeContext(handle->ctx);
+      atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
+    } else {
+      qml_defer_context(state, handle->ctx);
+    }
   }
-  context->state = NULL;
+  context->handle = NULL;
   qml_state_unref(state);
+  caml_stat_free(handle);
 }
 
 static void qml_value_finalize(value v)
 {
   struct qml_value *wrapped = Qml_value_val(v);
-  struct qml_runtime_state *state = wrapped->state;
   atomic_fetch_sub_explicit(&qml_live_value_wrappers, 1, memory_order_relaxed);
-  if (state == NULL) {
+  struct qml_value_handle *handle = wrapped->handle;
+  if (handle == NULL) {
     return;
   }
-  qml_defer_value(state, wrapped->value);
-  wrapped->state = NULL;
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
+    qml_unlink_value(state, handle);
+    if (Caml_state == state->owner_domain &&
+        atomic_load_explicit(&state->native_runtime_alive,
+                             memory_order_acquire) != 0) {
+      JS_FreeValueRT(state->rt, handle->value);
+      atomic_fetch_sub_explicit(&state->live_values, 1, memory_order_relaxed);
+    } else {
+      qml_defer_value(state, handle->value);
+    }
+  }
+  wrapped->handle = NULL;
   qml_state_unref(state);
+  caml_stat_free(handle);
 }
 
 static struct custom_operations qml_runtime_ops = {
@@ -253,10 +454,18 @@ value qml_alloc_context(value runtime, JSContext *ctx)
   CAMLparam1(runtime);
   CAMLlocal1(block);
   struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  block = caml_alloc_custom(&qml_context_ops, sizeof(struct qml_context), 0, 1);
-  Qml_context_val(block)->ctx = ctx;
-  Qml_context_val(block)->state = state;
+  struct qml_context_handle *handle =
+    caml_stat_alloc(sizeof(struct qml_context_handle));
+  handle->state = state;
+  handle->ctx = ctx;
+  atomic_init(&handle->live, 1);
+  handle->linked = 0;
+  handle->prev = NULL;
+  handle->next = NULL;
   qml_state_ref(state);
+  qml_link_context(state, handle);
+  block = caml_alloc_custom(&qml_context_ops, sizeof(struct qml_context), 0, 1);
+  Qml_context_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->open_contexts, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&qml_live_context_wrappers, 1, memory_order_relaxed);
   CAMLreturn(block);
@@ -266,14 +475,38 @@ value qml_alloc_value(value context, JSValue js_value)
 {
   CAMLparam1(context);
   CAMLlocal1(block);
-  struct qml_runtime_state *state = Qml_context_val(context)->state;
-  block = caml_alloc_custom(&qml_value_ops, sizeof(struct qml_value), 0, 1);
-  Qml_value_val(block)->value = js_value;
-  Qml_value_val(block)->state = state;
+  struct qml_context_handle *context_handle = Qml_context_val(context)->handle;
+  struct qml_runtime_state *state = context_handle->state;
+  struct qml_value_handle *handle =
+    caml_stat_alloc(sizeof(struct qml_value_handle));
+  handle->state = state;
+  handle->context = context_handle;
+  handle->value = js_value;
+  atomic_init(&handle->live, 1);
+  handle->linked = 0;
+  handle->prev = NULL;
+  handle->next = NULL;
   qml_state_ref(state);
+  qml_link_value(state, handle);
+  block = caml_alloc_custom(&qml_value_ops, sizeof(struct qml_value), 0, 1);
+  Qml_value_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->live_values, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&qml_live_value_wrappers, 1, memory_order_relaxed);
   CAMLreturn(block);
+}
+
+int qml_context_close_native(value context)
+{
+  struct qml_context_handle *handle = Qml_context_val(context)->handle;
+  if (handle == NULL) {
+    return 1;
+  }
+  struct qml_runtime_state *state = handle->state;
+  qml_ensure_owner(state);
+  qml_drain_deferred(state);
+  qml_release_context_values_for_scope(state, handle);
+  qml_release_context_for_scope(handle);
+  return 1;
 }
 
 CAMLprim value qml_diagnostics_live_runtimes(value unit)
@@ -545,28 +778,47 @@ JSRuntime *qml_runtime(value runtime)
 JSContext *qml_context(value context)
 {
   struct qml_context *wrapped = Qml_context_val(context);
-  qml_ensure_owner(wrapped->state);
-  if (wrapped->ctx == NULL) {
+  struct qml_context_handle *handle = wrapped->handle;
+  if (handle == NULL) {
     qml_raise_string("QuickJS context is closed");
   }
-  qml_drain_deferred(wrapped->state);
-  return wrapped->ctx;
+  qml_ensure_owner(handle->state);
+  if (atomic_load_explicit(&handle->live, memory_order_acquire) == 0 ||
+      handle->ctx == NULL) {
+    qml_raise_string("QuickJS context is closed");
+  }
+  qml_drain_deferred(handle->state);
+  return handle->ctx;
+}
+
+struct qml_runtime_state *qml_context_state(value context)
+{
+  struct qml_context_handle *handle = Qml_context_val(context)->handle;
+  if (handle == NULL) {
+    qml_raise_string("QuickJS context is closed");
+  }
+  return handle->state;
 }
 
 JSValue qml_js_value(value wrapped)
 {
   struct qml_value *wrapped_value = Qml_value_val(wrapped);
-  if (wrapped_value->state == NULL) {
+  struct qml_value_handle *handle = wrapped_value->handle;
+  if (handle == NULL) {
     qml_raise_string("QuickJS value is closed");
   }
-  qml_ensure_owner(wrapped_value->state);
-  return wrapped_value->value;
+  qml_ensure_owner(handle->state);
+  if (atomic_load_explicit(&handle->live, memory_order_acquire) == 0) {
+    qml_raise_string("QuickJS value is closed");
+  }
+  return handle->value;
 }
 
 void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped)
 {
-  struct qml_value *actual = Qml_value_val(wrapped);
-  if (actual->state == NULL) {
+  struct qml_value_handle *actual = Qml_value_val(wrapped)->handle;
+  if (actual == NULL ||
+      atomic_load_explicit(&actual->live, memory_order_acquire) == 0) {
     qml_raise_string("QuickJS value is closed");
   }
   if (actual->state != expected) {

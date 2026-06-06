@@ -140,7 +140,7 @@ static JSValue qml_host_call(JSContext *ctx, JSValueConst this_value, int argc,
     CAMLreturnT(JSValue, exception);
   }
 
-  qml_ensure_same_runtime(Qml_context_val(callback->context)->state, result);
+  qml_ensure_same_runtime(qml_context_state(callback->context), result);
   JSValue js_result = JS_DupValue(ctx, qml_js_value(result));
   CAMLreturnT(JSValue, js_result);
 }

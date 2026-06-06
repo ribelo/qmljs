@@ -98,6 +98,18 @@ let test_closed_handles_raise () =
   expect_qml_error "closed promise state check" (fun () ->
       Qmljs.Promise.state promise)
 
+let test_context_scope_closes_escaped_values () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let escaped = ref None in
+  (Qmljs.Context.with_ runtime @@ fun context ->
+   escaped := Some (Qmljs.Context.eval context "21 * 2"));
+  let value = Option.get !escaped in
+  expect_qml_error "escaped value is closed" (fun () ->
+      Qmljs.Value.to_int value);
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let value = Qmljs.Context.eval context "40 + 2" in
+  check_int "runtime reusable after context close" 42 (Qmljs.Value.to_int value)
+
 let test_error () =
   with_context @@ fun _runtime context ->
   expect_structured_error "expected JavaScript error"
@@ -195,6 +207,7 @@ let () =
   test_eval_timeout ();
   test_conversions ();
   test_closed_handles_raise ();
+  test_context_scope_closes_escaped_values ();
   test_error ();
   test_promise_jobs ();
   test_await_promise ();

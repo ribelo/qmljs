@@ -178,6 +178,9 @@ CAMLprim value qml_runtime_create(value unit)
   atomic_init(&state->closed_to_user, 0);
   atomic_init(&state->open_contexts, 0);
   atomic_init(&state->live_values, 0);
+  atomic_flag_clear(&state->list_lock);
+  state->contexts = NULL;
+  state->values = NULL;
   atomic_init(&state->interrupt_requested, 0);
   atomic_init(&state->interrupt_deadline_ns, 0);
   state->module_loader = NULL;

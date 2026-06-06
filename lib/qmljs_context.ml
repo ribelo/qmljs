@@ -8,13 +8,7 @@ let create runtime =
 let with_ runtime f =
   let context = create runtime in
   let close () =
-    (* Deterministic bracket close: collect dead OCaml value wrappers so
-       their finalizers enqueue native releases, drain those releases, then
-       close. GC stays the backup path if a wrapper escapes the scope. *)
-    let runtime_raw = Qmljs_types.runtime_raw runtime in
     let context_raw = Qmljs_types.context_raw context in
-    Gc.full_major ();
-    Qmljs_raw.runtime_drain_deferred runtime_raw;
     if not (Qmljs_raw.context_close context_raw) then
       raise (Qmljs_error.Error "QuickJS context close was deferred")
   in

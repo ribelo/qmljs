@@ -31,8 +31,9 @@ record chain keeps parents alive:
 - a context record points to its runtime record;
 - raw value/context finalizers never call QuickJS directly from an arbitrary
   OCaml domain;
-- finalizers enqueue native releases on the runtime, and the owner domain drains
-  those releases before normal API calls and during scoped runtime close.
+- scoped close detaches live native values and contexts on the owner domain;
+- finalizers are the backup path and enqueue native releases on the runtime for
+  the owner domain to drain.
 
 Prefer `Runtime.with_` and `Context.with_` for deterministic scoped ownership.
 Values should not escape the runtime/context scope that created them.

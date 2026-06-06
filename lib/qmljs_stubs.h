@@ -15,6 +15,8 @@
 
 struct qml_deferred_value;
 struct qml_deferred_context;
+struct qml_context_handle;
+struct qml_value_handle;
 
 /* Single source of truth for one QuickJS runtime. Reference counted so it
    outlives every wrapper (runtime/context/value) and every deferred native
@@ -30,6 +32,9 @@ struct qml_runtime_state {
   atomic_int closed_to_user;         /* 1 once close has been requested */
   atomic_int open_contexts;          /* live JSContexts not yet freed */
   atomic_int live_values;            /* live JSValues not yet freed */
+  atomic_flag list_lock;
+  struct qml_context_handle *contexts;
+  struct qml_value_handle *values;
   atomic_int interrupt_requested;
   atomic_llong interrupt_deadline_ns;
   void *module_loader;               /* struct qml_module_loader *, owner-freed */
@@ -42,13 +47,11 @@ struct qml_runtime {
 };
 
 struct qml_context {
-  struct qml_runtime_state *state;
-  JSContext *ctx;
+  struct qml_context_handle *handle;
 };
 
 struct qml_value {
-  struct qml_runtime_state *state;
-  JSValue value;
+  struct qml_value_handle *handle;
 };
 
 #define Qml_runtime_val(v) ((struct qml_runtime *)Data_custom_val(v))
@@ -64,6 +67,7 @@ void qml_raise_exception(JSContext *ctx);
 
 JSRuntime *qml_runtime(value runtime);
 JSContext *qml_context(value context);
+struct qml_runtime_state *qml_context_state(value context);
 JSValue qml_js_value(value wrapped);
 void qml_update_stack_top(JSContext *ctx);
 void qml_ensure_owner(struct qml_runtime_state *state);
@@ -76,6 +80,7 @@ void qml_state_unref(struct qml_runtime_state *state);
 
 /* Native runtime teardown helpers shared by close and finalizers. */
 int qml_runtime_free_native(struct qml_runtime_state *state);
+int qml_context_close_native(value context);
 
 /* Release the installed module loader (owner domain only). */
 void qml_module_loader_free(struct qml_runtime_state *state);

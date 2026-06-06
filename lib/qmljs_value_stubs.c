@@ -72,7 +72,7 @@ CAMLprim value qml_object_set(value context, value object, value name, value wra
 {
   CAMLparam4(context, object, name, wrapped);
   JSContext *ctx = qml_context(context);
-  struct qml_runtime_state *state = Qml_context_val(context)->state;
+  struct qml_runtime_state *state = qml_context_state(context);
   qml_update_stack_top(ctx);
   qml_ensure_same_runtime(state, object);
   qml_ensure_same_runtime(state, wrapped);
@@ -91,7 +91,7 @@ CAMLprim value qml_object_define_data_property(value context, value object,
 {
   CAMLparam5(context, object, key, wrapped, input_flags);
   JSContext *ctx = qml_context(context);
-  struct qml_runtime_state *state = Qml_context_val(context)->state;
+  struct qml_runtime_state *state = qml_context_state(context);
   qml_update_stack_top(ctx);
   qml_ensure_same_runtime(state, object);
   qml_ensure_same_runtime(state, key);
@@ -128,7 +128,7 @@ CAMLprim value qml_array_of_values(value context, value values)
 {
   CAMLparam2(context, values);
   JSContext *ctx = qml_context(context);
-  struct qml_runtime_state *state = Qml_context_val(context)->state;
+  struct qml_runtime_state *state = qml_context_state(context);
   qml_update_stack_top(ctx);
   JSValue result = JS_NewArray(ctx);
   if (JS_IsException(result)) {
@@ -177,7 +177,7 @@ CAMLprim value qml_value_to_bool(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   qml_update_stack_top(ctx);
   int result = JS_ToBool(ctx, qml_js_value(wrapped));
   if (result < 0) {
@@ -191,7 +191,7 @@ CAMLprim value qml_value_to_int(value context, value wrapped)
   CAMLparam2(context, wrapped);
   int64_t result = 0;
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   qml_update_stack_top(ctx);
   if (JS_ToInt64(ctx, &result, qml_js_value(wrapped)) < 0) {
     qml_raise_exception(ctx);
@@ -208,7 +208,7 @@ CAMLprim value qml_value_to_float(value context, value wrapped)
   CAMLlocal1(result);
   double number = 0.0;
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   qml_update_stack_top(ctx);
   if (JS_ToFloat64(ctx, &number, qml_js_value(wrapped)) < 0) {
     qml_raise_exception(ctx);
@@ -223,7 +223,7 @@ CAMLprim value qml_value_to_string(value context, value wrapped)
   CAMLlocal1(result);
   size_t length = 0;
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   qml_update_stack_top(ctx);
   const char *string = JS_ToCStringLen(ctx, &length, qml_js_value(wrapped));
   if (string == NULL) {
@@ -239,7 +239,7 @@ CAMLprim value qml_value_call(value context, value function, value args)
 {
   CAMLparam3(context, function, args);
   JSContext *ctx = qml_context(context);
-  struct qml_runtime_state *state = Qml_context_val(context)->state;
+  struct qml_runtime_state *state = qml_context_state(context);
   qml_update_stack_top(ctx);
   qml_ensure_same_runtime(state, function);
   mlsize_t argc = Wosize_val(args);
@@ -267,7 +267,7 @@ CAMLprim value qml_value_is_promise(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   (void)qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   CAMLreturn(Val_bool(JS_IsPromise(qml_js_value(wrapped))));
 }
 
@@ -275,7 +275,7 @@ CAMLprim value qml_value_promise_state(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   CAMLreturn(Val_int(JS_PromiseState(ctx, qml_js_value(wrapped))));
 }
 
@@ -283,7 +283,7 @@ CAMLprim value qml_value_promise_result(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
   JSContext *ctx = qml_context(context);
-  qml_ensure_same_runtime(Qml_context_val(context)->state, wrapped);
+  qml_ensure_same_runtime(qml_context_state(context), wrapped);
   qml_update_stack_top(ctx);
   JSValue result = JS_PromiseResult(ctx, qml_js_value(wrapped));
   if (JS_IsException(result)) {

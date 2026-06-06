@@ -20,12 +20,7 @@ let with_ ?memory_limit ?max_stack_size ?promise_job_limit f =
     create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit ()
   in
   let close () =
-    (* Deterministic bracket close: collect dead OCaml wrappers so their
-       finalizers enqueue native releases, drain those releases, then free
-       the runtime. GC stays the backup path if a wrapper escapes. *)
     let runtime_raw = Qmljs_types.runtime_raw runtime in
-    Gc.full_major ();
-    Qmljs_raw.runtime_drain_deferred runtime_raw;
     ignore (Qmljs_raw.runtime_close runtime_raw : bool)
   in
   match f runtime with
