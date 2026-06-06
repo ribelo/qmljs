@@ -210,8 +210,8 @@ double-ended, or fused iterators. Those are Rust collection guarantees.
 .reference/rquickjs/core/src/value/function/args.rs,
 .reference/rquickjs/core/src/value/function/types.rs
 
-qmljs can create synchronous host callbacks and Eio-backed async globals. Track
-the remaining host-function surface here.
+qmljs can create synchronous host callbacks and Eio-backed async function values.
+Track the remaining host-function surface here.
 
 Keep these gaps:
 
@@ -225,6 +225,8 @@ Keep these gaps:
   qmljs driver.
 - [x] Async host callback failures should preserve structured host defects rather
   than reject with Printexc.to_string only.
+- [x] Async host functions can be created as values, stored on objects, and
+  exported from native modules instead of only being installed as globals.
 - [x] Native argv temporaries are released when call, construct, defer, or value
   call argument validation fails.
 - [x] Function call, construct, defer, and value-call paths reject argument counts

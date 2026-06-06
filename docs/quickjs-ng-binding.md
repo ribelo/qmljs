@@ -55,13 +55,15 @@ runtime owner domain. `eval_with_timeout` installs a native monotonic deadline
 read by QuickJS's interrupt handler; it never moves the runtime, context, or
 value graph to another domain. This interrupts JavaScript bytecode execution.
 While a deadline is armed, synchronous host callbacks are rejected before entry
-with a structured resource-limit error. Use `Qmljs.Function.set_global_async`
-for Eio work or callbacks that may block.
+with a structured resource-limit error. Use `Qmljs.Function.make_async` or
+`Qmljs.Function.set_global_async` for Eio work or callbacks that may block.
 
-`Qmljs.Function.set_global_async` returns a JavaScript Promise immediately and
-queues the OCaml callback on the runtime. The queued job is run by
-`Qmljs.Async.drain_jobs`, `Qmljs.Promise.await`, or `Qmljs.Eio.drain_until_idle`,
-where Eio effects are legal.
+`Qmljs.Function.make_async` creates a function value that returns a JavaScript
+Promise immediately and queues the OCaml callback on the runtime.
+`Qmljs.Function.set_global_async` installs that shape as a global function. The
+queued job is run by `Qmljs.Async.drain_jobs`, `Qmljs.Promise.await`,
+`Qmljs.Module.eval` while settling top-level await, or
+`Qmljs.Eio.drain_until_idle`, where Eio effects are legal.
 
 Promise rejection uses the same structured error path as thrown JavaScript
 exceptions. `Qmljs.Promise.await_result` returns `(value, Qmljs.Error.t) result`

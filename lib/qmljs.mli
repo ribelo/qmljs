@@ -624,6 +624,13 @@ module Function : sig
     (call -> value) ->
     value
 
+  val make_async :
+    Context.t ->
+    name:string ->
+    arity:int ->
+    (value array -> value) ->
+    value
+
   val set_global :
     Context.t ->
     name:string ->

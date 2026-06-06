@@ -79,8 +79,8 @@ let resolve_or_reject context ~name ~resolve ~reject result =
   | _ -> ()
   | exception exn -> reject_with_exn_noerr context reject name exn
 
-let set_global_async context ~name ~arity callback =
-  set_global context ~name ~arity @@ fun args ->
+let make_async context ~name ~arity callback =
+  make context ~name ~arity @@ fun args ->
   let promise, resolve, reject = Qmljs_promise.create context in
   let on_cancel () =
     reject_with_exn_noerr context reject name
@@ -98,6 +98,10 @@ let set_global_async context ~name ~arity callback =
       with
       | exn -> reject_with_exn_noerr context reject name exn);
   promise
+
+let set_global_async context ~name ~arity callback =
+  Qmljs_context.set_global context ~name
+    (make_async context ~name ~arity callback)
 
 let call ?this_ t args =
   let context = Qmljs_types.value_context t in

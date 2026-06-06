@@ -129,10 +129,10 @@ static void qmljs_raise_rejected_promise(JSContext *ctx, JSValue promise)
   qmljs_raise_exception(ctx);
 }
 
-static void qmljs_check_module_eval_result(JSContext *ctx, JSValue result)
+static int qmljs_check_module_eval_result(JSContext *ctx, JSValue result)
 {
   if (!JS_IsPromise(result)) {
-    return;
+    return 0;
   }
 
   JSRuntime *rt = JS_GetRuntime(ctx);
@@ -162,6 +162,8 @@ static void qmljs_check_module_eval_result(JSContext *ctx, JSValue result)
   if (JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
     qmljs_raise_rejected_promise(ctx, result);
   }
+
+  return JS_PromiseState(ctx, result) == JS_PROMISE_PENDING;
 }
 
 CAMLprim value qmljs_context_eval_module(value context, value source, value filename)
@@ -183,7 +185,7 @@ CAMLprim value qmljs_context_eval_module(value context, value source, value file
   if (JS_IsException(eval_result)) {
     qmljs_raise_exception(ctx);
   }
-  qmljs_check_module_eval_result(ctx, eval_result);
+  (void)qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
@@ -203,6 +205,7 @@ CAMLprim value qmljs_context_eval_module_namespace(value context, value source,
                                                  value filename)
 {
   CAMLparam3(context, source, filename);
+  CAMLlocal2(result, wrapped_namespace);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
 
@@ -219,7 +222,7 @@ CAMLprim value qmljs_context_eval_module_namespace(value context, value source,
   if (JS_IsException(eval_result)) {
     qmljs_raise_exception(ctx);
   }
-  qmljs_check_module_eval_result(ctx, eval_result);
+  int pending = qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
@@ -227,7 +230,11 @@ CAMLprim value qmljs_context_eval_module_namespace(value context, value source,
     qmljs_raise_exception(ctx);
   }
 
-  CAMLreturn(qmljs_alloc_value(context, namespace));
+  wrapped_namespace = qmljs_alloc_value(context, namespace);
+  result = caml_alloc_tuple(2);
+  Store_field(result, 0, wrapped_namespace);
+  Store_field(result, 1, Val_bool(pending));
+  CAMLreturn(result);
 }
 
 CAMLprim value qmljs_context_eval_module_with_meta(value context, value source,
@@ -251,7 +258,7 @@ CAMLprim value qmljs_context_eval_module_with_meta(value context, value source,
   if (JS_IsException(eval_result)) {
     qmljs_raise_exception(ctx);
   }
-  qmljs_check_module_eval_result(ctx, eval_result);
+  int pending = qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
@@ -266,9 +273,10 @@ CAMLprim value qmljs_context_eval_module_with_meta(value context, value source,
 
   wrapped_namespace = qmljs_alloc_value(context, namespace);
   wrapped_meta = qmljs_alloc_value(context, import_meta);
-  result = caml_alloc_tuple(2);
+  result = caml_alloc_tuple(3);
   Store_field(result, 0, wrapped_namespace);
   Store_field(result, 1, wrapped_meta);
+  Store_field(result, 2, Val_bool(pending));
   CAMLreturn(result);
 }
 

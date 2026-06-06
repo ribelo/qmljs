@@ -129,6 +129,98 @@ let test_async_host_callback_foreign_return_rejects_structured () =
   check_int "runtime reusable after async foreign return" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval left "1 + 1"))
 
+let test_async_function_value_api () =
+  match
+    Qmljs.Error.capture (fun () ->
+        Qmljs.Runtime.with_ @@ fun runtime ->
+        Qmljs.Context.with_ runtime @@ fun context ->
+        let api = Qmljs.Object.create context in
+        let health =
+          Qmljs.Function.make_async context ~name:"health" ~arity:0
+            (fun _args ->
+              Eio.Fiber.yield ();
+              Qmljs.Value.string context "ok")
+        in
+        Qmljs.Object.set_string api "health" health;
+        Qmljs.Context.set_global context ~name:"api" (Qmljs.Value.object_ api);
+        let promise = Qmljs.Context.eval context "api.health()" in
+        check_bool "async function value returns a promise" true
+          (Qmljs.Promise.is promise);
+        (match Qmljs.Promise.await_result ~yield_every:1 promise with
+         | Ok value ->
+             check_string "async function value result" "ok"
+               (Qmljs.Value.to_string value)
+         | Error error ->
+             fail
+               ("async function value rejected: " ^ Qmljs.Error.message error));
+        let unrelated = Qmljs.Context.eval context "api.health()" in
+        let plain_namespace =
+          Qmljs.Module.eval ~filename:"plain-module.js" context
+            "export default 1;"
+        in
+        check_int "plain module default" 1
+          (Qmljs.Value.to_int (Qmljs.Module.default plain_namespace));
+        (match Qmljs.Promise.state unrelated with
+         | Qmljs.Promise.Pending -> ()
+         | _ -> fail "plain module eval drained unrelated async function");
+        ignore (Qmljs.Promise.await_result ~yield_every:1 unrelated);
+        let fail_async =
+          Qmljs.Function.make_async context ~name:"fail_async" ~arity:0
+            (fun _args ->
+              Eio.Fiber.yield ();
+              raise
+                (Qmljs.Error.host ~message:"async value boom"
+                   ~metadata:[ "surface", "value" ]))
+        in
+        Qmljs.Object.set_string api "failAsync" fail_async;
+        let rejected = Qmljs.Context.eval context "api.failAsync()" in
+        (match Qmljs.Promise.await_result ~yield_every:1 rejected with
+         | Ok _ -> fail "async function value unexpectedly resolved"
+         | Error error ->
+             check_kind "async function value rejection kind"
+               Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+             check_string "async function value rejection message"
+               "async value boom" (Qmljs.Error.message error);
+             check_bool "async function value rejection metadata" true
+               (List.mem ("surface", "value") (Qmljs.Error.metadata error)));
+        let native =
+          Qmljs.Module.Native.define
+            (fun declarations ->
+              Qmljs.Module.Native.declare declarations "default")
+            ~evaluate:(fun exports ->
+              let module_api = Qmljs.Object.create context in
+              let add =
+                Qmljs.Function.make_async context ~name:"native_add" ~arity:1
+                  (fun args ->
+                    Eio.Fiber.yield ();
+                    Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1))
+              in
+              Qmljs.Object.set_string module_api "add" add;
+              Qmljs.Module.Native.export exports ~name:"default"
+                (Qmljs.Value.object_ module_api))
+        in
+        Qmljs.Module.declare_native context ~name:"native:async-api" native;
+        let namespace =
+          match
+            Qmljs.Error.capture (fun () ->
+                Qmljs.Module.eval ~filename:"async-api-main.js" context
+                  {|import api from "native:async-api";
+                    export default await api.add(41);|})
+          with
+          | Ok namespace -> namespace
+          | Error error ->
+              fail
+                ("native async function rejected: " ^ Qmljs.Error.message error)
+        in
+        check_int "native async function default export" 42
+          (Qmljs.Value.to_int (Qmljs.Module.default namespace));
+        ignore (runtime : Qmljs.Runtime.t))
+  with
+  | Ok () -> ()
+  | Error error ->
+      fail ("unexpected async function structured error: "
+            ^ Qmljs.Error.message error)
+
 let test_function_defer_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -286,6 +378,7 @@ let tests =
   , test_async_host_callback_rejection_is_structured
   ; "async host callback foreign return rejects structured"
   , test_async_host_callback_foreign_return_rejects_structured
+  ; "async function value API", test_async_function_value_api
   ; "function defer API", test_function_defer_api
   ; "host class API", test_host_class_api
   ; "iterable API", test_iterable_api
