@@ -101,7 +101,13 @@ let set_module_loader t loader =
     |> Hashtbl.to_seq
     |> Array.of_seq
   in
+  let normalize base specifier =
+    match loader.Qmljs_types.normalize ~base ~specifier with
+    | Ok specifier -> specifier
+    | Error error -> Qmljs_error.Structured.raise error
+  in
   Qmljs_raw.runtime_install_module_loader
     (Qmljs_types.runtime_raw t)
     entries
     loader.Qmljs_types.deny
+    normalize

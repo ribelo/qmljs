@@ -11,7 +11,11 @@ external runtime_set_max_stack_size : runtime -> int -> unit
   = "qml_runtime_set_max_stack_size"
 
 external runtime_install_module_loader :
-  runtime -> (string * string) array -> (string -> bool) -> unit
+  runtime ->
+  (string * string) array ->
+  (string -> bool) ->
+  (string option -> string -> string) ->
+  unit
   = "qml_runtime_install_module_loader"
 
 external runtime_drain_deferred : runtime -> unit = "qml_runtime_drain_deferred"
@@ -85,11 +89,39 @@ external symbol_global : context -> string -> value = "qml_symbol_global"
 external typed_array_uint8_of_bytes_copy : context -> bytes -> value
   = "qml_typed_array_uint8_of_bytes_copy"
 
+external typed_array_uint8_length : context -> value -> int
+  = "qml_typed_array_uint8_length"
+
+external typed_array_uint8_get : context -> value -> int -> int
+  = "qml_typed_array_uint8_get"
+
+external typed_array_uint8_set : context -> value -> int -> int -> unit
+  = "qml_typed_array_uint8_set"
+
+external typed_array_uint8_to_bytes_copy : context -> value -> bytes
+  = "qml_typed_array_uint8_to_bytes_copy"
+
+external json_parse : context -> string -> string -> value = "qml_json_parse"
+
+external json_stringify : context -> value -> int option -> string
+  = "qml_json_stringify"
+
+external value_kind : context -> value -> int = "qml_value_kind"
+
 external value_to_bool : context -> value -> bool = "qml_value_to_bool"
 external value_to_int : context -> value -> int = "qml_value_to_int"
 external value_to_float : context -> value -> float = "qml_value_to_float"
 external value_to_string : context -> value -> string = "qml_value_to_string"
 external value_call : context -> value -> value array -> value = "qml_value_call"
+
+external value_strict_equal : context -> value -> value -> bool
+  = "qml_value_strict_equal"
+
+external value_same_value : context -> value -> value -> bool
+  = "qml_value_same_value"
+
+external value_same_value_zero : context -> value -> value -> bool
+  = "qml_value_same_value_zero"
 
 external value_is_promise : context -> value -> bool = "qml_value_is_promise"
 

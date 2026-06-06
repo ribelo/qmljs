@@ -12,6 +12,7 @@ struct qml_module_entry {
 
 struct qml_module_loader {
   value deny;
+  value normalize;
   struct qml_module_entry *entries;
   mlsize_t entry_count;
 };
@@ -73,6 +74,46 @@ static int qml_module_loader_denies(JSContext *ctx,
     CAMLreturnT(int, -1);
   }
   CAMLreturnT(int, Bool_val(result));
+}
+
+static char *qml_module_loader_normalize(JSContext *ctx,
+                                         const char *module_base_name,
+                                         const char *module_name,
+                                         void *opaque)
+{
+  struct qml_module_loader *loader = opaque;
+  CAMLparam0();
+  CAMLlocal5(base, specifier, normalized, some, base_string);
+
+  if (module_base_name == NULL) {
+    base = Val_int(0);
+  } else {
+    some = caml_alloc(1, 0);
+    Store_field(some, 0, Val_unit);
+    base_string = caml_copy_string(module_base_name);
+    Store_field(some, 0, base_string);
+    base = some;
+  }
+  specifier = caml_copy_string(module_name);
+
+  value result = caml_callback2_exn(loader->normalize, base, specifier);
+  if (Is_exception_result(result)) {
+    char *message = caml_format_exception(Extract_exception(result));
+    (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
+    caml_stat_free(message);
+    CAMLreturnT(char *, NULL);
+  }
+
+  normalized = result;
+  size_t length = caml_string_length(normalized);
+  char *copy = js_malloc(ctx, length + 1);
+  if (copy == NULL) {
+    JS_ThrowOutOfMemory(ctx);
+    CAMLreturnT(char *, NULL);
+  }
+  memcpy(copy, String_val(normalized), length);
+  copy[length] = '\0';
+  CAMLreturnT(char *, copy);
 }
 
 static int qml_check_import_attributes(JSContext *ctx, void *opaque,
@@ -285,6 +326,7 @@ void qml_module_loader_free(struct qml_runtime_state *state)
   }
 
   caml_remove_generational_global_root(&loader->deny);
+  caml_remove_generational_global_root(&loader->normalize);
   for (mlsize_t i = 0; i < loader->entry_count; i++) {
     caml_stat_free(loader->entries[i].specifier);
     caml_stat_free(loader->entries[i].source);
@@ -295,9 +337,9 @@ void qml_module_loader_free(struct qml_runtime_state *state)
 }
 
 CAMLprim value qml_runtime_install_module_loader(value runtime, value entries,
-                                                 value deny)
+                                                 value deny, value normalize)
 {
-  CAMLparam3(runtime, entries, deny);
+  CAMLparam4(runtime, entries, deny, normalize);
   JSRuntime *rt = qml_runtime(runtime);
   struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
   qml_module_loader_free(state);
@@ -306,6 +348,7 @@ CAMLprim value qml_runtime_install_module_loader(value runtime, value entries,
     caml_stat_alloc(sizeof(struct qml_module_loader));
   mlsize_t count = Wosize_val(entries);
   loader->deny = deny;
+  loader->normalize = normalize;
   loader->entry_count = count;
   loader->entries = caml_stat_alloc(sizeof(struct qml_module_entry) * count);
 
@@ -317,8 +360,9 @@ CAMLprim value qml_runtime_install_module_loader(value runtime, value entries,
   }
 
   caml_register_generational_global_root(&loader->deny);
+  caml_register_generational_global_root(&loader->normalize);
   state->module_loader = loader;
-  JS_SetModuleLoaderFunc2(rt, NULL, qml_load_module,
+  JS_SetModuleLoaderFunc2(rt, qml_module_loader_normalize, qml_load_module,
                           qml_check_import_attributes, loader);
   CAMLreturn(Val_unit);
 }

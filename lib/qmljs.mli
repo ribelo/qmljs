@@ -72,6 +72,21 @@ end
 module Value : sig
   type t = value
 
+  type kind =
+    | Undefined
+    | Null
+    | Bool
+    | Int
+    | Float
+    | String
+    | Symbol
+    | Bigint
+    | Object
+    | Array
+    | Function
+    | Promise
+    | Typed_array
+
   val undefined : Context.t -> t
   val null : Context.t -> t
   val bool : Context.t -> bool -> t
@@ -87,6 +102,15 @@ module Value : sig
   val to_int : t -> int
   val to_float : t -> float
   val to_string : t -> string
+
+  val kind : t -> kind
+  val is_null : t -> bool
+  val is_undefined : t -> bool
+  val is_function : t -> bool
+  val is_array : t -> bool
+  val strict_equal : t -> t -> bool
+  val same_value : t -> t -> bool
+  val same_value_zero : t -> t -> bool
 
   val call : t -> t array -> t
 end
@@ -159,9 +183,12 @@ module Object : sig
 
   val create : Context.t -> t
   val set : t -> name:string -> value -> unit
+  val set_string : t -> string -> value -> unit
   val get : t -> key:value -> value
   val has : t -> key:value -> bool
+  val get_string : t -> string -> value option
   val delete : t -> key:value -> bool
+  val delete_string : t -> string -> bool
   val get_own_property_descriptor : t -> key:value -> descriptor option
   val define_data_property :
     t ->
@@ -171,6 +198,8 @@ module Object : sig
     enumerable:bool ->
     configurable:bool ->
     unit
+
+  val keys : t -> string list
 end
 
 module Symbol : sig
@@ -193,6 +222,9 @@ module Bigint : sig
   type t = value
 
   val of_string : Context.t -> string -> t
+  val of_int64 : Context.t -> int64 -> t
+  val to_string : t -> string
+  val to_int64 : t -> int64 option
 end
 
 module Typed_array : sig
@@ -200,7 +232,18 @@ module Typed_array : sig
     type t = value
 
     val of_bytes_copy : Context.t -> bytes -> t
+    val length : t -> int
+    val get : t -> int -> int
+    val set : t -> int -> int -> unit
+    val to_bytes_copy : t -> bytes
   end
+end
+
+module Json : sig
+  val parse : ?filename:string -> Context.t -> string -> value
+  val stringify : ?space:int -> value -> string
+  val of_string : ?filename:string -> Context.t -> string -> (value, Error.t) result
+  val to_string : ?space:int -> value -> (string, Error.t) result
 end
 
 module Module : sig
@@ -211,6 +254,13 @@ module Module : sig
 
     val memory : (string * string) list -> t
     val deny : (string -> bool) -> t -> t
+    val filesystem : root:string -> allow:(specifier:string -> bool) -> t
+    val normalize :
+      (base:string option ->
+       specifier:string ->
+       (string, Error.t) result) ->
+      t ->
+      t
   end
 
   val eval : ?filename:string -> Context.t -> string -> namespace

@@ -573,7 +573,6 @@ static int qml_error_kind_of_marker(const char *marker)
     return 2;
   }
   if (strcmp(marker, "resource_limit") == 0 ||
-      strcmp(marker, "timeout") == 0 ||
       strcmp(marker, "interrupt") == 0) {
     return 3;
   }
@@ -582,6 +581,9 @@ static int qml_error_kind_of_marker(const char *marker)
   }
   if (strcmp(marker, "host_callback_defect") == 0) {
     return 5;
+  }
+  if (strcmp(marker, "timeout") == 0) {
+    return 6;
   }
   return 0;
 }
@@ -599,7 +601,7 @@ static int qml_error_kind_of_message(const char *message)
     return 2;
   }
   if (strstr(message, "interrupted") != NULL) {
-    return 3;
+    return 6;
   }
   return 0;
 }
@@ -613,20 +615,87 @@ static value qml_some(value input)
   CAMLreturn(result);
 }
 
+static value qml_metadata_array(JSContext *ctx, JSValueConst js_metadata)
+{
+  CAMLparam0();
+  CAMLlocal4(result, pair, key, value_);
+  uint32_t length = 0;
+
+  if (!JS_IsObject(js_metadata)) {
+    CAMLreturn(caml_alloc(0, 0));
+  }
+
+  JSValue js_length = JS_GetPropertyStr(ctx, js_metadata, "length");
+  if (JS_IsException(js_length) ||
+      JS_ToUint32(ctx, &length, js_length) < 0) {
+    JS_FreeValue(ctx, js_length);
+    CAMLreturn(caml_alloc(0, 0));
+  }
+  JS_FreeValue(ctx, js_length);
+
+  result = caml_alloc(length, 0);
+  for (uint32_t i = 0; i < length; i++) {
+    Store_field(result, i, Val_unit);
+  }
+
+  for (uint32_t i = 0; i < length; i++) {
+    JSValue js_pair = JS_GetPropertyUint32(ctx, js_metadata, i);
+    if (JS_IsException(js_pair) || !JS_IsObject(js_pair)) {
+      JS_FreeValue(ctx, js_pair);
+      pair = caml_alloc_tuple(2);
+      Store_field(pair, 0, Val_unit);
+      Store_field(pair, 1, Val_unit);
+      key = caml_copy_string("");
+      value_ = caml_copy_string("");
+      Store_field(pair, 0, key);
+      Store_field(pair, 1, value_);
+      Store_field(result, i, pair);
+      continue;
+    }
+
+    JSValue js_key = JS_GetPropertyUint32(ctx, js_pair, 0);
+    JSValue js_value = JS_GetPropertyUint32(ctx, js_pair, 1);
+    const char *key_string =
+      JS_IsException(js_key) ? NULL : JS_ToCString(ctx, js_key);
+    const char *value_string =
+      JS_IsException(js_value) ? NULL : JS_ToCString(ctx, js_value);
+
+    key = caml_copy_string(key_string == NULL ? "" : key_string);
+    value_ = caml_copy_string(value_string == NULL ? "" : value_string);
+    pair = caml_alloc_tuple(2);
+    Store_field(pair, 0, key);
+    Store_field(pair, 1, value_);
+    Store_field(result, i, pair);
+
+    if (value_string != NULL) {
+      JS_FreeCString(ctx, value_string);
+    }
+    if (key_string != NULL) {
+      JS_FreeCString(ctx, key_string);
+    }
+    JS_FreeValue(ctx, js_value);
+    JS_FreeValue(ctx, js_key);
+    JS_FreeValue(ctx, js_pair);
+  }
+
+  CAMLreturn(result);
+}
+
 static value qml_build_structured_exception(JSContext *ctx,
                                             JSValueConst js_exception,
                                             int depth,
                                             const value *make_structured)
 {
   CAMLparam0();
-  CAMLlocalN(args, 7);
-  CAMLlocal3(cause, nested, result);
+  CAMLlocalN(args, 8);
+  CAMLlocal4(cause, nested, metadata, result);
   JSValue js_name = JS_UNDEFINED;
   JSValue js_message = JS_UNDEFINED;
   JSValue js_stack = JS_UNDEFINED;
   JSValue js_ocaml_frame = JS_UNDEFINED;
   JSValue js_kind = JS_UNDEFINED;
   JSValue js_denied_specifier = JS_UNDEFINED;
+  JSValue js_metadata = JS_UNDEFINED;
   JSValue js_cause = JS_UNDEFINED;
   const char *name = NULL;
   const char *message = NULL;
@@ -654,6 +723,11 @@ static value qml_build_structured_exception(JSContext *ctx,
     denied_specifier =
       qml_property_cstring(ctx, js_exception, "_qmljs_denied_module_specifier",
                            &js_denied_specifier);
+    js_metadata = JS_GetPropertyStr(ctx, js_exception, "_qmljs_metadata");
+    if (JS_IsException(js_metadata)) {
+      js_metadata = JS_UNDEFINED;
+    }
+    metadata = qml_metadata_array(ctx, js_metadata);
 
     js_cause = JS_GetPropertyStr(ctx, js_exception, "cause");
     if (JS_IsException(js_cause) || JS_IsUndefined(js_cause) ||
@@ -669,6 +743,7 @@ static value qml_build_structured_exception(JSContext *ctx,
     }
   } else {
     cause = Val_int(0);
+    metadata = caml_alloc(0, 0);
   }
 
   exception_text = JS_ToCString(ctx, js_exception);
@@ -697,6 +772,7 @@ static value qml_build_structured_exception(JSContext *ctx,
   args[4] = Val_int(kind);
   args[5] = qml_copy_optional_string(denied_specifier);
   args[6] = cause;
+  args[7] = metadata;
 
   if (denied_specifier != NULL) {
     JS_FreeCString(ctx, denied_specifier);
@@ -720,6 +796,7 @@ static value qml_build_structured_exception(JSContext *ctx,
     JS_FreeCString(ctx, exception_text);
   }
   JS_FreeValue(ctx, js_cause);
+  JS_FreeValue(ctx, js_metadata);
   JS_FreeValue(ctx, js_denied_specifier);
   JS_FreeValue(ctx, js_kind);
   JS_FreeValue(ctx, js_ocaml_frame);
@@ -727,7 +804,7 @@ static value qml_build_structured_exception(JSContext *ctx,
   JS_FreeValue(ctx, js_message);
   JS_FreeValue(ctx, js_name);
 
-  result = caml_callbackN_exn(*make_structured, 7, args);
+  result = caml_callbackN_exn(*make_structured, 8, args);
   if (Is_exception_result(result)) {
     caml_raise(Extract_exception(result));
   }

@@ -36,6 +36,7 @@ exception Policy_violation of string
 exception Out_of_memory
 exception Stack_overflow
 exception Resource_limit of string
+exception Timeout of string
 
 let () = Callback.Safe.register_exception "qmljs.error" (Error "")
 
@@ -43,6 +44,7 @@ let raise_policy_violation specifier = raise (Policy_violation specifier)
 let raise_out_of_memory () = raise Out_of_memory
 let raise_stack_overflow () = raise Stack_overflow
 let raise_resource_limit message = raise (Resource_limit message)
+let raise_timeout message = raise (Timeout message)
 
 let find_substring ~needle value =
   let value_length = String.length value in
@@ -90,13 +92,15 @@ let kind_of_code denied_specifier = function
   | 3 -> Resource_limit_kind
   | 4 -> Policy_violation_kind denied_specifier
   | 5 -> Host_callback_defect_kind
+  | 6 -> Timeout_kind
   | _ -> JavaScript
 
 (* Construct one level of a structured error. Called by the C boundary while
    the live QuickJS error values are still in hand, innermost cause first. *)
 let make_structured name message stack ocaml_frame kind_code denied_specifier
-    cause =
+    cause metadata =
   make ~name ~stack ~ocaml_frame ?cause
+    ~metadata:(Array.to_list metadata)
     ~kind:(kind_of_code denied_specifier kind_code)
     message
 
@@ -107,10 +111,15 @@ let host_exception_message = function
   | Error message -> message
   | exn -> Printexc.to_string exn
 
+let host_exception_metadata = function
+  | Host_error (_message, metadata) -> Array.of_list metadata
+  | _ -> [||]
+
 let () =
   Callback.Safe.register "qmljs.make_structured" make_structured;
   Callback.Safe.register "qmljs.raise_structured" raise_structured;
-  Callback.Safe.register "qmljs.host_exception_message" host_exception_message
+  Callback.Safe.register "qmljs.host_exception_message" host_exception_message;
+  Callback.Safe.register "qmljs.host_exception_metadata" host_exception_metadata
 
 module Structured = struct
   type t = structured
@@ -146,6 +155,7 @@ module Structured = struct
   let of_out_of_memory () = make ~kind:Out_of_memory_kind "out of memory"
   let of_stack_overflow () = make ~kind:Stack_overflow_kind "stack overflow"
   let of_resource_limit message = make ~kind:Resource_limit_kind message
+  let of_timeout message = make ~kind:Timeout_kind message
 
   let capture fn =
     try Stdlib.Result.Ok (fn ()) with
@@ -154,6 +164,7 @@ module Structured = struct
     | Out_of_memory -> Stdlib.Result.Error (of_out_of_memory ())
     | Stack_overflow -> Stdlib.Result.Error (of_stack_overflow ())
     | Resource_limit message -> Stdlib.Result.Error (of_resource_limit message)
+    | Timeout message -> Stdlib.Result.Error (of_timeout message)
     | Host_error (message, metadata) ->
         Stdlib.Result.Error
           (make ~kind:Host_callback_defect_kind ~metadata message)

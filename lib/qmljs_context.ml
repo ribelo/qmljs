@@ -51,12 +51,12 @@ let with_interrupt_timeout ~timeout runtime f =
       match f () with
       | result ->
           if Qmljs_runtime.interrupt_requested runtime then
-            Qmljs_error.raise_resource_limit timeout_error;
+            Qmljs_error.raise_timeout timeout_error;
           result
       | exception exn ->
           let interrupted = Qmljs_runtime.interrupt_requested runtime in
           if interrupted then
-            Qmljs_error.raise_resource_limit timeout_error;
+            Qmljs_error.raise_timeout timeout_error;
           raise exn)
 
 let eval_with_timeout ~timeout ?filename ?strict ?async ?module_ t source =

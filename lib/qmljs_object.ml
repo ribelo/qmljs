@@ -22,6 +22,8 @@ let set t ~name value =
     name
     (Qmljs_types.value_raw value)
 
+let set_string t name value = set t ~name value
+
 let define_data_property t ~key ~value ~writable ~enumerable ~configurable =
   let flags =
     (if writable then 1 else 0)
@@ -53,12 +55,21 @@ let has t ~key =
     (Qmljs_types.value_raw t)
     (Qmljs_types.value_raw key)
 
+let get_string t name =
+  let context = Qmljs_types.value_context t in
+  let key = Qmljs_value.string context name in
+  if has t ~key then Some (get t ~key) else None
+
 let delete t ~key =
   let context = Qmljs_types.value_context t in
   Qmljs_raw.object_delete
     (Qmljs_types.context_raw context)
     (Qmljs_types.value_raw t)
     (Qmljs_types.value_raw key)
+
+let delete_string t name =
+  let context = Qmljs_types.value_context t in
+  delete t ~key:(Qmljs_value.string context name)
 
 let get_own_property_descriptor t ~key =
   let context = Qmljs_types.value_context t in

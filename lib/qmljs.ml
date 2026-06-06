@@ -26,4 +26,5 @@ module Key = Qmljs_key
 module Array = Qmljs_array
 module Bigint = Qmljs_bigint
 module Typed_array = Qmljs_typed_array
+module Json = Qmljs_json
 module Module = Qmljs_module

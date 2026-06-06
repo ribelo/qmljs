@@ -22,14 +22,18 @@ static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
                                          const char *name)
 {
   CAMLparam1(exception);
-  CAMLlocal1(message_value);
+  CAMLlocal3(message_value, metadata_value, metadata_pair);
   static const value *message_fn = NULL;
+  static const value *metadata_fn = NULL;
   char *fallback = NULL;
   const char *message = NULL;
   size_t message_length = 0;
 
   if (message_fn == NULL) {
     message_fn = caml_named_value("qmljs.host_exception_message");
+  }
+  if (metadata_fn == NULL) {
+    metadata_fn = caml_named_value("qmljs.host_exception_metadata");
   }
 
   if (message_fn != NULL) {
@@ -108,6 +112,91 @@ static JSValue qml_throw_ocaml_exception(JSContext *ctx, value exception,
     CAMLreturnT(JSValue, JS_EXCEPTION);
   }
 
+  if (metadata_fn != NULL) {
+    value metadata_result = caml_callback_exn(*metadata_fn, exception);
+    if (!Is_exception_result(metadata_result)) {
+      metadata_value = metadata_result;
+      mlsize_t length = Wosize_val(metadata_value);
+      if (length > 0) {
+        JSValue metadata = JS_NewArray(ctx);
+        if (JS_IsException(metadata)) {
+          JS_FreeValue(ctx, error);
+          if (fallback != NULL) {
+            caml_stat_free(fallback);
+          }
+          CAMLreturnT(JSValue, JS_EXCEPTION);
+        }
+
+        for (mlsize_t i = 0; i < length; i++) {
+          metadata_pair = Field(metadata_value, i);
+          value key = Field(metadata_pair, 0);
+          value value_ = Field(metadata_pair, 1);
+          JSValue js_pair = JS_NewArray(ctx);
+          if (JS_IsException(js_pair)) {
+            JS_FreeValue(ctx, metadata);
+            JS_FreeValue(ctx, error);
+            if (fallback != NULL) {
+              caml_stat_free(fallback);
+            }
+            CAMLreturnT(JSValue, JS_EXCEPTION);
+          }
+
+          JSValue js_key =
+            JS_NewStringLen(ctx, String_val(key), caml_string_length(key));
+          JSValue js_value =
+            JS_NewStringLen(ctx, String_val(value_), caml_string_length(value_));
+          if (JS_IsException(js_key) || JS_IsException(js_value)) {
+            JS_FreeValue(ctx, js_value);
+            JS_FreeValue(ctx, js_key);
+            JS_FreeValue(ctx, js_pair);
+            JS_FreeValue(ctx, metadata);
+            JS_FreeValue(ctx, error);
+            if (fallback != NULL) {
+              caml_stat_free(fallback);
+            }
+            CAMLreturnT(JSValue, JS_EXCEPTION);
+          }
+          if (JS_SetPropertyUint32(ctx, js_pair, 0, js_key) < 0) {
+            JS_FreeValue(ctx, js_value);
+            JS_FreeValue(ctx, js_pair);
+            JS_FreeValue(ctx, metadata);
+            JS_FreeValue(ctx, error);
+            if (fallback != NULL) {
+              caml_stat_free(fallback);
+            }
+            CAMLreturnT(JSValue, JS_EXCEPTION);
+          }
+          if (JS_SetPropertyUint32(ctx, js_pair, 1, js_value) < 0) {
+            JS_FreeValue(ctx, js_pair);
+            JS_FreeValue(ctx, metadata);
+            JS_FreeValue(ctx, error);
+            if (fallback != NULL) {
+              caml_stat_free(fallback);
+            }
+            CAMLreturnT(JSValue, JS_EXCEPTION);
+          }
+          if (JS_SetPropertyUint32(ctx, metadata, (uint32_t)i, js_pair) < 0) {
+            JS_FreeValue(ctx, metadata);
+            JS_FreeValue(ctx, error);
+            if (fallback != NULL) {
+              caml_stat_free(fallback);
+            }
+            CAMLreturnT(JSValue, JS_EXCEPTION);
+          }
+        }
+
+        if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_metadata", metadata,
+                                      JS_PROP_C_W_E) < 0) {
+          JS_FreeValue(ctx, error);
+          if (fallback != NULL) {
+            caml_stat_free(fallback);
+          }
+          CAMLreturnT(JSValue, JS_EXCEPTION);
+        }
+      }
+    }
+  }
+
   if (fallback != NULL) {
     caml_stat_free(fallback);
   }
@@ -133,7 +222,7 @@ static JSValue qml_throw_host_deadline_error(JSContext *ctx)
   if (qml_define_string_property(ctx, error, "message",
                                  "JavaScript execution timed out") < 0 ||
       qml_define_string_property(ctx, error, "_qmljs_kind",
-                                 "resource_limit") < 0) {
+                                 "timeout") < 0) {
     JS_FreeValue(ctx, error);
     return JS_EXCEPTION;
   }

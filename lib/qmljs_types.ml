@@ -1,6 +1,10 @@
 type module_loader =
   { sources : (string, string) Hashtbl.t
   ; deny : string -> bool
+  ; normalize :
+      base:string option ->
+      specifier:string ->
+      (string, Qmljs_error.Structured.t) result
   }
 
 type driver =

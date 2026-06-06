@@ -73,7 +73,8 @@ let await_result ?yield_every promise =
         loop ()
   in
   match state promise with
-  | Not_a_promise -> Ok promise
+  | Not_a_promise ->
+      Error (Qmljs_error.Structured.of_legacy_error "value is not a promise")
   | Pending | Fulfilled | Rejected -> loop ()
 
 let await_exn ?yield_every promise =

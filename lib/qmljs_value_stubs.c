@@ -349,6 +349,181 @@ CAMLprim value qml_typed_array_uint8_of_bytes_copy(value context, value bytes)
   CAMLreturn(qml_alloc_value(context, result));
 }
 
+static uint8_t *qml_uint8_array_data(JSContext *ctx, JSValueConst value,
+                                     size_t *length)
+{
+  if (JS_GetTypedArrayType(value) != JS_TYPED_ARRAY_UINT8) {
+    qml_raise_string("value is not a Uint8Array");
+  }
+  uint8_t *data = JS_GetUint8Array(ctx, length, value);
+  if (data == NULL && *length > 0) {
+    qml_raise_exception(ctx);
+  }
+  return data;
+}
+
+CAMLprim value qml_typed_array_uint8_length(value context, value wrapped)
+{
+  CAMLparam2(context, wrapped);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  size_t length = 0;
+  (void)qml_uint8_array_data(ctx, qml_js_value(wrapped), &length);
+  if (length > (size_t)Max_long) {
+    qml_raise_string("Uint8Array length is outside the OCaml int range");
+  }
+  CAMLreturn(Val_long((intnat)length));
+}
+
+CAMLprim value qml_typed_array_uint8_get(value context, value wrapped,
+                                         value index)
+{
+  CAMLparam3(context, wrapped, index);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  size_t length = 0;
+  uint8_t *data = qml_uint8_array_data(ctx, qml_js_value(wrapped), &length);
+  long offset = Long_val(index);
+  if (offset < 0 || (size_t)offset >= length) {
+    qml_raise_string("Uint8Array index out of bounds");
+  }
+  CAMLreturn(Val_int(data[offset]));
+}
+
+CAMLprim value qml_typed_array_uint8_set(value context, value wrapped,
+                                         value index, value byte)
+{
+  CAMLparam4(context, wrapped, index, byte);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  long input = Long_val(byte);
+  if (input < 0 || input > 255) {
+    qml_raise_string("Uint8Array byte is outside 0..255");
+  }
+  size_t length = 0;
+  uint8_t *data = qml_uint8_array_data(ctx, qml_js_value(wrapped), &length);
+  long offset = Long_val(index);
+  if (offset < 0 || (size_t)offset >= length) {
+    qml_raise_string("Uint8Array index out of bounds");
+  }
+  data[offset] = (uint8_t)input;
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value qml_typed_array_uint8_to_bytes_copy(value context, value wrapped)
+{
+  CAMLparam2(context, wrapped);
+  CAMLlocal1(result);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  size_t length = 0;
+  uint8_t *data = qml_uint8_array_data(ctx, qml_js_value(wrapped), &length);
+  if (length > (size_t)Max_long) {
+    qml_raise_string("Uint8Array length is outside the OCaml bytes range");
+  }
+  result = caml_alloc_string(length);
+  memcpy(Bytes_val(result), data, length);
+  CAMLreturn(result);
+}
+
+CAMLprim value qml_json_parse(value context, value input, value filename)
+{
+  CAMLparam3(context, input, filename);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  JSValue result =
+    JS_ParseJSON(ctx, String_val(input), caml_string_length(input),
+                 String_val(filename));
+  if (JS_IsException(result)) {
+    qml_raise_exception(ctx);
+  }
+  CAMLreturn(qml_alloc_value(context, result));
+}
+
+CAMLprim value qml_json_stringify(value context, value wrapped, value input_space)
+{
+  CAMLparam3(context, wrapped, input_space);
+  CAMLlocal1(result);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  JSValue space = JS_UNDEFINED;
+  if (Is_block(input_space)) {
+    space = JS_NewInt32(ctx, Int_val(Field(input_space, 0)));
+  }
+  JSValue json =
+    JS_JSONStringify(ctx, qml_js_value(wrapped), JS_UNDEFINED, space);
+  JS_FreeValue(ctx, space);
+  if (JS_IsException(json)) {
+    qml_raise_exception(ctx);
+  }
+  size_t length = 0;
+  const char *string = JS_ToCStringLen(ctx, &length, json);
+  if (string == NULL) {
+    JS_FreeValue(ctx, json);
+    qml_raise_string("JSON.stringify returned undefined");
+  }
+  result = caml_alloc_string(length);
+  memcpy(Bytes_val(result), string, length);
+  JS_FreeCString(ctx, string);
+  JS_FreeValue(ctx, json);
+  CAMLreturn(result);
+}
+
+CAMLprim value qml_value_kind(value context, value wrapped)
+{
+  CAMLparam2(context, wrapped);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, wrapped);
+  JSValueConst js_value = qml_js_value(wrapped);
+  int tag = JS_VALUE_GET_TAG(js_value);
+  if (tag == JS_TAG_UNDEFINED) {
+    CAMLreturn(Val_int(0));
+  }
+  if (tag == JS_TAG_NULL) {
+    CAMLreturn(Val_int(1));
+  }
+  if (tag == JS_TAG_BOOL) {
+    CAMLreturn(Val_int(2));
+  }
+  if (tag == JS_TAG_INT) {
+    CAMLreturn(Val_int(3));
+  }
+  if (JS_TAG_IS_FLOAT64(tag)) {
+    CAMLreturn(Val_int(4));
+  }
+  if (JS_IsString(js_value)) {
+    CAMLreturn(Val_int(5));
+  }
+  if (JS_IsSymbol(js_value)) {
+    CAMLreturn(Val_int(6));
+  }
+  if (JS_IsBigInt(js_value)) {
+    CAMLreturn(Val_int(7));
+  }
+  if (JS_IsPromise(js_value)) {
+    CAMLreturn(Val_int(11));
+  }
+  if (JS_IsArray(js_value)) {
+    CAMLreturn(Val_int(9));
+  }
+  if (JS_IsFunction(ctx, js_value)) {
+    CAMLreturn(Val_int(10));
+  }
+  if (JS_GetTypedArrayType(js_value) >= 0) {
+    CAMLreturn(Val_int(12));
+  }
+  if (JS_IsObject(js_value)) {
+    CAMLreturn(Val_int(8));
+  }
+  CAMLreturn(Val_int(8));
+}
+
 CAMLprim value qml_value_to_bool(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
@@ -436,6 +611,39 @@ CAMLprim value qml_value_call(value context, value function, value args)
     qml_raise_exception(ctx);
   }
   CAMLreturn(qml_alloc_value(context, result));
+}
+
+CAMLprim value qml_value_strict_equal(value context, value left, value right)
+{
+  CAMLparam3(context, left, right);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, left);
+  qml_ensure_same_context(context, right);
+  CAMLreturn(Val_bool(
+    JS_IsStrictEqual(ctx, qml_js_value(left), qml_js_value(right))));
+}
+
+CAMLprim value qml_value_same_value(value context, value left, value right)
+{
+  CAMLparam3(context, left, right);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, left);
+  qml_ensure_same_context(context, right);
+  CAMLreturn(Val_bool(
+    JS_IsSameValue(ctx, qml_js_value(left), qml_js_value(right))));
+}
+
+CAMLprim value qml_value_same_value_zero(value context, value left, value right)
+{
+  CAMLparam3(context, left, right);
+  JSContext *ctx = qml_context(context);
+  qml_update_stack_top(ctx);
+  qml_ensure_same_context(context, left);
+  qml_ensure_same_context(context, right);
+  CAMLreturn(Val_bool(
+    JS_IsSameValueZero(ctx, qml_js_value(left), qml_js_value(right))));
 }
 
 CAMLprim value qml_value_is_promise(value context, value wrapped)
