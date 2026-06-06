@@ -1822,31 +1822,16 @@ CAMLprim value qmljs_bigint_of_string(value context, value input)
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
 
-  JSValue global = JS_GetGlobalObject(ctx);
-  if (JS_IsException(global)) {
-    qmljs_raise_exception(ctx);
-  }
-  JSValue constructor = JS_GetPropertyStr(ctx, global, "BigInt");
-  JS_FreeValue(ctx, global);
-  if (JS_IsException(constructor)) {
-    qmljs_raise_exception(ctx);
-  }
-  if (!JS_IsFunction(ctx, constructor)) {
-    JS_FreeValue(ctx, constructor);
-    qmljs_raise_string("BigInt constructor is not available");
-  }
-
+  JSValueConst constructor = qmljs_context_bigint_constructor(context);
   JSValue argument =
     JS_NewStringLen(ctx, String_val(input), caml_string_length(input));
   if (JS_IsException(argument)) {
-    JS_FreeValue(ctx, constructor);
     qmljs_raise_exception(ctx);
   }
 
   JSValueConst argv[1] = { argument };
   JSValue result = JS_Call(ctx, constructor, JS_UNDEFINED, 1, argv);
   JS_FreeValue(ctx, argument);
-  JS_FreeValue(ctx, constructor);
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);
   }

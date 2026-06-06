@@ -110,6 +110,7 @@ enum {
 JSRuntime *qmljs_runtime(value runtime);
 JSContext *qmljs_context(value context);
 struct qmljs_runtime_state *qmljs_context_state(value context);
+JSValueConst qmljs_context_bigint_constructor(value context);
 JSValue qmljs_js_value(value wrapped);
 const char *qmljs_js_value_for_context(value context, value wrapped, JSValue *out);
 JSAtom qmljs_js_atom(value wrapped);

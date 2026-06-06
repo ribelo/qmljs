@@ -317,6 +317,20 @@ let test_bigint_of_string_does_not_execute_code () =
     (Qmljs.Bigint.to_string
        (Qmljs.Bigint.of_string context "9007199254740993"))
 
+let test_bigint_of_string_ignores_shadowed_global_bigint () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore
+    (Qmljs.Context.eval context
+       {|globalThis.pwned = 0;
+         globalThis.BigInt = function (_) { pwned = 1; return 7n; };|}
+     : Qmljs.value);
+  let bigint = Qmljs.Bigint.of_string context "42" in
+  check_int "Bigint.of_string did not call shadowed global BigInt" 0
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.pwned"));
+  check_string "Bigint.of_string parsed native string" "42"
+    (Qmljs.Bigint.to_string bigint)
+
 let test_json_stringify_undefined_is_error_not_string () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -921,6 +935,8 @@ let tests env =
   , test_eval_with_timeout_closed_runtime_masks_error
   ; "Bigint.of_string does not execute code"
   , test_bigint_of_string_does_not_execute_code
+  ; "Bigint.of_string ignores shadowed global BigInt"
+  , test_bigint_of_string_ignores_shadowed_global_bigint
   ; "Json.stringify undefined is error not string"
   , test_json_stringify_undefined_is_error_not_string
   ; "NUL in public string keys is not silently truncated"
