@@ -4,37 +4,37 @@
 #include <string.h>
 #include <time.h>
 
-struct qml_module_loader {
-  struct qml_runtime_state *state;
+struct qmljs_module_loader {
+  struct qmljs_runtime_state *state;
   value deny;
   value normalize;
   value load;
 };
 
-struct qml_promise_rejection_event {
+struct qmljs_promise_rejection_event {
   value reason;
   int is_handled;
-  struct qml_promise_rejection_event *next;
+  struct qmljs_promise_rejection_event *next;
 };
 
-struct qml_promise_hook_event {
+struct qmljs_promise_hook_event {
   int kind;
   int state;
   int has_parent;
-  struct qml_promise_hook_event *next;
+  struct qmljs_promise_hook_event *next;
 };
 
-struct qml_native_module_data {
-  struct qml_runtime_state *state;
+struct qmljs_native_module_data {
+  struct qmljs_runtime_state *state;
   value evaluate;
 };
 
-struct qml_native_exports {
+struct qmljs_native_exports {
   JSContext *ctx;
   JSModuleDef *module;
 };
 
-static int qml_define_string_property(JSContext *ctx, JSValueConst object,
+static int qmljs_define_string_property(JSContext *ctx, JSValueConst object,
                                       const char *name, const char *value)
 {
   JSValue string = JS_NewString(ctx, value);
@@ -44,7 +44,7 @@ static int qml_define_string_property(JSContext *ctx, JSValueConst object,
   return JS_DefinePropertyValueStr(ctx, object, name, string, JS_PROP_C_W_E);
 }
 
-static int qml_define_ocaml_string_property(JSContext *ctx, JSValueConst object,
+static int qmljs_define_ocaml_string_property(JSContext *ctx, JSValueConst object,
                                             const char *name, value input)
 {
   JSValue string =
@@ -55,7 +55,7 @@ static int qml_define_ocaml_string_property(JSContext *ctx, JSValueConst object,
   return JS_DefinePropertyValueStr(ctx, object, name, string, JS_PROP_C_W_E);
 }
 
-static JSValue qml_throw_marked_error(JSContext *ctx, const char *message,
+static JSValue qmljs_throw_marked_error(JSContext *ctx, const char *message,
                                       const char *kind,
                                       const char *denied_specifier)
 {
@@ -63,10 +63,10 @@ static JSValue qml_throw_marked_error(JSContext *ctx, const char *message,
   if (JS_IsException(error)) {
     return error;
   }
-  if (qml_define_string_property(ctx, error, "message", message) < 0 ||
-      qml_define_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
+  if (qmljs_define_string_property(ctx, error, "message", message) < 0 ||
+      qmljs_define_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
       (denied_specifier != NULL &&
-       qml_define_string_property(ctx, error,
+       qmljs_define_string_property(ctx, error,
                                   "_qmljs_denied_module_specifier",
                                   denied_specifier) < 0)) {
     JS_FreeValue(ctx, error);
@@ -86,7 +86,7 @@ enum {
   QML_ERROR_MARKER_CAUSE = 7
 };
 
-static int qml_define_error_marker_metadata(JSContext *ctx,
+static int qmljs_define_error_marker_metadata(JSContext *ctx,
                                             JSValueConst error,
                                             value metadata)
 {
@@ -142,16 +142,16 @@ static int qml_define_error_marker_metadata(JSContext *ctx,
                                    JS_PROP_C_W_E);
 }
 
-static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth);
+static JSValue qmljs_error_marker_to_js(JSContext *ctx, value marker, int depth);
 
-static int qml_define_error_marker_cause(JSContext *ctx, JSValueConst error,
+static int qmljs_define_error_marker_cause(JSContext *ctx, JSValueConst error,
                                          value cause, int depth)
 {
   if (cause == Val_int(0) || depth >= 64) {
     return 0;
   }
 
-  JSValue js_cause = qml_error_marker_to_js(ctx, Field(cause, 0), depth + 1);
+  JSValue js_cause = qmljs_error_marker_to_js(ctx, Field(cause, 0), depth + 1);
   if (JS_IsException(js_cause)) {
     return -1;
   }
@@ -159,7 +159,7 @@ static int qml_define_error_marker_cause(JSContext *ctx, JSValueConst error,
                                    JS_PROP_C_W_E);
 }
 
-static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth)
+static JSValue qmljs_error_marker_to_js(JSContext *ctx, value marker, int depth)
 {
   JSValue error = JS_NewError(ctx);
   if (JS_IsException(error)) {
@@ -176,19 +176,19 @@ static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth)
   value cause = Field(marker, QML_ERROR_MARKER_CAUSE);
 
   if ((caml_string_length(name) > 0 &&
-       qml_define_ocaml_string_property(ctx, error, "name", name) < 0) ||
-      qml_define_ocaml_string_property(ctx, error, "message", message) < 0 ||
-      qml_define_ocaml_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
+       qmljs_define_ocaml_string_property(ctx, error, "name", name) < 0) ||
+      qmljs_define_ocaml_string_property(ctx, error, "message", message) < 0 ||
+      qmljs_define_ocaml_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
       (caml_string_length(denied_specifier) > 0 &&
-       qml_define_ocaml_string_property(
+       qmljs_define_ocaml_string_property(
          ctx, error, "_qmljs_denied_module_specifier", denied_specifier) < 0) ||
       (caml_string_length(stack) > 0 &&
-       qml_define_ocaml_string_property(ctx, error, "stack", stack) < 0) ||
+       qmljs_define_ocaml_string_property(ctx, error, "stack", stack) < 0) ||
       (caml_string_length(ocaml_frame) > 0 &&
-       qml_define_ocaml_string_property(ctx, error, "_qmljs_ocaml_frame",
+       qmljs_define_ocaml_string_property(ctx, error, "_qmljs_ocaml_frame",
                                         ocaml_frame) < 0) ||
-      qml_define_error_marker_metadata(ctx, error, metadata) < 0 ||
-      qml_define_error_marker_cause(ctx, error, cause, depth) < 0) {
+      qmljs_define_error_marker_metadata(ctx, error, metadata) < 0 ||
+      qmljs_define_error_marker_cause(ctx, error, cause, depth) < 0) {
     JS_FreeValue(ctx, error);
     return JS_EXCEPTION;
   }
@@ -196,53 +196,53 @@ static JSValue qml_error_marker_to_js(JSContext *ctx, value marker, int depth)
   return error;
 }
 
-static JSValue qml_throw_error_marker(JSContext *ctx, value marker)
+static JSValue qmljs_throw_error_marker(JSContext *ctx, value marker)
 {
-  JSValue error = qml_error_marker_to_js(ctx, marker, 0);
+  JSValue error = qmljs_error_marker_to_js(ctx, marker, 0);
   if (JS_IsException(error)) {
     return error;
   }
   return JS_Throw(ctx, error);
 }
 
-static void qml_native_module_data_free(struct qml_native_module_data *data)
+static void qmljs_native_module_data_free(struct qmljs_native_module_data *data)
 {
   caml_remove_generational_global_root(&data->evaluate);
-  qml_state_unref(data->state);
+  qmljs_state_unref(data->state);
   caml_stat_free(data);
 }
 
-static void qml_native_module_private_finalizer(JSRuntime *rt, JSValueConst value)
+static void qmljs_native_module_private_finalizer(JSRuntime *rt, JSValueConst value)
 {
   (void)rt;
-  struct qml_native_module_data *data = JS_GetOpaque(value, JS_GetClassID(value));
+  struct qmljs_native_module_data *data = JS_GetOpaque(value, JS_GetClassID(value));
   if (data != NULL) {
-    qml_native_module_data_free(data);
+    qmljs_native_module_data_free(data);
   }
 }
 
-static const JSClassDef qml_native_module_class_def = {
+static const JSClassDef qmljs_native_module_class_def = {
   .class_name = "QmljsNativeModule",
-  .finalizer = qml_native_module_private_finalizer,
+  .finalizer = qmljs_native_module_private_finalizer,
 };
 
-static JSClassID qml_ensure_native_module_class(value context, JSContext *ctx)
+static JSClassID qmljs_ensure_native_module_class(value context, JSContext *ctx)
 {
-  struct qml_runtime_state *state = qml_context_state(context);
+  struct qmljs_runtime_state *state = qmljs_context_state(context);
   if (!state->native_module_class_registered) {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSClassID class_id = JS_NewClassID(rt, &state->native_module_class_id);
-    if (JS_NewClass(rt, class_id, &qml_native_module_class_def) < 0) {
-      qml_raise_string("could not register qmljs native module class");
+    if (JS_NewClass(rt, class_id, &qmljs_native_module_class_def) < 0) {
+      qmljs_raise_string("could not register qmljs native module class");
     }
     state->native_module_class_registered = 1;
   }
   return state->native_module_class_id;
 }
 
-#define Qml_native_exports_val(v) ((struct qml_native_exports *)Data_custom_val(v))
+#define Qml_native_exports_val(v) ((struct qmljs_native_exports *)Data_custom_val(v))
 
-static struct custom_operations qml_native_exports_ops = {
+static struct custom_operations qmljs_native_exports_ops = {
   "qmljs.native_exports",
   custom_finalize_default,
   custom_compare_default,
@@ -253,18 +253,18 @@ static struct custom_operations qml_native_exports_ops = {
   custom_fixed_length_default
 };
 
-static value qml_alloc_native_exports(JSContext *ctx, JSModuleDef *module)
+static value qmljs_alloc_native_exports(JSContext *ctx, JSModuleDef *module)
 {
   CAMLparam0();
   CAMLlocal1(block);
-  block = caml_alloc_custom(&qml_native_exports_ops,
-                            sizeof(struct qml_native_exports), 0, 1);
+  block = caml_alloc_custom(&qmljs_native_exports_ops,
+                            sizeof(struct qmljs_native_exports), 0, 1);
   Qml_native_exports_val(block)->ctx = ctx;
   Qml_native_exports_val(block)->module = module;
   CAMLreturn(block);
 }
 
-static int qml_native_module_eval(JSContext *ctx, JSModuleDef *module)
+static int qmljs_native_module_eval(JSContext *ctx, JSModuleDef *module)
 {
   CAMLparam0();
   CAMLlocal3(exports, result, error);
@@ -273,124 +273,124 @@ static int qml_native_module_eval(JSContext *ctx, JSModuleDef *module)
     CAMLreturnT(int, -1);
   }
 
-  struct qml_native_module_data *data =
+  struct qmljs_native_module_data *data =
     JS_IsObject(private_value)
       ? JS_GetOpaque(private_value, JS_GetClassID(private_value))
       : NULL;
   if (data == NULL) {
     JS_FreeValue(ctx, private_value);
-    (void)qml_throw_marked_error(ctx, "invalid qmljs native module",
+    (void)qmljs_throw_marked_error(ctx, "invalid qmljs native module",
                                  "host_callback_defect", NULL);
     CAMLreturnT(int, -1);
   }
 
-  exports = qml_alloc_native_exports(ctx, module);
-  qml_enter_ocaml_callback(data->state);
+  exports = qmljs_alloc_native_exports(ctx, module);
+  qmljs_enter_ocaml_callback(data->state);
   result = caml_callback_exn(data->evaluate, exports);
-  qml_leave_ocaml_callback(data->state);
+  qmljs_leave_ocaml_callback(data->state);
   JS_FreeValue(ctx, private_value);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
-    (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
+    (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
     caml_stat_free(message);
     CAMLreturnT(int, -1);
   }
 
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
-    (void)qml_throw_error_marker(ctx, error);
+    (void)qmljs_throw_error_marker(ctx, error);
     CAMLreturnT(int, -1);
   }
 
   CAMLreturnT(int, 0);
 }
 
-CAMLprim value qml_module_declare_native(value context, value name,
+CAMLprim value qmljs_module_declare_native(value context, value name,
                                          value exports, value evaluate)
 {
   CAMLparam4(context, name, exports, evaluate);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
-  JSClassID class_id = qml_ensure_native_module_class(context, ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
+  JSClassID class_id = qmljs_ensure_native_module_class(context, ctx);
 
   JSModuleDef *module = JS_NewCModule(ctx, String_val(name),
-                                      qml_native_module_eval);
+                                      qmljs_native_module_eval);
   if (module == NULL) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
   mlsize_t export_count = Wosize_val(exports);
   for (mlsize_t i = 0; i < export_count; i++) {
     if (JS_AddModuleExport(ctx, module, String_val(Field(exports, i))) < 0) {
-      qml_raise_exception(ctx);
+      qmljs_raise_exception(ctx);
     }
   }
 
-  struct qml_native_module_data *data =
-    caml_stat_alloc(sizeof(struct qml_native_module_data));
-  data->state = qml_context_state(context);
-  qml_state_ref(data->state);
+  struct qmljs_native_module_data *data =
+    caml_stat_alloc(sizeof(struct qmljs_native_module_data));
+  data->state = qmljs_context_state(context);
+  qmljs_state_ref(data->state);
   data->evaluate = evaluate;
   caml_register_generational_global_root(&data->evaluate);
 
   JSValue private_value = JS_NewObjectClass(ctx, class_id);
   if (JS_IsException(private_value)) {
-    qml_native_module_data_free(data);
-    qml_raise_exception(ctx);
+    qmljs_native_module_data_free(data);
+    qmljs_raise_exception(ctx);
   }
   if (JS_SetOpaque(private_value, data) < 0) {
     JS_FreeValue(ctx, private_value);
-    qml_native_module_data_free(data);
-    qml_raise_string("could not attach qmljs native module data");
+    qmljs_native_module_data_free(data);
+    qmljs_raise_string("could not attach qmljs native module data");
   }
   if (JS_SetModulePrivateValue(ctx, module, private_value) < 0) {
     JS_FreeValue(ctx, private_value);
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_module_native_export(value context, value exports,
+CAMLprim value qmljs_module_native_export(value context, value exports,
                                         value name, value wrapped)
 {
   CAMLparam4(context, exports, name, wrapped);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
-  qml_ensure_same_context(context, wrapped);
-  struct qml_native_exports *native_exports = Qml_native_exports_val(exports);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
+  qmljs_ensure_same_context(context, wrapped);
+  struct qmljs_native_exports *native_exports = Qml_native_exports_val(exports);
   if (native_exports->ctx != ctx) {
-    qml_raise_string("native module exports belong to a different context");
+    qmljs_raise_string("native module exports belong to a different context");
   }
 
-  JSValue js_value = JS_DupValue(ctx, qml_js_value(wrapped));
+  JSValue js_value = JS_DupValue(ctx, qmljs_js_value(wrapped));
   if (JS_SetModuleExport(ctx, native_exports->module, String_val(name),
                          js_value) < 0) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
   CAMLreturn(Val_unit);
 }
 
-static int qml_module_loader_denies(JSContext *ctx,
-                                    struct qml_module_loader *loader,
+static int qmljs_module_loader_denies(JSContext *ctx,
+                                    struct qmljs_module_loader *loader,
                                     const char *module_name)
 {
   CAMLparam0();
   CAMLlocal1(arg);
   arg = caml_copy_string(module_name);
-  qml_enter_ocaml_callback(loader->state);
+  qmljs_enter_ocaml_callback(loader->state);
   value result = caml_callback_exn(loader->deny, arg);
-  qml_leave_ocaml_callback(loader->state);
+  qmljs_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
-    (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
+    (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
     caml_stat_free(message);
     CAMLreturnT(int, -1);
   }
   CAMLreturnT(int, Bool_val(result));
 }
 
-static int qml_import_attributes_to_ocaml(JSContext *ctx,
+static int qmljs_import_attributes_to_ocaml(JSContext *ctx,
                                           JSValueConst attributes, value *out)
 {
   CAMLparam0();
@@ -448,13 +448,13 @@ static int qml_import_attributes_to_ocaml(JSContext *ctx,
   CAMLreturnT(int, 0);
 }
 
-static char *qml_module_loader_normalize(JSContext *ctx,
+static char *qmljs_module_loader_normalize(JSContext *ctx,
                                          const char *module_base_name,
                                          const char *module_name,
                                          JSValueConst attributes,
                                          void *opaque)
 {
-  struct qml_module_loader *loader = opaque;
+  struct qmljs_module_loader *loader = opaque;
   CAMLparam0();
   CAMLlocalN(roots, 9);
   value base;
@@ -478,17 +478,17 @@ static char *qml_module_loader_normalize(JSContext *ctx,
   base = roots[0];
   roots[1] = caml_copy_string(module_name);
   specifier = roots[1];
-  if (qml_import_attributes_to_ocaml(ctx, attributes, &roots[8]) < 0) {
+  if (qmljs_import_attributes_to_ocaml(ctx, attributes, &roots[8]) < 0) {
     CAMLreturnT(char *, NULL);
   }
 
-  qml_enter_ocaml_callback(loader->state);
+  qmljs_enter_ocaml_callback(loader->state);
   value result =
     caml_callback3_exn(loader->normalize, base, specifier, roots[8]);
-  qml_leave_ocaml_callback(loader->state);
+  qmljs_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
-    (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
+    (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
     caml_stat_free(message);
     CAMLreturnT(char *, NULL);
   }
@@ -497,7 +497,7 @@ static char *qml_module_loader_normalize(JSContext *ctx,
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
     roots[5] = error;
-    (void)qml_throw_error_marker(ctx, error);
+    (void)qmljs_throw_error_marker(ctx, error);
     CAMLreturnT(char *, NULL);
   }
 
@@ -513,7 +513,7 @@ static char *qml_module_loader_normalize(JSContext *ctx,
   CAMLreturnT(char *, copy);
 }
 
-static int qml_check_import_attributes(JSContext *ctx, void *opaque,
+static int qmljs_check_import_attributes(JSContext *ctx, void *opaque,
                                        JSValueConst attributes)
 {
   (void)opaque;
@@ -572,7 +572,7 @@ static int qml_check_import_attributes(JSContext *ctx, void *opaque,
   return 0;
 }
 
-static int qml_import_attribute_is_json(JSContext *ctx,
+static int qmljs_import_attribute_is_json(JSContext *ctx,
                                         JSValueConst attributes,
                                         int *is_json)
 {
@@ -601,7 +601,7 @@ static int qml_import_attribute_is_json(JSContext *ctx,
   return 0;
 }
 
-static JSValue qml_compile_loaded_module(JSContext *ctx, const char *source,
+static JSValue qmljs_compile_loaded_module(JSContext *ctx, const char *source,
                                          size_t source_length,
                                          const char *module_name, int is_json)
 {
@@ -628,10 +628,10 @@ static JSValue qml_compile_loaded_module(JSContext *ctx, const char *source,
   return compiled;
 }
 
-static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
+static JSModuleDef *qmljs_load_module(JSContext *ctx, const char *module_name,
                                     void *opaque, JSValueConst attributes)
 {
-  struct qml_module_loader *loader = opaque;
+  struct qmljs_module_loader *loader = opaque;
   CAMLparam0();
   CAMLlocalN(roots, 7);
   value result;
@@ -640,31 +640,31 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   value source;
 
   int is_json = 0;
-  if (qml_import_attribute_is_json(ctx, attributes, &is_json) < 0) {
+  if (qmljs_import_attribute_is_json(ctx, attributes, &is_json) < 0) {
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
-  int denied = qml_module_loader_denies(ctx, loader, module_name);
+  int denied = qmljs_module_loader_denies(ctx, loader, module_name);
   if (denied < 0) {
     CAMLreturnT(JSModuleDef *, NULL);
   }
   if (denied) {
-    (void)qml_throw_marked_error(ctx, "module policy violation",
+    (void)qmljs_throw_marked_error(ctx, "module policy violation",
                                  "policy_violation", module_name);
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
   roots[0] = caml_copy_string(module_name);
-  if (qml_import_attributes_to_ocaml(ctx, attributes, &roots[1]) < 0) {
+  if (qmljs_import_attributes_to_ocaml(ctx, attributes, &roots[1]) < 0) {
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
-  qml_enter_ocaml_callback(loader->state);
+  qmljs_enter_ocaml_callback(loader->state);
   result = caml_callback2_exn(loader->load, roots[0], roots[1]);
-  qml_leave_ocaml_callback(loader->state);
+  qmljs_leave_ocaml_callback(loader->state);
   if (Is_exception_result(result)) {
     char *message = caml_format_exception(Extract_exception(result));
-    (void)qml_throw_marked_error(ctx, message, "host_callback_defect", NULL);
+    (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
     caml_stat_free(message);
     CAMLreturnT(JSModuleDef *, NULL);
   }
@@ -673,7 +673,7 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   if (Tag_val(result) == 1) {
     error = Field(result, 0);
     roots[3] = error;
-    (void)qml_throw_error_marker(ctx, error);
+    (void)qmljs_throw_error_marker(ctx, error);
     CAMLreturnT(JSModuleDef *, NULL);
   }
 
@@ -687,7 +687,7 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   source = Field(source_option, 0);
   roots[5] = source;
   JSValue compiled =
-    qml_compile_loaded_module(ctx, String_val(source),
+    qmljs_compile_loaded_module(ctx, String_val(source),
                               caml_string_length(source), module_name,
                               is_json);
   if (JS_IsException(compiled)) {
@@ -698,23 +698,23 @@ static JSModuleDef *qml_load_module(JSContext *ctx, const char *module_name,
   CAMLreturnT(JSModuleDef *, module);
 }
 
-static long long qml_monotonic_time_ns(void)
+static long long qmljs_monotonic_time_ns(void)
 {
   struct timespec time;
   clock_gettime(CLOCK_MONOTONIC, &time);
   return ((long long)time.tv_sec * 1000000000LL) + (long long)time.tv_nsec;
 }
 
-static int qml_interrupt_handler(JSRuntime *rt, void *opaque)
+static int qmljs_interrupt_handler(JSRuntime *rt, void *opaque)
 {
   (void)rt;
-  struct qml_runtime_state *state = opaque;
+  struct qmljs_runtime_state *state = opaque;
   if (atomic_load_explicit(&state->interrupt_requested, memory_order_relaxed)) {
     return 1;
   }
   long long deadline =
     atomic_load_explicit(&state->interrupt_deadline_ns, memory_order_relaxed);
-  if (deadline > 0 && qml_monotonic_time_ns() >= deadline) {
+  if (deadline > 0 && qmljs_monotonic_time_ns() >= deadline) {
     atomic_store_explicit(&state->interrupt_requested, 1,
                           memory_order_relaxed);
     return 1;
@@ -722,12 +722,12 @@ static int qml_interrupt_handler(JSRuntime *rt, void *opaque)
   return 0;
 }
 
-CAMLprim value qml_runtime_create(value unit)
+CAMLprim value qmljs_runtime_create(value unit)
 {
   CAMLparam1(unit);
-  qml_drain_deferred_runtimes();
-  struct qml_runtime_state *state =
-    caml_stat_alloc(sizeof(struct qml_runtime_state));
+  qmljs_drain_deferred_runtimes();
+  struct qmljs_runtime_state *state =
+    caml_stat_alloc(sizeof(struct qmljs_runtime_state));
   atomic_init(&state->refs, 1); /* the runtime wrapper's reference */
   state->owner_domain = Caml_state;
   state->rt = NULL;
@@ -763,44 +763,44 @@ CAMLprim value qml_runtime_create(value unit)
   JSRuntime *rt = JS_NewRuntime();
   if (rt == NULL) {
     caml_stat_free(state);
-    qml_raise_string("could not allocate QuickJS runtime");
+    qmljs_raise_string("could not allocate QuickJS runtime");
   }
-  JS_SetInterruptHandler(rt, qml_interrupt_handler, state);
-  CAMLreturn(qml_alloc_runtime(rt, state));
+  JS_SetInterruptHandler(rt, qmljs_interrupt_handler, state);
+  CAMLreturn(qmljs_alloc_runtime(rt, state));
 }
 
-CAMLprim value qml_runtime_set_memory_limit(value runtime, value limit)
+CAMLprim value qmljs_runtime_set_memory_limit(value runtime, value limit)
 {
   CAMLparam2(runtime, limit);
   long bytes = Long_val(limit);
   if (bytes < 0) {
-    qml_raise_string("memory limit must be non-negative");
+    qmljs_raise_string("memory limit must be non-negative");
   }
-  JS_SetMemoryLimit(qml_runtime(runtime), (size_t)bytes);
+  JS_SetMemoryLimit(qmljs_runtime(runtime), (size_t)bytes);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_set_max_stack_size(value runtime, value size)
+CAMLprim value qmljs_runtime_set_max_stack_size(value runtime, value size)
 {
   CAMLparam2(runtime, size);
   long bytes = Long_val(size);
   if (bytes < 0) {
-    qml_raise_string("max stack size must be non-negative");
+    qmljs_raise_string("max stack size must be non-negative");
   }
-  JS_SetMaxStackSize(qml_runtime(runtime), (size_t)bytes);
+  JS_SetMaxStackSize(qmljs_runtime(runtime), (size_t)bytes);
   CAMLreturn(Val_unit);
 }
 
-static void qml_store_int64_field(value array, int index, int64_t field)
+static void qmljs_store_int64_field(value array, int index, int64_t field)
 {
   Store_field(array, index, caml_copy_int64(field));
 }
 
-static void qml_promise_rejection_events_free(struct qml_runtime_state *state)
+static void qmljs_promise_rejection_events_free(struct qmljs_runtime_state *state)
 {
-  struct qml_promise_rejection_event *event = state->promise_rejections_head;
+  struct qmljs_promise_rejection_event *event = state->promise_rejections_head;
   while (event != NULL) {
-    struct qml_promise_rejection_event *next = event->next;
+    struct qmljs_promise_rejection_event *next = event->next;
     caml_remove_generational_global_root(&event->reason);
     caml_stat_free(event);
     event = next;
@@ -809,11 +809,11 @@ static void qml_promise_rejection_events_free(struct qml_runtime_state *state)
   state->promise_rejections_tail = NULL;
 }
 
-static void qml_promise_hook_events_free(struct qml_runtime_state *state)
+static void qmljs_promise_hook_events_free(struct qmljs_runtime_state *state)
 {
-  struct qml_promise_hook_event *event = state->promise_hooks_head;
+  struct qmljs_promise_hook_event *event = state->promise_hooks_head;
   while (event != NULL) {
-    struct qml_promise_hook_event *next = event->next;
+    struct qmljs_promise_hook_event *next = event->next;
     caml_stat_free(event);
     event = next;
   }
@@ -821,17 +821,17 @@ static void qml_promise_hook_events_free(struct qml_runtime_state *state)
   state->promise_hooks_tail = NULL;
 }
 
-void qml_promise_events_free(struct qml_runtime_state *state)
+void qmljs_promise_events_free(struct qmljs_runtime_state *state)
 {
-  qml_promise_rejection_events_free(state);
-  qml_promise_hook_events_free(state);
+  qmljs_promise_rejection_events_free(state);
+  qmljs_promise_hook_events_free(state);
 }
 
-static void qml_append_promise_rejection(struct qml_runtime_state *state,
+static void qmljs_append_promise_rejection(struct qmljs_runtime_state *state,
                                          value reason, int is_handled)
 {
-  struct qml_promise_rejection_event *event =
-    caml_stat_alloc(sizeof(struct qml_promise_rejection_event));
+  struct qmljs_promise_rejection_event *event =
+    caml_stat_alloc(sizeof(struct qmljs_promise_rejection_event));
   event->reason = reason;
   event->is_handled = is_handled;
   event->next = NULL;
@@ -844,11 +844,11 @@ static void qml_append_promise_rejection(struct qml_runtime_state *state,
   state->promise_rejections_tail = event;
 }
 
-static void qml_append_promise_hook(struct qml_runtime_state *state, int kind,
+static void qmljs_append_promise_hook(struct qmljs_runtime_state *state, int kind,
                                     int promise_state, int has_parent)
 {
-  struct qml_promise_hook_event *event =
-    caml_stat_alloc(sizeof(struct qml_promise_hook_event));
+  struct qmljs_promise_hook_event *event =
+    caml_stat_alloc(sizeof(struct qmljs_promise_hook_event));
   event->kind = kind;
   event->state = promise_state;
   event->has_parent = has_parent;
@@ -861,108 +861,108 @@ static void qml_append_promise_hook(struct qml_runtime_state *state, int kind,
   state->promise_hooks_tail = event;
 }
 
-static void qml_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
+static void qmljs_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
                                           JSValueConst reason, bool is_handled,
                                           void *opaque)
 {
   (void)promise;
   CAMLparam0();
   CAMLlocal1(structured);
-  struct qml_runtime_state *state = opaque;
+  struct qmljs_runtime_state *state = opaque;
   if (state == NULL || !state->promise_rejection_tracking) {
     CAMLreturn0;
   }
-  structured = qml_structured_of_exception_value(ctx, reason);
-  qml_append_promise_rejection(state, structured, is_handled ? 1 : 0);
+  structured = qmljs_structured_of_exception_value(ctx, reason);
+  qmljs_append_promise_rejection(state, structured, is_handled ? 1 : 0);
   CAMLreturn0;
 }
 
-static void qml_promise_hook(JSContext *ctx, JSPromiseHookType type,
+static void qmljs_promise_hook(JSContext *ctx, JSPromiseHookType type,
                              JSValueConst promise, JSValueConst parent,
                              void *opaque)
 {
-  struct qml_runtime_state *state = opaque;
+  struct qmljs_runtime_state *state = opaque;
   if (state == NULL || !state->promise_hook_tracking) {
     return;
   }
-  qml_append_promise_hook(state, (int)type, (int)JS_PromiseState(ctx, promise),
+  qmljs_append_promise_hook(state, (int)type, (int)JS_PromiseState(ctx, promise),
                           JS_IsUndefined(parent) ? 0 : 1);
 }
 
-CAMLprim value qml_runtime_memory_usage(value runtime)
+CAMLprim value qmljs_runtime_memory_usage(value runtime)
 {
   CAMLparam1(runtime);
   CAMLlocal1(result);
-  JSRuntime *rt = qml_runtime(runtime);
+  JSRuntime *rt = qmljs_runtime(runtime);
   JSMemoryUsage usage;
   JS_ComputeMemoryUsage(rt, &usage);
 
   result = caml_alloc(26, 0);
-  qml_store_int64_field(result, 0, usage.malloc_size);
-  qml_store_int64_field(result, 1, usage.malloc_limit);
-  qml_store_int64_field(result, 2, usage.memory_used_size);
-  qml_store_int64_field(result, 3, usage.malloc_count);
-  qml_store_int64_field(result, 4, usage.memory_used_count);
-  qml_store_int64_field(result, 5, usage.atom_count);
-  qml_store_int64_field(result, 6, usage.atom_size);
-  qml_store_int64_field(result, 7, usage.str_count);
-  qml_store_int64_field(result, 8, usage.str_size);
-  qml_store_int64_field(result, 9, usage.obj_count);
-  qml_store_int64_field(result, 10, usage.obj_size);
-  qml_store_int64_field(result, 11, usage.prop_count);
-  qml_store_int64_field(result, 12, usage.prop_size);
-  qml_store_int64_field(result, 13, usage.shape_count);
-  qml_store_int64_field(result, 14, usage.shape_size);
-  qml_store_int64_field(result, 15, usage.js_func_count);
-  qml_store_int64_field(result, 16, usage.js_func_size);
-  qml_store_int64_field(result, 17, usage.js_func_code_size);
-  qml_store_int64_field(result, 18, usage.js_func_pc2line_count);
-  qml_store_int64_field(result, 19, usage.js_func_pc2line_size);
-  qml_store_int64_field(result, 20, usage.c_func_count);
-  qml_store_int64_field(result, 21, usage.array_count);
-  qml_store_int64_field(result, 22, usage.fast_array_count);
-  qml_store_int64_field(result, 23, usage.fast_array_elements);
-  qml_store_int64_field(result, 24, usage.binary_object_count);
-  qml_store_int64_field(result, 25, usage.binary_object_size);
+  qmljs_store_int64_field(result, 0, usage.malloc_size);
+  qmljs_store_int64_field(result, 1, usage.malloc_limit);
+  qmljs_store_int64_field(result, 2, usage.memory_used_size);
+  qmljs_store_int64_field(result, 3, usage.malloc_count);
+  qmljs_store_int64_field(result, 4, usage.memory_used_count);
+  qmljs_store_int64_field(result, 5, usage.atom_count);
+  qmljs_store_int64_field(result, 6, usage.atom_size);
+  qmljs_store_int64_field(result, 7, usage.str_count);
+  qmljs_store_int64_field(result, 8, usage.str_size);
+  qmljs_store_int64_field(result, 9, usage.obj_count);
+  qmljs_store_int64_field(result, 10, usage.obj_size);
+  qmljs_store_int64_field(result, 11, usage.prop_count);
+  qmljs_store_int64_field(result, 12, usage.prop_size);
+  qmljs_store_int64_field(result, 13, usage.shape_count);
+  qmljs_store_int64_field(result, 14, usage.shape_size);
+  qmljs_store_int64_field(result, 15, usage.js_func_count);
+  qmljs_store_int64_field(result, 16, usage.js_func_size);
+  qmljs_store_int64_field(result, 17, usage.js_func_code_size);
+  qmljs_store_int64_field(result, 18, usage.js_func_pc2line_count);
+  qmljs_store_int64_field(result, 19, usage.js_func_pc2line_size);
+  qmljs_store_int64_field(result, 20, usage.c_func_count);
+  qmljs_store_int64_field(result, 21, usage.array_count);
+  qmljs_store_int64_field(result, 22, usage.fast_array_count);
+  qmljs_store_int64_field(result, 23, usage.fast_array_elements);
+  qmljs_store_int64_field(result, 24, usage.binary_object_count);
+  qmljs_store_int64_field(result, 25, usage.binary_object_size);
   CAMLreturn(result);
 }
 
-CAMLprim value qml_runtime_run_gc(value runtime)
+CAMLprim value qmljs_runtime_run_gc(value runtime)
 {
   CAMLparam1(runtime);
-  JS_RunGC(qml_runtime(runtime));
+  JS_RunGC(qmljs_runtime(runtime));
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_get_gc_threshold(value runtime)
+CAMLprim value qmljs_runtime_get_gc_threshold(value runtime)
 {
   CAMLparam1(runtime);
-  size_t threshold = JS_GetGCThreshold(qml_runtime(runtime));
+  size_t threshold = JS_GetGCThreshold(qmljs_runtime(runtime));
   if (threshold > (size_t)Max_long) {
-    qml_raise_string("GC threshold is outside the OCaml int range");
+    qmljs_raise_string("GC threshold is outside the OCaml int range");
   }
   CAMLreturn(Val_long((intnat)threshold));
 }
 
-CAMLprim value qml_runtime_set_gc_threshold(value runtime, value threshold)
+CAMLprim value qmljs_runtime_set_gc_threshold(value runtime, value threshold)
 {
   CAMLparam2(runtime, threshold);
   long threshold_value = Long_val(threshold);
   if (threshold_value < 0) {
-    qml_raise_string("GC threshold must be non-negative");
+    qmljs_raise_string("GC threshold must be non-negative");
   }
-  JS_SetGCThreshold(qml_runtime(runtime), (size_t)threshold_value);
+  JS_SetGCThreshold(qmljs_runtime(runtime), (size_t)threshold_value);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_set_info(value runtime, value info)
+CAMLprim value qmljs_runtime_set_info(value runtime, value info)
 {
   CAMLparam2(runtime, info);
-  JSRuntime *rt = qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  JSRuntime *rt = qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   size_t length = caml_string_length(info);
   if (memchr(String_val(info), '\0', length) != NULL) {
-    qml_raise_string("runtime info cannot contain NUL bytes");
+    qmljs_raise_string("runtime info cannot contain NUL bytes");
   }
 
   char *copy = caml_stat_alloc(length + 1);
@@ -978,42 +978,42 @@ CAMLprim value qml_runtime_set_info(value runtime, value info)
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_set_promise_rejection_tracking(value runtime,
+CAMLprim value qmljs_runtime_set_promise_rejection_tracking(value runtime,
                                                           value enabled)
 {
   CAMLparam2(runtime, enabled);
-  JSRuntime *rt = qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  JSRuntime *rt = qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   if (Bool_val(enabled)) {
     state->promise_rejection_tracking = 1;
-    JS_SetHostPromiseRejectionTracker(rt, qml_promise_rejection_tracker, state);
+    JS_SetHostPromiseRejectionTracker(rt, qmljs_promise_rejection_tracker, state);
   } else {
     state->promise_rejection_tracking = 0;
     JS_SetHostPromiseRejectionTracker(rt, NULL, NULL);
-    qml_promise_rejection_events_free(state);
+    qmljs_promise_rejection_events_free(state);
   }
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_take_promise_rejections(value runtime)
+CAMLprim value qmljs_runtime_take_promise_rejections(value runtime)
 {
   CAMLparam1(runtime);
   CAMLlocal2(result, tuple);
-  (void)qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   mlsize_t length = 0;
-  for (struct qml_promise_rejection_event *event =
+  for (struct qmljs_promise_rejection_event *event =
          state->promise_rejections_head;
        event != NULL; event = event->next) {
     length++;
   }
 
   result = caml_alloc(length, 0);
-  struct qml_promise_rejection_event *event = state->promise_rejections_head;
+  struct qmljs_promise_rejection_event *event = state->promise_rejections_head;
   state->promise_rejections_head = NULL;
   state->promise_rejections_tail = NULL;
   for (mlsize_t i = 0; i < length; i++) {
-    struct qml_promise_rejection_event *next = event->next;
+    struct qmljs_promise_rejection_event *next = event->next;
     tuple = caml_alloc_tuple(2);
     Store_field(tuple, 0, event->reason);
     Store_field(tuple, 1, Val_bool(event->is_handled));
@@ -1025,41 +1025,41 @@ CAMLprim value qml_runtime_take_promise_rejections(value runtime)
   CAMLreturn(result);
 }
 
-CAMLprim value qml_runtime_set_promise_hook_tracking(value runtime,
+CAMLprim value qmljs_runtime_set_promise_hook_tracking(value runtime,
                                                      value enabled)
 {
   CAMLparam2(runtime, enabled);
-  JSRuntime *rt = qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  JSRuntime *rt = qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   if (Bool_val(enabled)) {
     state->promise_hook_tracking = 1;
-    JS_SetPromiseHook(rt, qml_promise_hook, state);
+    JS_SetPromiseHook(rt, qmljs_promise_hook, state);
   } else {
     state->promise_hook_tracking = 0;
     JS_SetPromiseHook(rt, NULL, NULL);
-    qml_promise_hook_events_free(state);
+    qmljs_promise_hook_events_free(state);
   }
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_take_promise_hooks(value runtime)
+CAMLprim value qmljs_runtime_take_promise_hooks(value runtime)
 {
   CAMLparam1(runtime);
   CAMLlocal2(result, tuple);
-  (void)qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   mlsize_t length = 0;
-  for (struct qml_promise_hook_event *event = state->promise_hooks_head;
+  for (struct qmljs_promise_hook_event *event = state->promise_hooks_head;
        event != NULL; event = event->next) {
     length++;
   }
 
   result = caml_alloc(length, 0);
-  struct qml_promise_hook_event *event = state->promise_hooks_head;
+  struct qmljs_promise_hook_event *event = state->promise_hooks_head;
   state->promise_hooks_head = NULL;
   state->promise_hooks_tail = NULL;
   for (mlsize_t i = 0; i < length; i++) {
-    struct qml_promise_hook_event *next = event->next;
+    struct qmljs_promise_hook_event *next = event->next;
     tuple = caml_alloc_tuple(3);
     Store_field(tuple, 0, Val_int(event->kind));
     Store_field(tuple, 1, Val_int(event->state));
@@ -1071,9 +1071,9 @@ CAMLprim value qml_runtime_take_promise_hooks(value runtime)
   CAMLreturn(result);
 }
 
-void qml_module_loader_free(struct qml_runtime_state *state)
+void qmljs_module_loader_free(struct qmljs_runtime_state *state)
 {
-  struct qml_module_loader *loader = state->module_loader;
+  struct qmljs_module_loader *loader = state->module_loader;
   if (loader == NULL) {
     return;
   }
@@ -1085,16 +1085,16 @@ void qml_module_loader_free(struct qml_runtime_state *state)
   state->module_loader = NULL;
 }
 
-CAMLprim value qml_runtime_install_module_loader(value runtime, value deny,
+CAMLprim value qmljs_runtime_install_module_loader(value runtime, value deny,
                                                  value normalize, value load)
 {
   CAMLparam4(runtime, deny, normalize, load);
-  JSRuntime *rt = qml_runtime(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  qml_module_loader_free(state);
+  JSRuntime *rt = qmljs_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  qmljs_module_loader_free(state);
 
-  struct qml_module_loader *loader =
-    caml_stat_alloc(sizeof(struct qml_module_loader));
+  struct qmljs_module_loader *loader =
+    caml_stat_alloc(sizeof(struct qmljs_module_loader));
   loader->state = state;
   loader->deny = deny;
   loader->normalize = normalize;
@@ -1104,31 +1104,31 @@ CAMLprim value qml_runtime_install_module_loader(value runtime, value deny,
   caml_register_generational_global_root(&loader->normalize);
   caml_register_generational_global_root(&loader->load);
   state->module_loader = loader;
-  JS_SetModuleLoaderFunc2(rt, NULL, qml_load_module,
-                          qml_check_import_attributes, loader);
-  JS_SetModuleNormalizeFunc2(rt, qml_module_loader_normalize);
+  JS_SetModuleLoaderFunc2(rt, NULL, qmljs_load_module,
+                          qmljs_check_import_attributes, loader);
+  JS_SetModuleNormalizeFunc2(rt, qmljs_module_loader_normalize);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_drain_deferred(value runtime)
+CAMLprim value qmljs_runtime_drain_deferred(value runtime)
 {
   CAMLparam1(runtime);
-  qml_drain_deferred(Qml_runtime_val(runtime)->state);
+  qmljs_drain_deferred(Qml_runtime_val(runtime)->state);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_drain_deferred_runtimes(value unit)
+CAMLprim value qmljs_runtime_drain_deferred_runtimes(value unit)
 {
   CAMLparam1(unit);
-  qml_drain_deferred_runtimes();
+  qmljs_drain_deferred_runtimes();
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_close(value runtime)
+CAMLprim value qmljs_runtime_close(value runtime)
 {
   CAMLparam1(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  qml_ensure_owner(state);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  qmljs_ensure_owner(state);
   atomic_store_explicit(&state->closed_to_user, 1, memory_order_release);
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
       != 0 && state->rt != NULL) {
@@ -1137,88 +1137,88 @@ CAMLprim value qml_runtime_close(value runtime)
   }
   state->promise_rejection_tracking = 0;
   state->promise_hook_tracking = 0;
-  qml_promise_events_free(state);
-  qml_drain_deferred(state);
-  CAMLreturn(Val_bool(qml_runtime_free_native(state)));
+  qmljs_promise_events_free(state);
+  qmljs_drain_deferred(state);
+  CAMLreturn(Val_bool(qmljs_runtime_free_native(state)));
 }
 
-CAMLprim value qml_test_runtime_close(value runtime)
+CAMLprim value qmljs_test_runtime_close(value runtime)
 {
   CAMLparam1(runtime);
-  CAMLreturn(qml_runtime_close(Field(runtime, 0)));
+  CAMLreturn(qmljs_runtime_close(Field(runtime, 0)));
 }
 
-CAMLprim value qml_runtime_is_job_pending(value runtime)
+CAMLprim value qmljs_runtime_is_job_pending(value runtime)
 {
   CAMLparam1(runtime);
-  CAMLreturn(Val_bool(JS_IsJobPending(qml_runtime(runtime))));
+  CAMLreturn(Val_bool(JS_IsJobPending(qmljs_runtime(runtime))));
 }
 
-CAMLprim value qml_runtime_execute_pending_job(value runtime)
+CAMLprim value qmljs_runtime_execute_pending_job(value runtime)
 {
   CAMLparam1(runtime);
   JSContext *ctx = NULL;
-  JSRuntime *rt = qml_runtime(runtime);
+  JSRuntime *rt = qmljs_runtime(runtime);
   JS_UpdateStackTop(rt);
   int result = JS_ExecutePendingJob(rt, &ctx);
   if (result < 0) {
     if (ctx != NULL) {
-      qml_raise_exception(ctx);
+      qmljs_raise_exception(ctx);
     }
-    qml_raise_string("QuickJS job failed");
+    qmljs_raise_string("QuickJS job failed");
   }
   CAMLreturn(Val_bool(result > 0));
 }
 
-CAMLprim value qml_runtime_request_interrupt(value runtime)
+CAMLprim value qmljs_runtime_request_interrupt(value runtime)
 {
   atomic_store_explicit(&Qml_runtime_val(runtime)->state->interrupt_requested, 1,
                         memory_order_relaxed);
   return Val_unit;
 }
 
-CAMLprim value qml_runtime_set_interrupt_timeout(value runtime, value seconds)
+CAMLprim value qmljs_runtime_set_interrupt_timeout(value runtime, value seconds)
 {
   CAMLparam2(runtime, seconds);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  (void)qml_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
   double timeout = Double_val(seconds);
   if (timeout < 0.0) {
-    qml_raise_string("timeout must be non-negative");
+    qmljs_raise_string("timeout must be non-negative");
   }
   long long delta = (long long)(timeout * 1000000000.0);
-  long long deadline = qml_monotonic_time_ns() + delta;
+  long long deadline = qmljs_monotonic_time_ns() + delta;
   atomic_store_explicit(&state->interrupt_deadline_ns, deadline,
                         memory_order_relaxed);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_clear_interrupt_timeout(value runtime)
+CAMLprim value qmljs_runtime_clear_interrupt_timeout(value runtime)
 {
   CAMLparam1(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  (void)qml_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
   atomic_store_explicit(&state->interrupt_deadline_ns, 0,
                         memory_order_relaxed);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_clear_interrupt(value runtime)
+CAMLprim value qmljs_runtime_clear_interrupt(value runtime)
 {
   CAMLparam1(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  (void)qml_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
   atomic_store_explicit(&state->interrupt_requested, 0, memory_order_relaxed);
   atomic_store_explicit(&state->interrupt_deadline_ns, 0,
                         memory_order_relaxed);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qml_runtime_interrupt_requested(value runtime)
+CAMLprim value qmljs_runtime_interrupt_requested(value runtime)
 {
   CAMLparam1(runtime);
-  struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
-  (void)qml_runtime(runtime);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
   CAMLreturn(Val_bool(
     atomic_load_explicit(&state->interrupt_requested, memory_order_relaxed)));
 }

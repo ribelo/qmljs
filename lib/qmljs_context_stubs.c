@@ -4,17 +4,17 @@
 
 #define QML_MODULE_EVAL_JOB_LIMIT 1000000
 
-CAMLprim value qml_context_create(value runtime)
+CAMLprim value qmljs_context_create(value runtime)
 {
   CAMLparam1(runtime);
-  JSContext *ctx = JS_NewContext(qml_runtime(runtime));
+  JSContext *ctx = JS_NewContext(qmljs_runtime(runtime));
   if (ctx == NULL) {
-    qml_raise_string("could not allocate QuickJS context");
+    qmljs_raise_string("could not allocate QuickJS context");
   }
-  CAMLreturn(qml_alloc_context(runtime, ctx));
+  CAMLreturn(qmljs_alloc_context(runtime, ctx));
 }
 
-static int qml_add_intrinsic(JSContext *ctx, int tag, const char **name)
+static int qmljs_add_intrinsic(JSContext *ctx, int tag, const char **name)
 {
   switch (tag) {
   case 0:
@@ -63,73 +63,73 @@ static int qml_add_intrinsic(JSContext *ctx, int tag, const char **name)
   }
 }
 
-static void qml_free_context_and_raise_intrinsic(JSContext *ctx,
+static void qmljs_free_context_and_raise_intrinsic(JSContext *ctx,
                                                  const char *name)
 {
   char message[128];
   snprintf(message, sizeof(message), "could not add QuickJS %s intrinsic", name);
   JS_FreeContext(ctx);
-  qml_raise_string(message);
+  qmljs_raise_string(message);
 }
 
-CAMLprim value qml_context_create_raw(value runtime, value intrinsics)
+CAMLprim value qmljs_context_create_raw(value runtime, value intrinsics)
 {
   CAMLparam2(runtime, intrinsics);
-  JSContext *ctx = JS_NewContextRaw(qml_runtime(runtime));
+  JSContext *ctx = JS_NewContextRaw(qmljs_runtime(runtime));
   if (ctx == NULL) {
-    qml_raise_string("could not allocate raw QuickJS context");
+    qmljs_raise_string("could not allocate raw QuickJS context");
   }
   if (JS_AddIntrinsicBaseObjects(ctx) < 0) {
-    qml_free_context_and_raise_intrinsic(ctx, "base objects");
+    qmljs_free_context_and_raise_intrinsic(ctx, "base objects");
   }
 
   mlsize_t length = Wosize_val(intrinsics);
   for (mlsize_t i = 0; i < length; i++) {
     const char *name = NULL;
-    int result = qml_add_intrinsic(ctx, Int_val(Field(intrinsics, i)), &name);
+    int result = qmljs_add_intrinsic(ctx, Int_val(Field(intrinsics, i)), &name);
     if (result < 0) {
-      qml_free_context_and_raise_intrinsic(ctx, name);
+      qmljs_free_context_and_raise_intrinsic(ctx, name);
     }
   }
 
-  CAMLreturn(qml_alloc_context(runtime, ctx));
+  CAMLreturn(qmljs_alloc_context(runtime, ctx));
 }
 
-CAMLprim value qml_context_close(value context)
+CAMLprim value qmljs_context_close(value context)
 {
   CAMLparam1(context);
-  CAMLreturn(Val_bool(qml_context_close_native(context)));
+  CAMLreturn(Val_bool(qmljs_context_close_native(context)));
 }
 
-CAMLprim value qml_test_context_close(value context)
+CAMLprim value qmljs_test_context_close(value context)
 {
   CAMLparam1(context);
-  CAMLreturn(qml_context_close(Field(context, 1)));
+  CAMLreturn(qmljs_context_close(Field(context, 1)));
 }
 
-CAMLprim value qml_context_eval(value context, value source, value filename, value flags)
+CAMLprim value qmljs_context_eval(value context, value source, value filename, value flags)
 {
   CAMLparam4(context, source, filename, flags);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
   JSValue result =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
             String_val(filename), Int_val(flags));
   if (JS_IsException(result)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  CAMLreturn(qml_alloc_value(context, result));
+  CAMLreturn(qmljs_alloc_value(context, result));
 }
 
-static void qml_raise_rejected_promise(JSContext *ctx, JSValue promise)
+static void qmljs_raise_rejected_promise(JSContext *ctx, JSValue promise)
 {
   JSValue reason = JS_PromiseResult(ctx, promise);
   JS_FreeValue(ctx, promise);
   (void)JS_Throw(ctx, reason);
-  qml_raise_exception(ctx);
+  qmljs_raise_exception(ctx);
 }
 
-static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
+static void qmljs_check_module_eval_result(JSContext *ctx, JSValue result)
 {
   if (!JS_IsPromise(result)) {
     return;
@@ -141,7 +141,7 @@ static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
          JS_IsJobPending(rt)) {
     if (jobs >= QML_MODULE_EVAL_JOB_LIMIT) {
       JS_FreeValue(ctx, result);
-      qml_raise_string("QuickJS promise job limit exceeded");
+      qmljs_raise_string("QuickJS promise job limit exceeded");
     }
     JSContext *job_ctx = NULL;
     JS_UpdateStackTop(rt);
@@ -149,9 +149,9 @@ static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
     if (job_result < 0) {
       JS_FreeValue(ctx, result);
       if (job_ctx != NULL) {
-        qml_raise_exception(job_ctx);
+        qmljs_raise_exception(job_ctx);
       }
-      qml_raise_string("QuickJS job failed");
+      qmljs_raise_string("QuickJS job failed");
     }
     if (job_result == 0) {
       break;
@@ -160,158 +160,158 @@ static void qml_check_module_eval_result(JSContext *ctx, JSValue result)
   }
 
   if (JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
-    qml_raise_rejected_promise(ctx, result);
+    qmljs_raise_rejected_promise(ctx, result);
   }
 }
 
-CAMLprim value qml_context_eval_module(value context, value source, value filename)
+CAMLprim value qmljs_context_eval_module(value context, value source, value filename)
 {
   CAMLparam3(context, source, filename);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
 
   JSValue compiled =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
             String_val(filename),
             JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
   if (JS_IsException(compiled)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
   JSModuleDef *module = JS_VALUE_GET_PTR(compiled);
   JSValue eval_result = JS_EvalFunction(ctx, compiled);
   if (JS_IsException(eval_result)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  qml_check_module_eval_result(ctx, eval_result);
+  qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
   if (JS_IsException(namespace)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
   JSValue default_export = JS_GetPropertyStr(ctx, namespace, "default");
   JS_FreeValue(ctx, namespace);
   if (JS_IsException(default_export)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
-  CAMLreturn(qml_alloc_value(context, default_export));
+  CAMLreturn(qmljs_alloc_value(context, default_export));
 }
 
-CAMLprim value qml_context_eval_module_namespace(value context, value source,
+CAMLprim value qmljs_context_eval_module_namespace(value context, value source,
                                                  value filename)
 {
   CAMLparam3(context, source, filename);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
 
   JSValue compiled =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
             String_val(filename),
             JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
   if (JS_IsException(compiled)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
   JSModuleDef *module = JS_VALUE_GET_PTR(compiled);
   JSValue eval_result = JS_EvalFunction(ctx, compiled);
   if (JS_IsException(eval_result)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  qml_check_module_eval_result(ctx, eval_result);
+  qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
   if (JS_IsException(namespace)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
-  CAMLreturn(qml_alloc_value(context, namespace));
+  CAMLreturn(qmljs_alloc_value(context, namespace));
 }
 
-CAMLprim value qml_context_eval_module_with_meta(value context, value source,
+CAMLprim value qmljs_context_eval_module_with_meta(value context, value source,
                                                  value filename)
 {
   CAMLparam3(context, source, filename);
   CAMLlocal3(result, wrapped_namespace, wrapped_meta);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
 
   JSValue compiled =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
             String_val(filename),
             JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
   if (JS_IsException(compiled)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
   JSModuleDef *module = JS_VALUE_GET_PTR(compiled);
   JSValue eval_result = JS_EvalFunction(ctx, compiled);
   if (JS_IsException(eval_result)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  qml_check_module_eval_result(ctx, eval_result);
+  qmljs_check_module_eval_result(ctx, eval_result);
   JS_FreeValue(ctx, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
   if (JS_IsException(namespace)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
   JSValue import_meta = JS_GetImportMeta(ctx, module);
   if (JS_IsException(import_meta)) {
     JS_FreeValue(ctx, namespace);
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
 
-  wrapped_namespace = qml_alloc_value(context, namespace);
-  wrapped_meta = qml_alloc_value(context, import_meta);
+  wrapped_namespace = qmljs_alloc_value(context, namespace);
+  wrapped_meta = qmljs_alloc_value(context, import_meta);
   result = caml_alloc_tuple(2);
   Store_field(result, 0, wrapped_namespace);
   Store_field(result, 1, wrapped_meta);
   CAMLreturn(result);
 }
 
-CAMLprim value qml_module_dynamic_import(value context, value base,
+CAMLprim value qmljs_module_dynamic_import(value context, value base,
                                          value specifier)
 {
   CAMLparam3(context, base, specifier);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
   JSValue promise = JS_LoadModule(ctx, String_val(base), String_val(specifier));
   if (JS_IsException(promise)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  CAMLreturn(qml_alloc_value(context, promise));
+  CAMLreturn(qmljs_alloc_value(context, promise));
 }
 
-CAMLprim value qml_context_global(value context)
+CAMLprim value qmljs_context_global(value context)
 {
   CAMLparam1(context);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
   JSValue global = JS_GetGlobalObject(ctx);
   if (JS_IsException(global)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  CAMLreturn(qml_alloc_value(context, global));
+  CAMLreturn(qmljs_alloc_value(context, global));
 }
 
-CAMLprim value qml_context_set_global(value context, value name, value wrapped)
+CAMLprim value qmljs_context_set_global(value context, value name, value wrapped)
 {
   CAMLparam3(context, name, wrapped);
-  JSContext *ctx = qml_context(context);
-  qml_update_stack_top(ctx);
-  qml_ensure_same_context(context, wrapped);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
+  qmljs_ensure_same_context(context, wrapped);
   JSValue global = JS_GetGlobalObject(ctx);
   if (JS_IsException(global)) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
-  JSValue property_value = JS_DupValue(ctx, qml_js_value(wrapped));
-  int result = qml_set_property_ocaml_string(ctx, global, name, property_value);
+  JSValue property_value = JS_DupValue(ctx, qmljs_js_value(wrapped));
+  int result = qmljs_set_property_ocaml_string(ctx, global, name, property_value);
   JS_FreeValue(ctx, global);
   if (result < 0) {
-    qml_raise_exception(ctx);
+    qmljs_raise_exception(ctx);
   }
   CAMLreturn(Val_unit);
 }

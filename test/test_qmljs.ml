@@ -16,7 +16,7 @@ let check_bool label expected actual =
   if actual <> expected then
     fail (Printf.sprintf "%s: expected %b, got %b" label expected actual)
 
-let expect_qml_error label fn =
+let expect_qmljs_error label fn =
   match fn () with
   | _ -> fail (label ^ ": expected Qmljs.Error")
   | exception Qmljs.Error _ -> ()
@@ -90,12 +90,12 @@ let test_closed_handles_raise () =
    promise_ref := Some (Qmljs.Context.eval context "Promise.resolve(1)"));
   let runtime = Option.get !runtime_ref in
   let promise = Option.get !promise_ref in
-  expect_qml_error "closed runtime job check" (fun () ->
+  expect_qmljs_error "closed runtime job check" (fun () ->
       Qmljs.Runtime.is_job_pending runtime);
-  expect_qml_error "closed runtime interrupt check" (fun () ->
+  expect_qmljs_error "closed runtime interrupt check" (fun () ->
       Qmljs.Runtime.interrupt_requested runtime);
-  expect_qml_error "closed promise is check" (fun () -> Qmljs.Promise.is promise);
-  expect_qml_error "closed promise state check" (fun () ->
+  expect_qmljs_error "closed promise is check" (fun () -> Qmljs.Promise.is promise);
+  expect_qmljs_error "closed promise state check" (fun () ->
       Qmljs.Promise.state promise)
 
 let test_context_scope_closes_escaped_values () =
@@ -104,7 +104,7 @@ let test_context_scope_closes_escaped_values () =
   (Qmljs.Context.with_ runtime @@ fun context ->
    escaped := Some (Qmljs.Context.eval context "21 * 2"));
   let value = Option.get !escaped in
-  expect_qml_error "escaped value is closed" (fun () ->
+  expect_qmljs_error "escaped value is closed" (fun () ->
       Qmljs.Value.to_int value);
   Qmljs.Context.with_ runtime @@ fun context ->
   let value = Qmljs.Context.eval context "40 + 2" in

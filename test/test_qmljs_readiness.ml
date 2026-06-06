@@ -24,7 +24,7 @@ let expect_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected error")
   | Error error -> assert_error error
 
-external test_runtime_close : Qmljs.Runtime.t -> bool = "qml_test_runtime_close"
+external test_runtime_close : Qmljs.Runtime.t -> bool = "qmljs_test_runtime_close"
 
 let test_lifetime_gc_stress_has_no_quickjs_leaks () =
   let before = Qmljs.Diagnostics.snapshot () in

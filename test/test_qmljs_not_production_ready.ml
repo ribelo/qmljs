@@ -21,14 +21,14 @@ let expect_structured_error label fn assert_error =
   | Error error -> assert_error error
 
 external test_reject_arg_count : nativeint -> unit
-  = "qml_test_reject_arg_count"
+  = "qmljs_test_reject_arg_count"
 
-external test_context_close : Qmljs.Context.t -> bool = "qml_test_context_close"
+external test_context_close : Qmljs.Context.t -> bool = "qmljs_test_context_close"
 
-external test_runtime_close : Qmljs.Runtime.t -> bool = "qml_test_runtime_close"
+external test_runtime_close : Qmljs.Runtime.t -> bool = "qmljs_test_runtime_close"
 
 external test_internal_runtime_close : Qmljs__Qmljs_types.runtime -> bool
-  = "qml_test_runtime_close"
+  = "qmljs_test_runtime_close"
 
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
