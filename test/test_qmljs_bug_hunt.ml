@@ -285,6 +285,26 @@ let test_mutual_recursion_stack_overflow () =
       check_bool "mutual recursion classified as stack overflow" true
         (Qmljs.Error.is_stack_overflow error)
 
+(* BUG 11 — as_int silently wraps out-of-range BigInts to a bogus value.
+
+   The fix that let [as_int] accept the [Bigint] kind routes it through [to_int],
+   whose C stub uses JS_ToInt64Ext — that reduces a BigInt modulo 2^64 *before*
+   the OCaml-int range check. So 2n**64n reduces to exactly 0 and passes the
+   check, and [as_int (2n**64n)] returns [Ok 0] instead of failing. (2n**63n,
+   which reduces to int64 min, *is* rejected, so the behaviour is also
+   inconsistent.) A BigInt that does not fit in an OCaml int must fail loudly
+   per the No-Silent-Fallback contract, not silently decode to a wrong value. *)
+let test_as_int_rejects_out_of_range_bigint () =
+  with_context @@ fun _runtime context ->
+  let v = Qmljs.Context.eval context "2n ** 64n" in
+  match Qmljs.Value.as_int v with
+  | Error _ -> () (* good: out-of-range BigInt rejected loudly *)
+  | Ok i ->
+      fail
+        (Printf.sprintf
+           "as_int(2n**64n) silently returned %d for a value far outside the \
+            OCaml int range" i)
+
 let tests =
   [ "int_roundtrip_precision", test_int_roundtrip_precision
   ; "int_max_int_roundtrip", test_int_max_int_roundtrip
@@ -298,6 +318,7 @@ let tests =
   ; "as_float_accepts_int_encoded_value", test_as_float_accepts_int_encoded_value
   ; "int_value_arithmetic_in_js", test_int_value_arithmetic_in_js
   ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
+  ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ]
 
 let () =
