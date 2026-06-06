@@ -119,7 +119,7 @@ static JSAtom qmljs_atom_for_context(value context, value atom)
 static int qmljs_data_property_flags(value input_flags)
 {
   int options = Int_val(input_flags);
-  int flags = JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE |
+  int flags = JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE | JS_PROP_THROW |
               JS_PROP_HAS_ENUMERABLE | JS_PROP_HAS_CONFIGURABLE;
   if ((options & 1) != 0) {
     flags |= JS_PROP_WRITABLE;
@@ -136,7 +136,7 @@ static int qmljs_data_property_flags(value input_flags)
 static int qmljs_accessor_property_flags(value input_flags)
 {
   int options = Int_val(input_flags);
-  int flags = JS_PROP_HAS_GET | JS_PROP_HAS_SET |
+  int flags = JS_PROP_HAS_GET | JS_PROP_HAS_SET | JS_PROP_THROW |
               JS_PROP_HAS_ENUMERABLE | JS_PROP_HAS_CONFIGURABLE;
   if ((options & 1) != 0) {
     flags |= JS_PROP_ENUMERABLE;
