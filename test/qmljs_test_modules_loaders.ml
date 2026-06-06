@@ -265,6 +265,48 @@ let test_loader_request_base_and_original_specifier_do_not_go_stale () =
   check_int "context reusable after loader request identity conflicts" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
 
+let test_module_normalize_rejects_nul_normalized_specifier () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let load_requests = ref [] in
+  let loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier:_ ~attributes:_ -> Ok "safe\000evil")
+      ~load:(fun request ->
+        load_requests := request :: !load_requests;
+        Ok (Some "export default 1;"))
+  in
+  Qmljs.Runtime.set_module_loader runtime loader;
+  expect_structured_error "NUL normalized module specifier"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"nul-normalize-main.js" context
+           {|import value from "entry"; export default value;|}
+         : Qmljs.Module.namespace))
+    (fun error ->
+      check_bool "NUL normalized specifier is policy violation" true
+        (Qmljs.Error.is_policy_violation error);
+      check_string "NUL normalized specifier denied import" "entry"
+        (Qmljs.Error.denied_module_specifier_exn error));
+  check_bool "NUL normalized specifier is not loaded" true
+    (List.is_empty !load_requests);
+  let expect_nul_dynamic_import label expected ?base specifier =
+    expect_structured_error label
+      (fun () ->
+        ignore (Qmljs.Module.dynamic_import ?base context specifier : Qmljs.Value.t))
+      (fun error ->
+        check_bool (label ^ " is policy violation") true
+          (Qmljs.Error.is_policy_violation error);
+        check_string (label ^ " denied specifier") expected
+          (Qmljs.Error.denied_module_specifier_exn error))
+  in
+  expect_nul_dynamic_import "dynamic import NUL specifier"
+    "safe\000evil" "safe\000evil";
+  expect_nul_dynamic_import "dynamic import NUL base"
+    "base\000evil" ~base:"base\000evil" "./child.js";
+  check_int "context reusable after NUL module specifiers" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
 let test_json_import_attribute_does_not_execute_js_source () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -507,6 +549,8 @@ let tests =
   , test_loader_request_attributes_are_per_import_not_stale
   ; "loader request base and original specifier do not go stale"
   , test_loader_request_base_and_original_specifier_do_not_go_stale
+  ; "module normalize rejects NUL normalized specifier"
+  , test_module_normalize_rejects_nul_normalized_specifier
   ; "json import attribute does not execute JS source"
   , test_json_import_attribute_does_not_execute_js_source
   ; "filesystem loader does not scan root without imports"

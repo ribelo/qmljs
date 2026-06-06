@@ -149,6 +149,8 @@ Keep these loader gaps:
   of letting load observe stale request metadata.
 - [x] Loader normalize, load, and deny callback failures preserve structured
   metadata, cause chains, and OCaml frame data.
+- [x] Module loader normalized names and dynamic-import base/specifier strings
+  reject NUL before crossing QuickJS C-string boundaries.
 
 Do not keep rquickjs tuple composition, PHF bundle loaders, compile-time bundle
 macros, or native dynamic-library loading as qmljs gaps.

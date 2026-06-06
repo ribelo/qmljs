@@ -142,7 +142,9 @@ module Loader = struct
                  with
                  | Error _ as error -> error
                  | Ok normalized ->
-                     if loader.Qmljs_types.deny normalized then
+                     if String.contains normalized '\000' then
+                       Error (Qmljs_error.Structured.of_policy request.specifier)
+                     else if loader.Qmljs_types.deny normalized then
                        Error (Qmljs_error.Structured.of_policy normalized)
                      else
                        let request = { request with normalized } in
@@ -211,6 +213,10 @@ module Native = struct
       (Qmljs_types.value_raw value)
 end
 
+let reject_nul_module_specifier specifier =
+  if String.contains specifier '\000' then
+    Qmljs_error.raise_policy_violation specifier
+
 let declare_native context ~name (native : Native.t) =
   if String.contains name '\000' then
     invalid_arg "native module name cannot contain NUL";
@@ -232,6 +238,8 @@ let drain_module_jobs_if_pending context pending =
     ignore (Qmljs_async.drain_jobs (Qmljs_types.context_runtime context) : int)
 
 let dynamic_import ?(base = "<dynamic-import>") context specifier =
+  reject_nul_module_specifier base;
+  reject_nul_module_specifier specifier;
   { Qmljs_types.context
   ; raw =
       Qmljs_raw.module_dynamic_import
@@ -241,6 +249,7 @@ let dynamic_import ?(base = "<dynamic-import>") context specifier =
   }
 
 let eval_with_meta ?(filename = "<module>") context source =
+  reject_nul_module_specifier filename;
   let namespace, import_meta, pending =
     Qmljs_raw.context_eval_module_with_meta
       (Qmljs_types.context_raw context)
@@ -253,6 +262,7 @@ let eval_with_meta ?(filename = "<module>") context source =
   }
 
 let eval ?(filename = "<module>") context source =
+  reject_nul_module_specifier filename;
   let raw, pending =
     Qmljs_raw.context_eval_module_namespace
       (Qmljs_types.context_raw context)

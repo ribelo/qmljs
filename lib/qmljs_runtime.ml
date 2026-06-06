@@ -466,6 +466,11 @@ let set_module_loader t loader =
                (marker ~ocaml_frame:"module_loader.normalize"
                   (Qmljs_error.Structured.of_policy specifier)
                   specifier)
+         | _ when String.contains normalized '\000' ->
+             Error
+               (marker ~ocaml_frame:"module_loader.normalize"
+                  (Qmljs_error.Structured.of_policy specifier)
+                  specifier)
          | _ ->
              Hashtbl.replace loader.Qmljs_types.requests normalized request;
              Ok normalized)
