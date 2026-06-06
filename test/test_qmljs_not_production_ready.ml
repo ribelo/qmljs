@@ -25,6 +25,11 @@ external test_reject_arg_count : nativeint -> unit
 
 external test_context_close : Qmljs.Context.t -> bool = "qml_test_context_close"
 
+external test_runtime_close : Qmljs.Runtime.t -> bool = "qml_test_runtime_close"
+
+external test_internal_runtime_close : Qmljs__Qmljs_types.runtime -> bool
+  = "qml_test_runtime_close"
+
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
     raise (Qmljs.Error.host ~message ~metadata))
@@ -144,6 +149,21 @@ let test_timeout_preserves_original_structured_stack () =
     (Qmljs.Runtime.interrupt_requested runtime);
   check_int "runtime reusable after preserved timeout" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
+let test_eval_with_timeout_closed_runtime_masks_error () =
+  let runtime = Qmljs__Qmljs_runtime.create () in
+  expect_structured_error "closed runtime timeout cleanup preserves body error"
+    (fun () ->
+      Qmljs__Qmljs_context.with_interrupt_timeout ~timeout:1.0 runtime
+        (fun () ->
+          ignore (test_internal_runtime_close runtime : bool);
+          raise
+            (Qmljs.Error.host ~message:"closed runtime body error" ~metadata:[])))
+    (fun error ->
+      check_kind "closed runtime timeout cleanup kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "closed runtime timeout cleanup message"
+        "closed runtime body error" (Qmljs.Error.message error))
 
 let test_bigint_of_string_does_not_execute_code () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -679,6 +699,8 @@ let tests env =
   , test_eval_with_timeout_does_not_drain_microtasks_on_success
   ; "timeout preserves original structured stack"
   , test_timeout_preserves_original_structured_stack
+  ; "eval_with_timeout closed runtime masks error"
+  , test_eval_with_timeout_closed_runtime_masks_error
   ; "Bigint.of_string does not execute code"
   , test_bigint_of_string_does_not_execute_code
   ; "Json.stringify undefined is error not string"

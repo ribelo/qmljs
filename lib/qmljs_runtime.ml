@@ -238,13 +238,16 @@ let drain_jobs t =
    drains even when individual jobs fail (e.g. at the memory ceiling), letting
    the runtime free memory and recover. *)
 let reclaim_pending_jobs ?(limit = 1_000_000) t =
-  let rec loop n =
-    if n < limit && is_job_pending t then begin
-      (try ignore (execute_pending_job t : bool) with _ -> ());
-      loop (n + 1)
-    end
-  in
-  loop 0
+  try
+    let rec loop n =
+      if n < limit && is_job_pending t then begin
+        (try ignore (execute_pending_job t : bool) with _ -> ());
+        loop (n + 1)
+      end
+    in
+    loop 0
+  with
+  | _ -> ()
 
 let attach_driver t driver =
   match t.Qmljs_types.driver with

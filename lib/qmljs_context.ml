@@ -100,6 +100,10 @@ let with_interrupt_timeout ~timeout runtime f =
       (Qmljs_types.runtime_raw runtime);
     Qmljs_runtime.clear_interrupt runtime
   in
+  let cleanup_noerr cleanup =
+    try cleanup () with
+    | _ -> ()
+  in
   match f () with
   | result ->
       let interrupted = Qmljs_runtime.interrupt_requested runtime in
@@ -111,11 +115,15 @@ let with_interrupt_timeout ~timeout runtime f =
       result
   | exception exn ->
       let backtrace = Printexc.get_raw_backtrace () in
-      let interrupted = Qmljs_runtime.interrupt_requested runtime in
-      clear_timeout_state ();
+      let interrupted =
+        match Qmljs_runtime.interrupt_requested runtime with
+        | interrupted -> interrupted
+        | exception _ -> false
+      in
+      cleanup_noerr clear_timeout_state;
       (* Reclaim any promise jobs a hostile script queued so the runtime can
          recover memory after an interrupt or out-of-memory failure. *)
-      Qmljs_runtime.reclaim_pending_jobs runtime;
+      cleanup_noerr (fun () -> Qmljs_runtime.reclaim_pending_jobs runtime);
       if interrupted then begin
         let cause = Qmljs_error.Structured.of_exception exn in
         Qmljs_error.Structured.raise

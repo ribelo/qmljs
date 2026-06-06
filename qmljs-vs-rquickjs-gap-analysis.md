@@ -341,6 +341,8 @@ Keep these context gaps:
   microtasks before an explicit driver/drain call.
 - [x] Timeout-wrapped eval preserves the original structured error as a cause
   when an interrupt flag and JS exception are both present.
+- [x] Timeout cleanup and pending-job reclamation are best-effort and do not mask
+  the original body error when the runtime is already closed.
 - [x] User JavaScript error messages are not reclassified as resource or timeout
   failures by string matching.
 - [x] Throwing error-property getters do not poison the context while qmljs
