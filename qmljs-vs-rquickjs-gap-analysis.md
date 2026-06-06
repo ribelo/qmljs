@@ -82,8 +82,9 @@ Keep this as a focused qmljs gap:
   executable JavaScript source.
 - [x] Json.stringify rejects JavaScript undefined results instead of returning
   non-JSON text.
-- [x] Public OCaml string keys and global symbol descriptions preserve embedded
-  NUL bytes instead of silently truncating through C-string APIs.
+- [x] Public OCaml string keys, object-key readback, and global symbol
+  descriptions preserve embedded NUL bytes instead of silently truncating
+  through C-string APIs.
 - [x] Round-trip tests that match JavaScript semantics for null, undefined, arrays,
   objects, BigInt, typed arrays, and exceptions.
 

@@ -591,12 +591,15 @@ CAMLprim value qmljs_object_keys(value context, value object)
     Store_field(result, i, Val_unit);
   }
   for (uint32_t i = 0; i < length; i++) {
-    const char *name = JS_AtomToCString(ctx, properties[i].atom);
+    size_t name_length = 0;
+    const char *name =
+      JS_AtomToCStringLen(ctx, &name_length, properties[i].atom);
     if (name == NULL) {
       JS_FreePropertyEnum(ctx, properties, length);
       qmljs_raise_exception(ctx);
     }
-    string = caml_copy_string(name);
+    string = caml_alloc_string(name_length);
+    memcpy(Bytes_val(string), name, name_length);
     JS_FreeCString(ctx, name);
     Store_field(result, i, string);
   }

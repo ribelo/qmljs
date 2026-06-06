@@ -325,6 +325,17 @@ let test_nul_in_public_string_keys_is_not_silently_truncated () =
     (Qmljs.Value.to_int
        (Qmljs.Context.eval context "Symbol.keyFor(globalThis.nulSymbol).charCodeAt(1)"))
 
+let test_object_keys_preserves_nul_in_property_names () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let key = "a\000b" in
+  let object_ = Qmljs.Object.create context in
+  Qmljs.Object.set_string object_ key (Qmljs.Value.int context 42);
+  let keys = Qmljs.Object.keys object_ in
+  check_bool "Object.keys includes full NUL key" true (List.mem key keys);
+  check_bool "Object.keys does not return truncated NUL key" false
+    (List.mem "a" keys)
+
 let test_user_error_message_interrupted_is_javascript_error () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -875,6 +886,8 @@ let tests env =
   , test_json_stringify_undefined_is_error_not_string
   ; "NUL in public string keys is not silently truncated"
   , test_nul_in_public_string_keys_is_not_silently_truncated
+  ; "Object.keys preserves NUL in property names"
+  , test_object_keys_preserves_nul_in_property_names
   ; "user error message interrupted is JavaScript error"
   , test_user_error_message_interrupted_is_javascript_error
   ; "user InternalError interrupted is JavaScript error"
