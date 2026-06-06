@@ -51,6 +51,8 @@ Keep this as an OCaml API gap:
   instanceof.
 - [x] Support custom finalization through the runtime's deferred owner-domain
   release path.
+- [x] Runtime close enforces owner-domain access before touching QuickJS runtime
+  state or promise hooks.
 
 Do not port rquickjs's Rust machinery directly. JsClass, Trace, JsCell, borrow
 markers, Readable/Writable, lifetime derives, and class proc macros are

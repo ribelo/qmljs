@@ -1128,6 +1128,7 @@ CAMLprim value qml_runtime_close(value runtime)
 {
   CAMLparam1(runtime);
   struct qml_runtime_state *state = Qml_runtime_val(runtime)->state;
+  qml_ensure_owner(state);
   atomic_store_explicit(&state->closed_to_user, 1, memory_order_release);
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
       != 0 && state->rt != NULL) {
@@ -1139,6 +1140,12 @@ CAMLprim value qml_runtime_close(value runtime)
   qml_promise_events_free(state);
   qml_drain_deferred(state);
   CAMLreturn(Val_bool(qml_runtime_free_native(state)));
+}
+
+CAMLprim value qml_test_runtime_close(value runtime)
+{
+  CAMLparam1(runtime);
+  CAMLreturn(qml_runtime_close(Field(runtime, 0)));
 }
 
 CAMLprim value qml_runtime_is_job_pending(value runtime)

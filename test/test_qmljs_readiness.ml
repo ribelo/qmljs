@@ -24,6 +24,8 @@ let expect_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected error")
   | Error error -> assert_error error
 
+external test_runtime_close : Qmljs.Runtime.t -> bool = "qml_test_runtime_close"
+
 let test_lifetime_gc_stress_has_no_quickjs_leaks () =
   let before = Qmljs.Diagnostics.snapshot () in
   for i = 1 to 10_000 do
@@ -174,6 +176,20 @@ let test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime (
     (Qmljs.Diagnostics.native_runtimes before)
     (Qmljs.Diagnostics.native_runtimes after);
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
+let test_cross_domain_runtime_close_rejected () =
+  let runtime = Qmljs.Runtime.create () in
+  let result =
+    Domain.spawn (fun () ->
+      Qmljs.Error.capture (fun () -> ignore (test_runtime_close runtime : bool)))
+    |> Domain.join
+  in
+  (match result with
+   | Ok () -> fail "cross-domain runtime close: expected Wrong_domain"
+   | Error error ->
+       check_bool "cross-domain runtime close kind" true
+         (Qmljs.Error.kind error = Qmljs.Error.Wrong_domain));
+  ignore (test_runtime_close runtime : bool)
 
 let test_wrong_context_call_arguments_do_not_leak_native_argv () =
   let before = Qmljs.Diagnostics.snapshot () in
@@ -383,6 +399,7 @@ let () =
   test_rejected_module_eval_leaks ();
   test_rejected_module_eval_frees_eval_result ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
+  test_cross_domain_runtime_close_rejected ();
   test_wrong_context_call_arguments_do_not_leak_native_argv ();
   test_array_of_values_wrong_context_does_not_leak_partial_array ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
