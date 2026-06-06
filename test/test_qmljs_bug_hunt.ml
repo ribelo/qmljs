@@ -263,6 +263,28 @@ let test_int_value_arithmetic_in_js () =
            fail "x + 1 produced a BigInt; Value.int should yield a JS number"
        | _ -> ())
 
+(* BUG 10 — the stack-overflow fix misclassifies overflows by stack shape.
+
+   The "classify real stack overflows" fix detects an overflow by scanning the
+   stack trace for a frame repeated >= 4 times *consecutively*. A genuine engine
+   stack overflow is identified by QuickJS's RangeError "Maximum call stack size
+   exceeded" — the recursion shape is irrelevant. Mutual recursion produces an
+   alternating trace (a, b, a, b, ...), whose longest consecutive run is 1, so it
+   is left classified as a plain [JavaScript] error even though it is the same
+   overflow that direct recursion (which IS classified) produces. Both forms
+   must classify as [Stack_overflow]. *)
+let test_mutual_recursion_stack_overflow () =
+  with_context @@ fun _runtime context ->
+  match
+    Qmljs.Error.capture (fun () ->
+        Qmljs.Context.eval context
+          "function a(){ return b() + 1; } function b(){ return a() + 1; } a();")
+  with
+  | Ok _ -> fail "expected a stack overflow error"
+  | Error error ->
+      check_bool "mutual recursion classified as stack overflow" true
+        (Qmljs.Error.is_stack_overflow error)
+
 let tests =
   [ "int_roundtrip_precision", test_int_roundtrip_precision
   ; "int_max_int_roundtrip", test_int_max_int_roundtrip
@@ -275,6 +297,7 @@ let tests =
   ; "int_to_float_is_total", test_int_to_float_is_total
   ; "as_float_accepts_int_encoded_value", test_as_float_accepts_int_encoded_value
   ; "int_value_arithmetic_in_js", test_int_value_arithmetic_in_js
+  ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
   ]
 
 let () =
