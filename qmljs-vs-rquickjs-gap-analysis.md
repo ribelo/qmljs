@@ -244,6 +244,8 @@ Keep these Eio-shaped gaps:
   them.
 - [x] Structured rejection for OCaml host defects.
 - [x] Structured rejection for Eio cancellation.
+- [x] Async host job settlement failures on closed contexts are swallowed instead
+  of crashing the driver.
 
 Do not keep AsyncRuntime, AsyncContext, Future, Promised<T>, MaybePromise<T>,
 generic scheduler, or Rust Waker plumbing as qmljs gaps.

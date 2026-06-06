@@ -101,6 +101,12 @@ CAMLprim value qml_context_close(value context)
   CAMLreturn(Val_bool(qml_context_close_native(context)));
 }
 
+CAMLprim value qml_test_context_close(value context)
+{
+  CAMLparam1(context);
+  CAMLreturn(qml_context_close(Field(context, 1)));
+}
+
 CAMLprim value qml_context_eval(value context, value source, value filename, value flags)
 {
   CAMLparam4(context, source, filename, flags);

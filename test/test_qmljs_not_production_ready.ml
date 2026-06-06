@@ -23,6 +23,8 @@ let expect_structured_error label fn assert_error =
 external test_reject_arg_count : nativeint -> unit
   = "qml_test_reject_arg_count"
 
+external test_context_close : Qmljs.Context.t -> bool = "qml_test_context_close"
+
 let host_error ~message ~metadata =
   match Qmljs.Error.capture (fun () ->
     raise (Qmljs.Error.host ~message ~metadata))
@@ -649,6 +651,23 @@ let test_eio_queued_host_jobs_are_scoped env =
              (Qmljs.Error.kind error)));
   check_bool "stale queued host job did not run" false !stale_ran
 
+let test_async_host_callback_closed_context_crash env =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver runtime context ->
+      let result = Qmljs.Value.int context 1 in
+      Qmljs.Function.set_global_async context ~name:"closed_context_async"
+        ~arity:0
+        (fun _args ->
+          Eio.Fiber.yield ();
+          result);
+      ignore (Qmljs.Context.eval context "closed_context_async()" : Qmljs.Value.t);
+      ignore (test_context_close context : bool);
+      ignore (Qmljs.Eio.drain_until_idle driver : int);
+      let fresh = Qmljs.Context.create runtime in
+      check_int "runtime reusable after closed async context" 2
+        (Qmljs.Value.to_int (Qmljs.Context.eval fresh "1 + 1")))
+
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
@@ -696,6 +715,8 @@ let tests env =
   ; "Eio promise helper API", (fun () -> test_eio_promise_helper_api env)
   ; "Eio queued host jobs are scoped"
   , (fun () -> test_eio_queued_host_jobs_are_scoped env)
+  ; "async host callback closed context crash"
+  , (fun () -> test_async_host_callback_closed_context_crash env)
   ]
 
 let () =
