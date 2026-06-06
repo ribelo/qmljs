@@ -199,6 +199,72 @@ let test_loader_request_attributes_are_per_import_not_stale () =
   check_int "context reusable after loader request conflict" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
 
+let test_loader_request_base_and_original_specifier_do_not_go_stale () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let original_loads = ref [] in
+  let original_loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier ~attributes ->
+        check_bool "original request attributes are empty" true
+          (List.is_empty attributes);
+        if String.equal specifier "alias-a"
+           || String.equal specifier "alias-b"
+        then Ok "shared-original"
+        else Ok specifier)
+      ~load:(fun request ->
+        original_loads := request :: !original_loads;
+        Ok (Some "export default 21;"))
+  in
+  Qmljs.Runtime.set_module_loader runtime original_loader;
+  expect_structured_error "loader request original specifier conflict"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"request-original-main.js" context
+           {|import a from "alias-a";
+             import b from "alias-b";
+             export default a + b;|}
+          : Qmljs.Module.namespace))
+    (fun error ->
+      check_bool "original specifier conflict is policy violation" true
+        (Qmljs.Error.is_policy_violation error);
+      check_string "original specifier conflict denied specifier" "alias-b"
+        (Qmljs.Error.denied_module_specifier_exn error));
+  check_bool "original specifier conflict did not reload shared module" true
+    (List.length !original_loads <= 1);
+  let base_loads = ref [] in
+  let base_loader =
+    Qmljs.Module.Loader.callback
+      ~normalize:(fun ~base:_ ~specifier ~attributes ->
+        check_bool "base request attributes are empty" true
+          (List.is_empty attributes);
+        if String.equal specifier "./alias" then Ok "shared-base"
+        else Ok specifier)
+      ~load:(fun request ->
+        base_loads := request :: !base_loads;
+        match request.Qmljs.Module.Loader.normalized with
+        | "left/main.js" | "right/main.js" ->
+            Ok (Some {|import value from "./alias"; export default value;|})
+        | "shared-base" -> Ok (Some "export default 7;")
+        | _ -> Ok None)
+  in
+  Qmljs.Runtime.set_module_loader runtime base_loader;
+  expect_structured_error "loader request base conflict"
+    (fun () ->
+      ignore
+        (Qmljs.Module.eval ~filename:"request-base-main.js" context
+           {|import left from "left/main.js";
+             import right from "right/main.js";
+             export default left + right;|}
+          : Qmljs.Module.namespace))
+    (fun error ->
+      check_bool "base conflict is policy violation" true
+        (Qmljs.Error.is_policy_violation error);
+      check_string "base conflict denied specifier" "./alias"
+        (Qmljs.Error.denied_module_specifier_exn error));
+  check_int "context reusable after loader request identity conflicts" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
 let test_json_import_attribute_does_not_execute_js_source () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -439,6 +505,8 @@ let tests =
   [ "native module API", test_native_module_api
   ; "loader request attributes are per import"
   , test_loader_request_attributes_are_per_import_not_stale
+  ; "loader request base and original specifier do not go stale"
+  , test_loader_request_base_and_original_specifier_do_not_go_stale
   ; "json import attribute does not execute JS source"
   , test_json_import_attribute_does_not_execute_js_source
   ; "filesystem loader does not scan root without imports"

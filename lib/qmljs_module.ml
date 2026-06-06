@@ -18,6 +18,7 @@ module Loader = struct
     let table = Hashtbl.create (List.length sources) in
     List.iter (fun (specifier, source) -> Hashtbl.replace table specifier source) sources;
     { Qmljs_types.requests = Hashtbl.create 16
+    ; request_identity = Qmljs_types.Normalized_request
     ; deny = (fun _ -> false)
     ; normalize = identity_normalize
     ; load = table_load table
@@ -101,6 +102,7 @@ module Loader = struct
 
   let filesystem ~root ~allow =
     { Qmljs_types.requests = Hashtbl.create 16
+    ; request_identity = Qmljs_types.Normalized_request
     ; deny = (fun specifier -> not (allow ~specifier))
     ; normalize = filesystem_normalize
     ; load = filesystem_load root
@@ -118,6 +120,7 @@ module Loader = struct
 
   let callback ~normalize ~load =
     { Qmljs_types.requests = Hashtbl.create 16
+    ; request_identity = Qmljs_types.Exact_request
     ; deny = (fun _ -> false)
     ; normalize
     ; load
@@ -151,6 +154,7 @@ module Loader = struct
           loop loaders
         in
         { Qmljs_types.requests = Hashtbl.create 16
+        ; request_identity = Qmljs_types.Exact_request
         ; deny = (fun _ -> false)
         ; normalize = filesystem_normalize
         ; load

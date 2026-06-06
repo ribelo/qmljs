@@ -1,5 +1,10 @@
+type module_request_identity =
+  | Normalized_request
+  | Exact_request
+
 type module_loader =
   { requests : (string, module_load_request) Hashtbl.t
+  ; request_identity : module_request_identity
   ; deny : string -> bool
   ; normalize :
       base:string option ->

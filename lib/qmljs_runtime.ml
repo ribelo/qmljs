@@ -403,6 +403,17 @@ let set_module_loader t loader =
       (List.sort compare left)
       (List.sort compare right)
   in
+  let same_request_identity left right =
+    Option.equal String.equal left.Qmljs_types.base right.Qmljs_types.base
+    && String.equal left.specifier right.specifier
+    && same_attributes left.attributes right.attributes
+  in
+  let same_cached_request left right =
+    match loader.Qmljs_types.request_identity with
+    | Qmljs_types.Normalized_request ->
+        same_attributes left.Qmljs_types.attributes right.Qmljs_types.attributes
+    | Qmljs_types.Exact_request -> same_request_identity left right
+  in
   let marker ~ocaml_frame error specifier =
     Qmljs_error.Structured.to_marker
       ~denied_specifier_default:specifier
@@ -426,7 +437,7 @@ let set_module_loader t loader =
           }
         in
         (match Hashtbl.find_opt loader.Qmljs_types.requests normalized with
-         | Some previous when not (same_attributes previous.attributes attributes) ->
+         | Some previous when not (same_cached_request previous request) ->
              Error
                (marker ~ocaml_frame:"module_loader.normalize"
                   (Qmljs_error.Structured.of_policy specifier)
