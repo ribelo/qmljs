@@ -244,6 +244,33 @@ static void qmljs_unlock_lists(struct qmljs_runtime_state *state)
   atomic_flag_clear_explicit(&state->list_lock, memory_order_release);
 }
 
+/* Deterministic close claims handle nodes while holding [list_lock]. Finalizers
+   that see an already-closed handle still wait here before freeing the node, so
+   close never uses memory that another domain can return to caml_stat_free. */
+static void qmljs_wait_lists_quiescent(struct qmljs_runtime_state *state)
+{
+  qmljs_lock_lists(state);
+  qmljs_unlock_lists(state);
+}
+
+static void qmljs_unlink_context_locked(struct qmljs_runtime_state *state,
+                                      struct qmljs_context_handle *handle)
+{
+  if (handle->linked) {
+    if (handle->prev != NULL) {
+      handle->prev->next = handle->next;
+    } else {
+      state->contexts = handle->next;
+    }
+    if (handle->next != NULL) {
+      handle->next->prev = handle->prev;
+    }
+    handle->prev = NULL;
+    handle->next = NULL;
+    handle->linked = 0;
+  }
+}
+
 static void qmljs_link_context(struct qmljs_runtime_state *state,
                              struct qmljs_context_handle *handle)
 {
@@ -262,11 +289,18 @@ static void qmljs_unlink_context(struct qmljs_runtime_state *state,
                                struct qmljs_context_handle *handle)
 {
   qmljs_lock_lists(state);
+  qmljs_unlink_context_locked(state, handle);
+  qmljs_unlock_lists(state);
+}
+
+static void qmljs_unlink_value_locked(struct qmljs_runtime_state *state,
+                                    struct qmljs_value_handle *handle)
+{
   if (handle->linked) {
     if (handle->prev != NULL) {
       handle->prev->next = handle->next;
     } else {
-      state->contexts = handle->next;
+      state->values = handle->next;
     }
     if (handle->next != NULL) {
       handle->next->prev = handle->prev;
@@ -275,7 +309,6 @@ static void qmljs_unlink_context(struct qmljs_runtime_state *state,
     handle->next = NULL;
     handle->linked = 0;
   }
-  qmljs_unlock_lists(state);
 }
 
 static void qmljs_link_value(struct qmljs_runtime_state *state,
@@ -296,11 +329,18 @@ static void qmljs_unlink_value(struct qmljs_runtime_state *state,
                              struct qmljs_value_handle *handle)
 {
   qmljs_lock_lists(state);
+  qmljs_unlink_value_locked(state, handle);
+  qmljs_unlock_lists(state);
+}
+
+static void qmljs_unlink_atom_locked(struct qmljs_runtime_state *state,
+                                   struct qmljs_atom_handle *handle)
+{
   if (handle->linked) {
     if (handle->prev != NULL) {
       handle->prev->next = handle->next;
     } else {
-      state->values = handle->next;
+      state->atoms = handle->next;
     }
     if (handle->next != NULL) {
       handle->next->prev = handle->prev;
@@ -309,7 +349,6 @@ static void qmljs_unlink_value(struct qmljs_runtime_state *state,
     handle->next = NULL;
     handle->linked = 0;
   }
-  qmljs_unlock_lists(state);
 }
 
 static void qmljs_link_atom(struct qmljs_runtime_state *state,
@@ -330,19 +369,7 @@ static void qmljs_unlink_atom(struct qmljs_runtime_state *state,
                             struct qmljs_atom_handle *handle)
 {
   qmljs_lock_lists(state);
-  if (handle->linked) {
-    if (handle->prev != NULL) {
-      handle->prev->next = handle->next;
-    } else {
-      state->atoms = handle->next;
-    }
-    if (handle->next != NULL) {
-      handle->next->prev = handle->prev;
-    }
-    handle->prev = NULL;
-    handle->next = NULL;
-    handle->linked = 0;
-  }
+  qmljs_unlink_atom_locked(state, handle);
   qmljs_unlock_lists(state);
 }
 
@@ -493,110 +520,175 @@ static void qmljs_defer_context(struct qmljs_runtime_state *state, JSContext *ct
     memory_order_acquire));
 }
 
-static void qmljs_release_value_for_scope(struct qmljs_value_handle *handle)
+static int qmljs_claim_value_for_scope_locked(
+  struct qmljs_runtime_state *state, struct qmljs_value_handle *handle,
+  JSValue *value)
 {
-  struct qmljs_runtime_state *state = handle->state;
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
-    return;
+    return 0;
   }
-  qmljs_unlink_value(state, handle);
-  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
-      != 0 && state->rt != NULL) {
-    JS_FreeValueRT(state->rt, handle->value);
-  }
+  qmljs_unlink_value_locked(state, handle);
+  *value = handle->value;
   handle->value = JS_UNDEFINED;
   atomic_fetch_sub_explicit(&state->live_values, 1, memory_order_relaxed);
+  return 1;
 }
 
-static void qmljs_release_atom_for_scope(struct qmljs_atom_handle *handle)
+static void qmljs_release_claimed_value(struct qmljs_runtime_state *state,
+                                      JSValue value)
 {
-  struct qmljs_runtime_state *state = handle->state;
-  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
-    return;
-  }
-  qmljs_unlink_atom(state, handle);
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
-      != 0 && state->rt != NULL) {
-    JS_FreeAtomRT(state->rt, handle->atom);
+        != 0 && state->rt != NULL) {
+    JS_FreeValueRT(state->rt, value);
   }
+}
+
+static int qmljs_claim_atom_for_scope_locked(
+  struct qmljs_runtime_state *state, struct qmljs_atom_handle *handle,
+  JSAtom *atom)
+{
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
+    return 0;
+  }
+  qmljs_unlink_atom_locked(state, handle);
+  *atom = handle->atom;
   handle->atom = JS_ATOM_NULL;
   atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
+  return 1;
+}
+
+static void qmljs_release_claimed_atom(struct qmljs_runtime_state *state,
+                                     JSAtom atom)
+{
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+        != 0 && state->rt != NULL) {
+    JS_FreeAtomRT(state->rt, atom);
+  }
+}
+
+static int qmljs_claim_context_for_scope_locked(
+  struct qmljs_runtime_state *state, struct qmljs_context_handle *handle,
+  JSContext **ctx)
+{
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
+    return 0;
+  }
+  qmljs_unlink_context_locked(state, handle);
+  *ctx = handle->ctx;
+  handle->ctx = NULL;
+  atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
+  return 1;
+}
+
+static void qmljs_release_claimed_context(struct qmljs_runtime_state *state,
+                                        JSContext *ctx)
+{
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+        != 0 && ctx != NULL) {
+    JS_FreeContext(ctx);
+  }
 }
 
 static void qmljs_release_context_for_scope(struct qmljs_context_handle *handle)
 {
   struct qmljs_runtime_state *state = handle->state;
-  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
-    return;
+  JSContext *ctx = NULL;
+  qmljs_lock_lists(state);
+  int claimed = qmljs_claim_context_for_scope_locked(state, handle, &ctx);
+  qmljs_unlock_lists(state);
+  if (claimed) {
+    qmljs_release_claimed_context(state, ctx);
   }
-  qmljs_unlink_context(state, handle);
-  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
-      != 0 && handle->ctx != NULL) {
-    JS_FreeContext(handle->ctx);
-  }
-  handle->ctx = NULL;
-  atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
 }
 
 static void qmljs_release_context_values_for_scope(
   struct qmljs_runtime_state *state, struct qmljs_context_handle *context)
 {
-  struct qmljs_value_handle *current;
+  int claimed;
   do {
-    current = NULL;
+    JSValue value = JS_UNDEFINED;
+    claimed = 0;
     qmljs_lock_lists(state);
-    for (struct qmljs_value_handle *value = state->values; value != NULL;
-         value = value->next) {
-      if (value->context == context &&
-          atomic_load_explicit(&value->live, memory_order_acquire) != 0) {
-        current = value;
+    for (struct qmljs_value_handle *handle = state->values; handle != NULL;
+         handle = handle->next) {
+      if (handle->context == context &&
+          atomic_load_explicit(&handle->live, memory_order_acquire) != 0 &&
+          qmljs_claim_value_for_scope_locked(state, handle, &value)) {
+        claimed = 1;
         break;
       }
     }
     qmljs_unlock_lists(state);
-    if (current != NULL) {
-      qmljs_release_value_for_scope(current);
+    if (claimed) {
+      qmljs_release_claimed_value(state, value);
     }
-  } while (current != NULL);
+  } while (claimed);
 }
 
 static void qmljs_release_all_values_for_scope(struct qmljs_runtime_state *state)
 {
-  struct qmljs_value_handle *current;
+  int claimed;
   do {
+    JSValue value = JS_UNDEFINED;
     qmljs_lock_lists(state);
-    current = state->values;
-    qmljs_unlock_lists(state);
-    if (current != NULL) {
-      qmljs_release_value_for_scope(current);
+    claimed = 0;
+    for (struct qmljs_value_handle *handle = state->values; handle != NULL;
+         handle = handle->next) {
+      if (atomic_load_explicit(&handle->live, memory_order_acquire) != 0 &&
+          qmljs_claim_value_for_scope_locked(state, handle, &value)) {
+        claimed = 1;
+        break;
+      }
     }
-  } while (current != NULL);
+    qmljs_unlock_lists(state);
+    if (claimed) {
+      qmljs_release_claimed_value(state, value);
+    }
+  } while (claimed);
 }
 
 static void qmljs_release_all_atoms_for_scope(struct qmljs_runtime_state *state)
 {
-  struct qmljs_atom_handle *current;
+  int claimed;
   do {
+    JSAtom atom = JS_ATOM_NULL;
     qmljs_lock_lists(state);
-    current = state->atoms;
-    qmljs_unlock_lists(state);
-    if (current != NULL) {
-      qmljs_release_atom_for_scope(current);
+    claimed = 0;
+    for (struct qmljs_atom_handle *handle = state->atoms; handle != NULL;
+         handle = handle->next) {
+      if (atomic_load_explicit(&handle->live, memory_order_acquire) != 0 &&
+          qmljs_claim_atom_for_scope_locked(state, handle, &atom)) {
+        claimed = 1;
+        break;
+      }
     }
-  } while (current != NULL);
+    qmljs_unlock_lists(state);
+    if (claimed) {
+      qmljs_release_claimed_atom(state, atom);
+    }
+  } while (claimed);
 }
 
 static void qmljs_release_all_contexts_for_scope(struct qmljs_runtime_state *state)
 {
-  struct qmljs_context_handle *current;
+  int claimed;
   do {
+    JSContext *ctx = NULL;
     qmljs_lock_lists(state);
-    current = state->contexts;
-    qmljs_unlock_lists(state);
-    if (current != NULL) {
-      qmljs_release_context_for_scope(current);
+    claimed = 0;
+    for (struct qmljs_context_handle *handle = state->contexts; handle != NULL;
+         handle = handle->next) {
+      if (atomic_load_explicit(&handle->live, memory_order_acquire) != 0 &&
+          qmljs_claim_context_for_scope_locked(state, handle, &ctx)) {
+        claimed = 1;
+        break;
+      }
     }
-  } while (current != NULL);
+    qmljs_unlock_lists(state);
+    if (claimed) {
+      qmljs_release_claimed_context(state, ctx);
+    }
+  } while (claimed);
 }
 
 void qmljs_drain_deferred(struct qmljs_runtime_state *state)
@@ -758,8 +850,9 @@ static void qmljs_context_finalize(value v)
     qmljs_defer_context(state, handle->ctx);
   }
   context->handle = NULL;
-  qmljs_state_unref(state);
+  qmljs_wait_lists_quiescent(state);
   caml_stat_free(handle);
+  qmljs_state_unref(state);
 }
 
 static void qmljs_value_finalize(value v)
@@ -776,8 +869,9 @@ static void qmljs_value_finalize(value v)
     qmljs_defer_value(state, handle->value);
   }
   wrapped->handle = NULL;
-  qmljs_state_unref(state);
+  qmljs_wait_lists_quiescent(state);
   caml_stat_free(handle);
+  qmljs_state_unref(state);
 }
 
 static void qmljs_atom_finalize(value v)
@@ -793,8 +887,9 @@ static void qmljs_atom_finalize(value v)
     qmljs_defer_atom(state, handle->atom);
   }
   wrapped->handle = NULL;
-  qmljs_state_unref(state);
+  qmljs_wait_lists_quiescent(state);
   caml_stat_free(handle);
+  qmljs_state_unref(state);
 }
 
 static struct custom_operations qmljs_runtime_ops = {

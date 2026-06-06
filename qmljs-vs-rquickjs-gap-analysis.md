@@ -337,6 +337,9 @@ Keep these runtime gaps:
   structured errors without violating the driver model.
 - [x] Runtime.with_ and Context.with_ report cleanup failures, and preserve body
   failures with cleanup failures attached as suppressed structured data.
+- [x] Runtime and context close claim intrusive handle-list nodes under the list
+  lock and release only copied native resources, so GC finalizers cannot free a
+  selected handle node out from under deterministic close.
 - [x] Owner-domain exit closes live runtimes before the domain disappears, so
   cross-domain survivor wrappers cannot strand deferred native runtime releases.
 - [x] Runtime C stubs initialize OCaml arrays, and import-attribute tuple

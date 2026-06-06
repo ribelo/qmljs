@@ -26,6 +26,17 @@ let expect_error label fn assert_error =
 
 external test_runtime_close : Qmljs.Runtime.t -> bool = "qmljs_test_runtime_close"
 
+external test_context_close : Qmljs.Context.t -> bool = "qmljs_test_context_close"
+
+external test_drain_deferred_runtimes : unit -> unit
+  = "qmljs_runtime_drain_deferred_runtimes"
+
+let force_native_finalizers () =
+  for _ = 1 to 4 do
+    Gc.full_major ();
+    test_drain_deferred_runtimes ()
+  done
+
 let test_lifetime_gc_stress_has_no_quickjs_leaks () =
   let before = Qmljs.Diagnostics.snapshot () in
   for i = 1 to 10_000 do
@@ -37,6 +48,79 @@ let test_lifetime_gc_stress_has_no_quickjs_leaks () =
     ignore (Qmljs.Context.eval context "globalThis.tmp = undefined" : Qmljs.value)
   done;
   Gc.full_major ();
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
+let test_close_races_gc_finalizers_without_uaf () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  let clear_on_other_domain values =
+    Domain.spawn (fun () ->
+      Array.iteri
+        (fun i _value ->
+          values.(i) <- None;
+          if i mod 32 = 0 then Gc.full_major ())
+        values;
+      force_native_finalizers ())
+  in
+  let context_close_round round =
+    let runtime = Qmljs.Runtime.create () in
+    let context = Qmljs.Context.create runtime in
+    let values =
+      Array.init 512 (fun i ->
+        Some
+          (if i mod 2 = 0 then Qmljs.Value.int context i
+           else
+             Qmljs.Value.string context
+               ("context-race-" ^ string_of_int round ^ "-" ^ string_of_int i)))
+    in
+    let finalizer = clear_on_other_domain values in
+    for _ = 1 to 2_000 do
+      Domain.cpu_relax ()
+    done;
+    ignore (test_context_close context : bool);
+    Domain.join finalizer;
+    ignore (test_runtime_close runtime : bool)
+  in
+  let runtime_close_round round =
+    let runtime = Qmljs.Runtime.create () in
+    let contexts =
+      Array.init 16 (fun _i -> Some (Qmljs.Context.create runtime))
+    in
+    let root =
+      match contexts.(0) with
+      | Some context -> context
+      | None -> fail "runtime close race lost root context"
+    in
+    let values =
+      Array.init 512 (fun i ->
+        Some
+          (Qmljs.Value.string root
+             ("runtime-race-" ^ string_of_int round ^ "-" ^ string_of_int i)))
+    in
+    let atoms =
+      Array.init 512 (fun i ->
+        Some
+          (Qmljs.Atom.of_string root
+             ("runtime-race-atom-" ^ string_of_int round ^ "-"
+              ^ string_of_int i)))
+    in
+    let value_finalizer = clear_on_other_domain values in
+    let atom_finalizer = clear_on_other_domain atoms in
+    let context_finalizer = clear_on_other_domain contexts in
+    for _ = 1 to 2_000 do
+      Domain.cpu_relax ()
+    done;
+    ignore (test_runtime_close runtime : bool);
+    Domain.join value_finalizer;
+    Domain.join atom_finalizer;
+    Domain.join context_finalizer
+  in
+  for round = 1 to 24 do
+    context_close_round round;
+    runtime_close_round round;
+    force_native_finalizers ()
+  done;
+  force_native_finalizers ();
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
@@ -486,6 +570,7 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
 let () =
   Eio_main.run @@ fun env ->
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
+  test_close_races_gc_finalizers_without_uaf ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();
   test_class_finalizer_cannot_reenter_quickjs ();
   test_rejected_module_eval_leaks ();
