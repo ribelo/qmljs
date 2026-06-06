@@ -105,14 +105,57 @@ CAMLprim value qmljs_test_context_close(value context)
   CAMLreturn(qmljs_context_close(Field(context, 1)));
 }
 
+static JSValue qmljs_async_eval_completion_value(JSContext *ctx,
+                                                JSValueConst this_val,
+                                                int argc,
+                                                JSValueConst *argv)
+{
+  (void)this_val;
+  if (argc < 1) {
+    return JS_UNDEFINED;
+  }
+  return JS_GetPropertyStr(ctx, argv[0], "value");
+}
+
+static JSValue qmljs_unwrap_async_eval_result(JSContext *ctx, JSValue promise)
+{
+  JSValue then = JS_GetPropertyStr(ctx, promise, "then");
+  if (JS_IsException(then)) {
+    JS_FreeValue(ctx, promise);
+    return JS_EXCEPTION;
+  }
+
+  JSValue unwrap =
+    JS_NewCFunction(ctx, qmljs_async_eval_completion_value,
+                    "qmljs_async_eval_completion_value", 1);
+  if (JS_IsException(unwrap)) {
+    JS_FreeValue(ctx, then);
+    JS_FreeValue(ctx, promise);
+    return JS_EXCEPTION;
+  }
+
+  JSValue unwrapped = JS_Call(ctx, then, promise, 1, &unwrap);
+  JS_FreeValue(ctx, unwrap);
+  JS_FreeValue(ctx, then);
+  JS_FreeValue(ctx, promise);
+  return unwrapped;
+}
+
 CAMLprim value qmljs_context_eval(value context, value source, value filename, value flags)
 {
   CAMLparam4(context, source, filename, flags);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
+  int eval_flags = Int_val(flags);
   JSValue result =
     JS_Eval(ctx, String_val(source), caml_string_length(source),
-            String_val(filename), Int_val(flags));
+            String_val(filename), eval_flags);
+  if (JS_IsException(result)) {
+    qmljs_raise_exception(ctx);
+  }
+  if ((eval_flags & JS_EVAL_FLAG_ASYNC) != 0) {
+    result = qmljs_unwrap_async_eval_result(ctx, result);
+  }
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);
   }
