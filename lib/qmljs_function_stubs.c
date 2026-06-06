@@ -297,6 +297,23 @@ static JSValue qml_throw_host_deadline_error(JSContext *ctx)
   return JS_Throw(ctx, error);
 }
 
+static JSValue qml_throw_host_defect_message(JSContext *ctx, const char *message,
+                                             const char *name)
+{
+  JSValue error = JS_NewError(ctx);
+  if (JS_IsException(error)) {
+    return error;
+  }
+  if (qml_define_string_property(ctx, error, "message", message) < 0 ||
+      qml_define_string_property(ctx, error, "_qmljs_ocaml_frame", name) < 0 ||
+      qml_define_string_property(ctx, error, "_qmljs_kind",
+                                 "host_callback_defect") < 0) {
+    JS_FreeValue(ctx, error);
+    return JS_EXCEPTION;
+  }
+  return JS_Throw(ctx, error);
+}
+
 CAMLprim value qml_function_host_error(value context, value name, value message,
                                        value metadata)
 {
@@ -385,8 +402,15 @@ static JSValue qml_host_call_callback(JSContext *ctx,
     CAMLreturnT(JSValue, exception);
   }
 
-  qml_ensure_same_context(callback->context, result);
-  JSValue js_result = JS_DupValue(ctx, qml_js_value(result));
+  JSValue raw_result = JS_UNDEFINED;
+  const char *return_error =
+    qml_js_value_for_context(callback->context, result, &raw_result);
+  if (return_error != NULL) {
+    CAMLreturnT(JSValue,
+                qml_throw_host_defect_message(ctx, return_error,
+                                              callback->name));
+  }
+  JSValue js_result = JS_DupValue(ctx, raw_result);
   CAMLreturnT(JSValue, js_result);
 }
 

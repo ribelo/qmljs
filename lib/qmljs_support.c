@@ -1206,6 +1206,35 @@ JSValue qml_js_value(value wrapped)
   return handle->value;
 }
 
+const char *qml_js_value_for_context(value context, value wrapped, JSValue *out)
+{
+  struct qml_context_handle *expected = Qml_context_val(context)->handle;
+  struct qml_value_handle *actual = Qml_value_val(wrapped)->handle;
+  if (expected == NULL ||
+      atomic_load_explicit(&expected->live, memory_order_acquire) == 0 ||
+      expected->ctx == NULL) {
+    return "QuickJS context is closed";
+  }
+  if (actual == NULL ||
+      atomic_load_explicit(&actual->live, memory_order_acquire) == 0) {
+    return "QuickJS value is closed";
+  }
+  if (Caml_state != actual->state->owner_domain) {
+    return "QuickJS runtime used from a non-owner domain";
+  }
+  if (atomic_load_explicit(&actual->state->closed_to_user,
+                           memory_order_acquire) != 0 ||
+      atomic_load_explicit(&actual->state->native_runtime_alive,
+                           memory_order_acquire) == 0) {
+    return "QuickJS runtime is closed";
+  }
+  if (actual->context != expected) {
+    return "QuickJS value belongs to a different context";
+  }
+  *out = actual->value;
+  return NULL;
+}
+
 JSAtom qml_js_atom(value wrapped)
 {
   struct qml_atom *wrapped_atom = Qml_atom_val(wrapped);

@@ -98,6 +98,24 @@ let test_same_runtime_cross_context_function_call_is_rejected () =
       check_kind "cross-context function call kind" Qmljs.Error.Wrong_domain
         (Qmljs.Error.kind error))
 
+let test_sync_host_callback_foreign_return_is_js_host_defect () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let left = Qmljs.Context.create runtime in
+  let right = Qmljs.Context.create runtime in
+  let foreign = Qmljs.Value.int right 41 in
+  Qmljs.Function.set_global left ~name:"bad_return" ~arity:0 (fun _args ->
+      foreign);
+  expect_structured_error "foreign host callback return"
+    (fun () -> ignore (Qmljs.Context.eval left "bad_return()" : Qmljs.value))
+    (fun error ->
+      check_kind "foreign host callback return kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "foreign host callback return message"
+        "QuickJS value belongs to a different context"
+        (Qmljs.Error.message error));
+  check_int "runtime reusable after foreign return" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval left "1 + 1"))
+
 let test_json_import_attribute_loads_json_module () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -324,6 +342,8 @@ let tests env =
   , test_same_runtime_cross_context_object_set_is_rejected
   ; "same-runtime cross-context function call is rejected"
   , test_same_runtime_cross_context_function_call_is_rejected
+  ; "sync host callback foreign return is JS host defect"
+  , test_sync_host_callback_foreign_return_is_js_host_defect
   ; "json import attribute loads JSON module"
   , test_json_import_attribute_loads_json_module
   ; "structured error kind and metadata API"

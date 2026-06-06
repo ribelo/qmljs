@@ -97,6 +97,7 @@ JSRuntime *qml_runtime(value runtime);
 JSContext *qml_context(value context);
 struct qml_runtime_state *qml_context_state(value context);
 JSValue qml_js_value(value wrapped);
+const char *qml_js_value_for_context(value context, value wrapped, JSValue *out);
 JSAtom qml_js_atom(value wrapped);
 void qml_update_stack_top(JSContext *ctx);
 void qml_ensure_owner(struct qml_runtime_state *state);
