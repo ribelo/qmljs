@@ -141,7 +141,7 @@ let as_bool t =
 
 let as_int t =
   match kind t with
-  | Int -> Ok (to_int t)
+  | Int | Bigint -> Ok (to_int t)
   | _ -> expected "int"
 
 let as_float t =

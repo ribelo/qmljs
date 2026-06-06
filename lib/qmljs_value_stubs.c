@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define QMLJS_MAX_SAFE_INTEGER 9007199254740991LL
+
 CAMLprim value qmljs_value_undefined(value context)
 {
   CAMLparam1(context);
@@ -35,7 +37,15 @@ CAMLprim value qmljs_value_int(value context, value input)
   CAMLparam2(context, input);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
-  CAMLreturn(qmljs_alloc_value(context, JS_NewInt64(ctx, Long_val(input))));
+  int64_t integer = Long_val(input);
+  JSValue result =
+    integer < -QMLJS_MAX_SAFE_INTEGER || integer > QMLJS_MAX_SAFE_INTEGER
+      ? JS_NewBigInt64(ctx, integer)
+      : JS_NewInt64(ctx, integer);
+  if (JS_IsException(result)) {
+    qmljs_raise_exception(ctx);
+  }
+  CAMLreturn(qmljs_alloc_value(context, result));
 }
 
 CAMLprim value qmljs_value_float(value context, value input)
@@ -1792,7 +1802,7 @@ CAMLprim value qmljs_value_to_int(value context, value wrapped)
   JSContext *ctx = qmljs_context(context);
   qmljs_ensure_same_context(context, wrapped);
   qmljs_update_stack_top(ctx);
-  if (JS_ToInt64(ctx, &result, qmljs_js_value(wrapped)) < 0) {
+  if (JS_ToInt64Ext(ctx, &result, qmljs_js_value(wrapped)) < 0) {
     qmljs_raise_exception(ctx);
   }
   if (result < (int64_t)Min_long || result > (int64_t)Max_long) {
