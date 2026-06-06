@@ -820,20 +820,30 @@ CAMLprim value qml_array_of_values(value context, value values)
   CAMLparam2(context, values);
   JSContext *ctx = qml_context(context);
   qml_update_stack_top(ctx);
+  mlsize_t length = Wosize_val(values);
+  JSValueConst *elements = NULL;
+  if (length > 0) {
+    elements = qml_alloc_argv((size_t)length);
+    for (mlsize_t i = 0; i < length; i++) {
+      qml_argv_set(context, elements, (size_t)i, Field(values, i));
+    }
+  }
+
   JSValue result = JS_NewArray(ctx);
   if (JS_IsException(result)) {
+    qml_free_argv(elements);
     qml_raise_exception(ctx);
   }
 
-  mlsize_t length = Wosize_val(values);
   for (mlsize_t i = 0; i < length; i++) {
-    qml_ensure_same_context(context, Field(values, i));
-    JSValue element = JS_DupValue(ctx, qml_js_value(Field(values, i)));
+    JSValue element = JS_DupValue(ctx, elements[i]);
     if (JS_SetPropertyUint32(ctx, result, (uint32_t)i, element) < 0) {
+      qml_free_argv(elements);
       JS_FreeValue(ctx, result);
       qml_raise_exception(ctx);
     }
   }
+  qml_free_argv(elements);
 
   CAMLreturn(qml_alloc_value(context, result));
 }

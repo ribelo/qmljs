@@ -159,6 +159,35 @@ let test_wrong_context_call_arguments_do_not_leak_native_argv () =
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+let test_array_of_values_wrong_context_does_not_leak_partial_array () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let left = Qmljs.Context.create runtime in
+  let right = Qmljs.Context.create runtime in
+  let local = Qmljs.Value.int left 1 in
+  let foreign = Qmljs.Value.int right 2 in
+  let expect_wrong_context () =
+    expect_error "Array.of_array foreign element"
+      (fun () ->
+        ignore (Qmljs.Array.of_array left [| local; foreign |] : Qmljs.value))
+      (fun error ->
+        check_bool "Array.of_array foreign element kind" true
+          (Qmljs.Error.kind error = Qmljs.Error.Wrong_domain);
+        check_string "Array.of_array foreign element message"
+          "QuickJS value belongs to a different context"
+          (Qmljs.Error.message error))
+  in
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  for _ = 1 to 256 do
+    expect_wrong_context ()
+  done;
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  check_int64 "Array.of_array object count" before.obj_count after.obj_count;
+  check_int64 "Array.of_array array count" before.array_count after.array_count;
+  check_int64 "Array.of_array memory-used count" before.memory_used_count
+    after.memory_used_count
+
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -310,6 +339,7 @@ let () =
   test_rejected_module_eval_leaks ();
   test_runtime_finalizer_from_dead_owner_domain_does_not_leak_native_runtime ();
   test_wrong_context_call_arguments_do_not_leak_native_argv ();
+  test_array_of_values_wrong_context_does_not_leak_partial_array ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
   test_eio_many_runtimes_cancel_cleanly_without_races env;
   test_complete_value_surface_roundtrips_js_semantics ();

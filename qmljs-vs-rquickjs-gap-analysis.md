@@ -171,6 +171,8 @@ Keep these gaps:
 - [x] Iterate object key/value pairs and values.
 - [x] Array create, length, get, set, push/append, and conversion to an OCaml list
   or array.
+- [x] Array construction releases partially created JS arrays when element
+  validation fails.
 
 Do not model rquickjs iterator trait details such as exact-sized,
 double-ended, or fused iterators. Those are Rust collection guarantees.
