@@ -10,8 +10,13 @@ external host_call_trampoline : unit -> Qmljs_types.value @@ portable
 let () =
   Callback.Safe.register "qmljs.host_call_trampoline" host_call_trampoline
 
+let reject_nul_name name =
+  if String.contains name '\000' then
+    invalid_arg "host function name must not contain NUL"
+
 let make context ~name ~arity callback =
   if arity < 0 then invalid_arg "arity must be non-negative";
+  reject_nul_name name;
   let raw_callback raw_args =
     let args =
       Array.map
@@ -31,6 +36,7 @@ let make context ~name ~arity callback =
 
 let make_with_this context ~name ~arity callback =
   if arity < 0 then invalid_arg "arity must be non-negative";
+  reject_nul_name name;
   let wrap raw = { Qmljs_types.context; raw } in
   let raw_callback raw_this raw_args raw_new_target =
     let call =

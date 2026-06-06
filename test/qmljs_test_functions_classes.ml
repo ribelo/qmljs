@@ -129,6 +129,26 @@ let test_async_host_callback_foreign_return_rejects_structured () =
   check_int "runtime reusable after async foreign return" 2
     (Qmljs.Value.to_int (Qmljs.Context.eval left "1 + 1"))
 
+let test_host_function_name_nul_is_rejected () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let name = "a\000b" in
+  expect_invalid_arg "host function NUL name" (fun () ->
+      ignore
+        (Qmljs.Function.make context ~name ~arity:0 (fun _args ->
+             Qmljs.Value.undefined context)
+         : Qmljs.value));
+  expect_invalid_arg "host function-with-this NUL name" (fun () ->
+      ignore
+        (Qmljs.Function.make_with_this context ~name ~arity:0 (fun _call ->
+             Qmljs.Value.undefined context)
+         : Qmljs.value));
+  expect_invalid_arg "async host function NUL name" (fun () ->
+      ignore
+        (Qmljs.Function.make_async context ~name ~arity:0 (fun _args ->
+             Qmljs.Value.undefined context)
+         : Qmljs.value))
+
 let test_async_function_value_api () =
   match
     Qmljs.Error.capture (fun () ->
@@ -378,6 +398,8 @@ let tests =
   , test_async_host_callback_rejection_is_structured
   ; "async host callback foreign return rejects structured"
   , test_async_host_callback_foreign_return_rejects_structured
+  ; "host function name NUL is rejected"
+  , test_host_function_name_nul_is_rejected
   ; "async function value API", test_async_function_value_api
   ; "function defer API", test_function_defer_api
   ; "host class API", test_host_class_api

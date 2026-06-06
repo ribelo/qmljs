@@ -249,6 +249,8 @@ Keep these gaps:
 - [x] Host callback argument, this, and new.target wrapping failures are caught
   through the host-callback trampoline and reported as structured host defects,
   with callback-depth accounting restored on every protected callback path.
+- [x] Host function names reject embedded NUL bytes so JS-visible names and
+  structured OCaml-frame metadata cannot diverge through C-string truncation.
 
 Do not port rquickjs's Func, MutFn, OnceFn, Rest, This, Opt, IntoArg, or
 IntoJsFunc traits. OCaml can expose these as explicit callback records or helper

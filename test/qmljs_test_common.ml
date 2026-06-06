@@ -26,6 +26,15 @@ let expect_structured_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected structured error")
   | Error error -> assert_error error
 
+let expect_invalid_arg label fn =
+  match fn () with
+  | () -> fail (label ^ ": expected Invalid_argument")
+  | exception Invalid_argument _ -> ()
+  | exception exn ->
+      fail
+        (Printf.sprintf "%s: expected Invalid_argument, got %s" label
+           (Printexc.to_string exn))
+
 let run tests =
   let failures = ref [] in
   List.iter
