@@ -15,6 +15,12 @@ struct qml_deferred_value {
   struct qml_deferred_value *next;
 };
 
+struct qml_deferred_atom {
+  struct qml_runtime_state *state;
+  JSAtom atom;
+  struct qml_deferred_atom *next;
+};
+
 struct qml_deferred_context {
   struct qml_runtime_state *state;
   JSContext *ctx;
@@ -38,6 +44,15 @@ struct qml_value_handle {
   int linked;
   struct qml_value_handle *prev;
   struct qml_value_handle *next;
+};
+
+struct qml_atom_handle {
+  struct qml_runtime_state *state;
+  JSAtom atom;
+  atomic_int live;
+  int linked;
+  struct qml_atom_handle *prev;
+  struct qml_atom_handle *next;
 };
 
 static void qml_lock_lists(struct qml_runtime_state *state)
@@ -120,6 +135,40 @@ static void qml_unlink_value(struct qml_runtime_state *state,
   qml_unlock_lists(state);
 }
 
+static void qml_link_atom(struct qml_runtime_state *state,
+                          struct qml_atom_handle *handle)
+{
+  qml_lock_lists(state);
+  handle->prev = NULL;
+  handle->next = state->atoms;
+  if (state->atoms != NULL) {
+    state->atoms->prev = handle;
+  }
+  state->atoms = handle;
+  handle->linked = 1;
+  qml_unlock_lists(state);
+}
+
+static void qml_unlink_atom(struct qml_runtime_state *state,
+                            struct qml_atom_handle *handle)
+{
+  qml_lock_lists(state);
+  if (handle->linked) {
+    if (handle->prev != NULL) {
+      handle->prev->next = handle->next;
+    } else {
+      state->atoms = handle->next;
+    }
+    if (handle->next != NULL) {
+      handle->next->prev = handle->prev;
+    }
+    handle->prev = NULL;
+    handle->next = NULL;
+    handle->linked = 0;
+  }
+  qml_unlock_lists(state);
+}
+
 void qml_state_ref(struct qml_runtime_state *state)
 {
   atomic_fetch_add_explicit(&state->refs, 1, memory_order_relaxed);
@@ -174,6 +223,27 @@ static void qml_defer_value(struct qml_runtime_state *state, JSValue value)
     memory_order_acquire));
 }
 
+static void qml_defer_atom(struct qml_runtime_state *state, JSAtom atom)
+{
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      == 0) {
+    atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
+    return;
+  }
+  struct qml_deferred_atom *node =
+    caml_stat_alloc(sizeof(struct qml_deferred_atom));
+  node->state = state;
+  node->atom = atom;
+  qml_state_ref(state);
+  struct qml_deferred_atom *head =
+    atomic_load_explicit(&state->deferred_atoms, memory_order_acquire);
+  do {
+    node->next = head;
+  } while (!atomic_compare_exchange_weak_explicit(
+    &state->deferred_atoms, &head, node, memory_order_release,
+    memory_order_acquire));
+}
+
 static void qml_defer_context(struct qml_runtime_state *state, JSContext *ctx)
 {
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
@@ -208,6 +278,21 @@ static void qml_release_value_for_scope(struct qml_value_handle *handle)
   }
   handle->value = JS_UNDEFINED;
   atomic_fetch_sub_explicit(&state->live_values, 1, memory_order_relaxed);
+}
+
+static void qml_release_atom_for_scope(struct qml_atom_handle *handle)
+{
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
+    return;
+  }
+  qml_unlink_atom(state, handle);
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      != 0 && state->rt != NULL) {
+    JS_FreeAtomRT(state->rt, handle->atom);
+  }
+  handle->atom = JS_ATOM_NULL;
+  atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
 }
 
 static void qml_release_context_for_scope(struct qml_context_handle *handle)
@@ -260,6 +345,19 @@ static void qml_release_all_values_for_scope(struct qml_runtime_state *state)
   } while (current != NULL);
 }
 
+static void qml_release_all_atoms_for_scope(struct qml_runtime_state *state)
+{
+  struct qml_atom_handle *current;
+  do {
+    qml_lock_lists(state);
+    current = state->atoms;
+    qml_unlock_lists(state);
+    if (current != NULL) {
+      qml_release_atom_for_scope(current);
+    }
+  } while (current != NULL);
+}
+
 static void qml_release_all_contexts_for_scope(struct qml_runtime_state *state)
 {
   struct qml_context_handle *current;
@@ -301,6 +399,20 @@ void qml_drain_deferred(struct qml_runtime_state *state)
     values = next;
   }
 
+  struct qml_deferred_atom *atoms =
+    atomic_exchange_explicit(&state->deferred_atoms, NULL,
+                             memory_order_acquire);
+  while (atoms != NULL) {
+    struct qml_deferred_atom *next = atoms->next;
+    if (runtime_alive && state->rt != NULL && atoms->atom != JS_ATOM_NULL) {
+      JS_FreeAtomRT(state->rt, atoms->atom);
+    }
+    atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
+    qml_state_unref(atoms->state);
+    caml_stat_free(atoms);
+    atoms = next;
+  }
+
   struct qml_deferred_context *contexts =
     atomic_exchange_explicit(&state->deferred_contexts, NULL,
                              memory_order_acquire);
@@ -326,15 +438,22 @@ int qml_runtime_free_native(struct qml_runtime_state *state)
   }
   qml_drain_deferred(state);
   qml_release_all_values_for_scope(state);
+  qml_release_all_atoms_for_scope(state);
   qml_release_all_contexts_for_scope(state);
   if (atomic_load_explicit(&state->open_contexts, memory_order_acquire) != 0
-      || atomic_load_explicit(&state->live_values, memory_order_acquire) != 0) {
+      || atomic_load_explicit(&state->live_values, memory_order_acquire) != 0
+      || atomic_load_explicit(&state->live_atoms, memory_order_acquire) != 0) {
     return 0;
   }
   JS_FreeRuntime(state->rt);
   state->rt = NULL;
+  if (state->runtime_info != NULL) {
+    caml_stat_free(state->runtime_info);
+    state->runtime_info = NULL;
+  }
   atomic_store_explicit(&state->native_runtime_alive, 0, memory_order_release);
   qml_module_loader_free(state);
+  qml_promise_events_free(state);
   return 1;
 }
 
@@ -404,6 +523,30 @@ static void qml_value_finalize(value v)
   caml_stat_free(handle);
 }
 
+static void qml_atom_finalize(value v)
+{
+  struct qml_atom *wrapped = Qml_atom_val(v);
+  struct qml_atom_handle *handle = wrapped->handle;
+  if (handle == NULL) {
+    return;
+  }
+  struct qml_runtime_state *state = handle->state;
+  if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
+    qml_unlink_atom(state, handle);
+    if (Caml_state == state->owner_domain &&
+        atomic_load_explicit(&state->native_runtime_alive,
+                             memory_order_acquire) != 0) {
+      JS_FreeAtomRT(state->rt, handle->atom);
+      atomic_fetch_sub_explicit(&state->live_atoms, 1, memory_order_relaxed);
+    } else {
+      qml_defer_atom(state, handle->atom);
+    }
+  }
+  wrapped->handle = NULL;
+  qml_state_unref(state);
+  caml_stat_free(handle);
+}
+
 static struct custom_operations qml_runtime_ops = {
   "qmljs.runtime",
   qml_runtime_finalize,
@@ -429,6 +572,17 @@ static struct custom_operations qml_context_ops = {
 static struct custom_operations qml_value_ops = {
   "qmljs.value",
   qml_value_finalize,
+  custom_compare_default,
+  custom_hash_default,
+  custom_serialize_default,
+  custom_deserialize_default,
+  custom_compare_ext_default,
+  custom_fixed_length_default
+};
+
+static struct custom_operations qml_atom_ops = {
+  "qmljs.atom",
+  qml_atom_finalize,
   custom_compare_default,
   custom_hash_default,
   custom_serialize_default,
@@ -492,6 +646,26 @@ value qml_alloc_value(value context, JSValue js_value)
   Qml_value_val(block)->handle = handle;
   atomic_fetch_add_explicit(&state->live_values, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&qml_live_value_wrappers, 1, memory_order_relaxed);
+  CAMLreturn(block);
+}
+
+value qml_alloc_atom(struct qml_runtime_state *state, JSAtom atom)
+{
+  CAMLparam0();
+  CAMLlocal1(block);
+  struct qml_atom_handle *handle =
+    caml_stat_alloc(sizeof(struct qml_atom_handle));
+  handle->state = state;
+  handle->atom = atom;
+  atomic_init(&handle->live, 1);
+  handle->linked = 0;
+  handle->prev = NULL;
+  handle->next = NULL;
+  qml_state_ref(state);
+  qml_link_atom(state, handle);
+  block = caml_alloc_custom(&qml_atom_ops, sizeof(struct qml_atom), 0, 1);
+  Qml_atom_val(block)->handle = handle;
+  atomic_fetch_add_explicit(&state->live_atoms, 1, memory_order_relaxed);
   CAMLreturn(block);
 }
 
@@ -840,6 +1014,23 @@ static void qml_raise_structured_value(JSContext *ctx, JSValueConst js_exception
   CAMLreturn0;
 }
 
+value qml_structured_of_exception_value(JSContext *ctx, JSValueConst exception)
+{
+  CAMLparam0();
+  CAMLlocal1(structured);
+  static const value *make_structured = NULL;
+
+  if (make_structured == NULL) {
+    make_structured = caml_named_value("qmljs.make_structured");
+  }
+  if (make_structured == NULL) {
+    qml_raise_string("JavaScript exception");
+  }
+
+  structured = qml_build_structured_exception(ctx, exception, 0, make_structured);
+  CAMLreturn(structured);
+}
+
 void qml_raise_exception(JSContext *ctx)
 {
   CAMLparam0();
@@ -924,6 +1115,41 @@ JSValue qml_js_value(value wrapped)
   return handle->value;
 }
 
+JSAtom qml_js_atom(value wrapped)
+{
+  struct qml_atom *wrapped_atom = Qml_atom_val(wrapped);
+  struct qml_atom_handle *handle = wrapped_atom->handle;
+  if (handle == NULL) {
+    qml_raise_string("QuickJS atom is closed");
+  }
+  qml_ensure_owner(handle->state);
+  if (atomic_load_explicit(&handle->live, memory_order_acquire) == 0 ||
+      handle->atom == JS_ATOM_NULL) {
+    qml_raise_string("QuickJS atom is closed");
+  }
+  return handle->atom;
+}
+
+CAMLprim value qml_atom_equal(value lhs, value rhs)
+{
+  CAMLparam2(lhs, rhs);
+  struct qml_atom_handle *left = Qml_atom_val(lhs)->handle;
+  struct qml_atom_handle *right = Qml_atom_val(rhs)->handle;
+  if (left == NULL ||
+      atomic_load_explicit(&left->live, memory_order_acquire) == 0 ||
+      left->atom == JS_ATOM_NULL) {
+    qml_raise_string("QuickJS atom is closed");
+  }
+  if (right == NULL ||
+      atomic_load_explicit(&right->live, memory_order_acquire) == 0 ||
+      right->atom == JS_ATOM_NULL) {
+    qml_raise_string("QuickJS atom is closed");
+  }
+  qml_ensure_owner(left->state);
+  qml_ensure_owner(right->state);
+  CAMLreturn(Val_bool(left->state == right->state && left->atom == right->atom));
+}
+
 void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped)
 {
   struct qml_value_handle *actual = Qml_value_val(wrapped)->handle;
@@ -933,6 +1159,18 @@ void qml_ensure_same_runtime(struct qml_runtime_state *expected, value wrapped)
   }
   if (actual->state != expected) {
     qml_raise_string("QuickJS value belongs to a different runtime");
+  }
+}
+
+void qml_ensure_atom_runtime(struct qml_runtime_state *expected, value wrapped)
+{
+  struct qml_atom_handle *actual = Qml_atom_val(wrapped)->handle;
+  if (actual == NULL ||
+      atomic_load_explicit(&actual->live, memory_order_acquire) == 0) {
+    qml_raise_string("QuickJS atom is closed");
+  }
+  if (actual->state != expected) {
+    qml_raise_string("QuickJS atom belongs to a different runtime");
   }
 }
 

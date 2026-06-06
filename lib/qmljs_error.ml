@@ -151,6 +151,9 @@ module Structured = struct
     in
     make ~kind message
 
+  let of_conversion message =
+    make ~kind:JavaScript ("conversion error: " ^ message)
+
   let of_policy specifier = make ~kind:(Policy_violation_kind specifier) specifier
   let of_out_of_memory () = make ~kind:Out_of_memory_kind "out of memory"
   let of_stack_overflow () = make ~kind:Stack_overflow_kind "stack overflow"

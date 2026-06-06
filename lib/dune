@@ -8,6 +8,7 @@
    qmljs_support
    qmljs_runtime_stubs
    qmljs_context_stubs
+   qmljs_class_stubs
    qmljs_function_stubs
    qmljs_value_stubs)
   (flags -DUSING_QJS_SHARED))

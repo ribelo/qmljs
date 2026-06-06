@@ -1,14 +1,26 @@
 module Loader = struct
   type t = Qmljs_types.module_loader
+  type request = Qmljs_types.module_load_request =
+    { base : string option
+    ; specifier : string
+    ; normalized : string
+    ; attributes : (string * string) list
+    }
 
-  let identity_normalize ~base:_ ~specifier = Ok specifier
+  type import_attributes = (string * string) list
+
+  let identity_normalize ~base:_ ~specifier ~attributes:_ = Ok specifier
+
+  let table_load table request =
+    Ok (Hashtbl.find_opt table request.Qmljs_types.normalized)
 
   let memory sources =
     let table = Hashtbl.create (List.length sources) in
     List.iter (fun (specifier, source) -> Hashtbl.replace table specifier source) sources;
-    { Qmljs_types.sources = table
+    { Qmljs_types.requests = Hashtbl.create 16
     ; deny = (fun _ -> false)
     ; normalize = identity_normalize
+    ; load = table_load table
     }
 
   let deny predicate loader = { loader with Qmljs_types.deny = predicate }
@@ -26,8 +38,7 @@ module Loader = struct
           (match acc with
            | [] ->
                Error
-                 (Qmljs_error.Structured.of_legacy_error
-                    ("module specifier escapes loader root: " ^ specifier))
+                 (Qmljs_error.Structured.of_policy specifier)
            | _ :: acc -> loop acc rest)
       | segment :: rest -> loop (segment :: acc) rest
     in
@@ -50,6 +61,9 @@ module Loader = struct
     in
     normalize_segments specifier segments
 
+  let filesystem_normalize ~base ~specifier ~attributes:_ =
+    filesystem_normalize ~base ~specifier
+
   let read_file path =
     let channel = open_in_bin path in
     Fun.protect
@@ -71,22 +85,164 @@ module Loader = struct
         else Hashtbl.replace table specifier (read_file path))
     in
     scan "" root;
-    { Qmljs_types.sources = table
+    { Qmljs_types.requests = Hashtbl.create 16
     ; deny = (fun specifier -> not (allow ~specifier))
     ; normalize = filesystem_normalize
+    ; load = table_load table
     }
 
   let normalize normalize loader =
     { loader with
       Qmljs_types.normalize =
-        (fun ~base ~specifier ->
+        (fun ~base ~specifier ~attributes ->
           match normalize ~base ~specifier with
           | Error _ as error -> error
-          | Ok specifier -> loader.Qmljs_types.normalize ~base ~specifier)
+          | Ok specifier ->
+              loader.Qmljs_types.normalize ~base ~specifier ~attributes)
     }
+
+  let callback ~normalize ~load =
+    { Qmljs_types.requests = Hashtbl.create 16
+    ; deny = (fun _ -> false)
+    ; normalize
+    ; load
+    }
+
+  let fallback loaders =
+    match loaders with
+    | [] -> invalid_arg "module loader fallback requires at least one loader"
+    | loaders ->
+        let load (request : request) =
+          let rec loop = function
+            | [] -> Ok None
+            | loader :: rest ->
+                (match
+                   loader.Qmljs_types.normalize
+                     ~base:request.base
+                     ~specifier:request.specifier
+                     ~attributes:request.attributes
+                 with
+                 | Error _ as error -> error
+                 | Ok normalized ->
+                     if loader.Qmljs_types.deny normalized then
+                       Error (Qmljs_error.Structured.of_policy normalized)
+                     else
+                       let request = { request with normalized } in
+                       (match loader.Qmljs_types.load request with
+                        | Ok None -> loop rest
+                        | Ok Some _ as result -> result
+                        | Error _ as error -> error))
+          in
+          loop loaders
+        in
+        { Qmljs_types.requests = Hashtbl.create 16
+        ; deny = (fun _ -> false)
+        ; normalize = filesystem_normalize
+        ; load
+        }
 end
 
 type namespace = Qmljs_types.value
+
+type evaluated =
+  { namespace : namespace
+  ; import_meta : Qmljs_types.value
+  }
+
+type native_exports =
+  { context : Qmljs_types.context
+  ; raw : Qmljs_raw.native_exports
+  }
+
+let error_marker error =
+  let kind, denied_specifier =
+    match Qmljs_error.Structured.kind error with
+    | Policy_violation { denied_module_specifier } ->
+        ( "policy_violation"
+        , Option.value denied_module_specifier ~default:"" )
+    | Host_callback_defect -> "host_callback_defect", ""
+    | Out_of_memory -> "out_of_memory", ""
+    | Stack_overflow -> "stack_overflow", ""
+    | Resource_limit -> "resource_limit", ""
+    | Timeout -> "timeout", ""
+    | Closed_handle -> "closed_handle", ""
+    | Wrong_domain -> "wrong_domain", ""
+    | JavaScript -> "javascript", ""
+  in
+  Qmljs_error.Structured.message error, kind, denied_specifier
+
+module Native = struct
+  type exports = native_exports
+
+  type declarations =
+    { mutable export_names : string list
+    }
+
+  type t =
+    { export_names : string array
+    ; evaluate : exports -> unit
+    }
+
+  let check_export_name name =
+    if String.contains name '\000' then
+      invalid_arg "native module export name cannot contain NUL"
+
+  let declare (declarations : declarations) name =
+    check_export_name name;
+    if List.mem name declarations.export_names then
+      invalid_arg ("duplicate native module export: " ^ name);
+    declarations.export_names <- name :: declarations.export_names
+
+  let define declare ~evaluate =
+    let declarations = { export_names = [] } in
+    declare declarations;
+    { export_names = Array.of_list (List.rev declarations.export_names)
+    ; evaluate
+    }
+
+  let export exports ~name value =
+    check_export_name name;
+    Qmljs_raw.module_native_export
+      (Qmljs_types.context_raw exports.context)
+      exports.raw
+      name
+      (Qmljs_types.value_raw value)
+end
+
+let declare_native context ~name (native : Native.t) =
+  if String.contains name '\000' then
+    invalid_arg "native module name cannot contain NUL";
+  let evaluate raw_exports =
+    let exports = { context; raw = raw_exports } in
+    match Qmljs_error.Structured.capture (fun () -> native.evaluate exports) with
+    | Ok () -> Ok ()
+    | Error error -> Error (error_marker error)
+  in
+  Qmljs_raw.module_declare_native
+    (Qmljs_types.context_raw context)
+    name
+    native.export_names
+    evaluate
+
+let dynamic_import ?(base = "<dynamic-import>") context specifier =
+  { Qmljs_types.context
+  ; raw =
+      Qmljs_raw.module_dynamic_import
+        (Qmljs_types.context_raw context)
+        base
+        specifier
+  }
+
+let eval_with_meta ?(filename = "<module>") context source =
+  let namespace, import_meta =
+    Qmljs_raw.context_eval_module_with_meta
+      (Qmljs_types.context_raw context)
+      source
+      filename
+  in
+  { namespace = { Qmljs_types.context; raw = namespace }
+  ; import_meta = { Qmljs_types.context; raw = import_meta }
+  }
 
 let eval ?(filename = "<module>") context source =
   { Qmljs_types.context

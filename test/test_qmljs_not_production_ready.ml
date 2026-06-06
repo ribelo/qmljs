@@ -232,6 +232,88 @@ let test_eio_scoped_driver_api env =
       check_int "runtime reusable after driver cancel" 42
         (Qmljs.Value.to_int (Qmljs.Context.eval context "6 * 7")))
 
+let test_eio_promise_helper_api env =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver _runtime context ->
+      let fulfilled =
+        Qmljs.Eio.promise driver context (fun () ->
+            Eio.Fiber.yield ();
+            Qmljs.Value.int context 42)
+      in
+      (match Qmljs.Promise.await_result fulfilled with
+       | Ok value -> check_int "Eio promise fulfilled" 42 (Qmljs.Value.to_int value)
+       | Error error ->
+           fail ("Eio promise rejected: " ^ Qmljs.Error.message error));
+      let rejected =
+        Qmljs.Eio.promise ~name:"eio_promise_fail" driver context (fun () ->
+            Eio.Fiber.yield ();
+            raise
+              (Qmljs.Error.host ~message:"eio promise boom"
+                 ~metadata:[ "phase", "promise" ]))
+      in
+      match Qmljs.Promise.await_result rejected with
+      | Ok _ -> fail "Eio promise unexpectedly fulfilled"
+      | Error error ->
+          check_kind "Eio promise rejection kind" Qmljs.Error.Host_callback_defect
+            (Qmljs.Error.kind error);
+          check_string "Eio promise rejection message" "eio promise boom"
+            (Qmljs.Error.message error);
+          check_bool "Eio promise metadata" true
+            (List.mem ("phase", "promise") (Qmljs.Error.metadata error));
+      let cancelled =
+        Qmljs.Eio.promise ~name:"eio_promise_cancelled" driver context
+          (fun () -> raise (Eio.Cancel.Cancelled (Failure "cancelled job")))
+      in
+      match Qmljs.Promise.await_result cancelled with
+      | Ok _ -> fail "cancelled Eio promise unexpectedly fulfilled"
+      | Error error ->
+          check_kind "Eio promise cancellation kind"
+            Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+          check_bool "Eio promise cancellation has message" true
+            (String.length (Qmljs.Error.message error) > 0))
+
+let test_eio_queued_host_jobs_are_scoped env =
+  let callback_ran = ref false in
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver _runtime context ->
+      Qmljs.Function.set_global_async context ~name:"queued_work" ~arity:0
+        (fun _args ->
+          callback_ran := true;
+          Qmljs.Value.int context 1);
+      let promise = Qmljs.Context.eval context "queued_work()" in
+      Qmljs.Eio.cancel driver;
+      (match Qmljs.Promise.await_result promise with
+       | Ok _ -> fail "cancelled queued host job unexpectedly fulfilled"
+       | Error error ->
+           check_kind "cancelled queued host job kind"
+             Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+           check_string "cancelled queued host job message"
+             "async host callback cancelled" (Qmljs.Error.message error);
+           check_bool "cancelled queued host job did not run" false
+             !callback_ran));
+  let stale_runtime = ref None in
+  let stale_ran = ref false in
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun _driver runtime context ->
+      stale_runtime := Some runtime;
+      Qmljs.Function.set_global_async context ~name:"stale_work" ~arity:0
+        (fun _args ->
+          stale_ran := true;
+          Qmljs.Value.int context 1);
+      ignore (Qmljs.Context.eval context "stale_work()" : Qmljs.Value.t));
+  (match !stale_runtime with
+   | None -> fail "test did not capture runtime"
+   | Some runtime ->
+       expect_structured_error "stale host job after scope"
+         (fun () -> ignore (Qmljs.Async.drain_jobs runtime : int))
+         (fun error ->
+           check_kind "stale host job closed runtime" Qmljs.Error.Closed_handle
+             (Qmljs.Error.kind error)));
+  check_bool "stale queued host job did not run" false !stale_ran
+
 let tests env =
   [ "sync host callback timeout is preemptive"
   , test_sync_host_callback_timeout_is_preemptive
@@ -250,6 +332,9 @@ let tests env =
   ; "object introspection API", test_object_introspection_api
   ; "module namespace API", test_module_namespace_api
   ; "Eio scoped driver API", (fun () -> test_eio_scoped_driver_api env)
+  ; "Eio promise helper API", (fun () -> test_eio_promise_helper_api env)
+  ; "Eio queued host jobs are scoped"
+  , (fun () -> test_eio_queued_host_jobs_are_scoped env)
   ]
 
 let () =
