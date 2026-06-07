@@ -292,6 +292,42 @@ let test_string_roundtrips_valid_utf8 () =
         (Qmljs.Value.to_string (Qmljs.Value.string context s)))
     [ ""; "ascii"; "\xc3\xa9" (* é *); "\xe2\x9c\x93" (* ✓ *); "\xf0\x9f\x98\x80" (* 😀 *) ]
 
+(* BUG 16 — Object.has must check own properties only.
+
+   In every language with an object-shaped container, [has key] means "this
+   object itself owns the key" — Python [key in dict], Rust [HashMap::contains_key],
+   Java [Map.containsKey] — none walk the prototype chain. JS distinguishes
+   [Object.hasOwnProperty] (own) from the [in] operator (chain). The qmljs
+   name [Object.has] matches the universal convention, so it must implement
+   own-property semantics; calling [JS_HasProperty] (the [in] operator) makes
+   it silently include inherited properties, which is a contract violation. *)
+let test_has_checks_own_property_not_prototype () =
+  with_context @@ fun _runtime context ->
+  let proto = Qmljs.Object.create context in
+  Qmljs.Object.set proto ~name:"inherited" (Qmljs.Value.int context 1);
+  let obj = Qmljs.Object.create ~prototype:(Qmljs.Value.object_ proto) context in
+  Qmljs.Object.set obj ~name:"own" (Qmljs.Value.int context 2);
+  check_bool "has own property" true
+    (Qmljs.Object.has obj ~key:(Qmljs.Value.string context "own"));
+  check_bool "has must not see prototype property" false
+    (Qmljs.Object.has obj ~key:(Qmljs.Value.string context "inherited"))
+
+(* BUG 17 — Object.has_atom must also check own properties only.
+
+   Same contract as BUG 16, exercised through the atom-key path. *)
+let test_has_atom_checks_own_property_not_prototype () =
+  with_context @@ fun _runtime context ->
+  let proto = Qmljs.Object.create context in
+  let inherited_atom = Qmljs.Atom.of_string context "inherited" in
+  Qmljs.Object.set_atom proto ~key:inherited_atom (Qmljs.Value.int context 1);
+  let obj = Qmljs.Object.create ~prototype:(Qmljs.Value.object_ proto) context in
+  let own_atom = Qmljs.Atom.of_string context "own" in
+  Qmljs.Object.set_atom obj ~key:own_atom (Qmljs.Value.int context 2);
+  check_bool "has_atom own property" true
+    (Qmljs.Object.has_atom obj ~key:own_atom);
+  check_bool "has_atom must not see prototype property" false
+    (Qmljs.Object.has_atom obj ~key:inherited_atom)
+
 let tests =
   [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
   ; "int_is_a_js_number", test_int_is_a_js_number
@@ -308,6 +344,8 @@ let tests =
   ; "entries_default_includes_all", test_entries_default_includes_all
   ; "string_rejects_non_utf8_bytes", test_string_rejects_non_utf8_bytes
   ; "string_roundtrips_valid_utf8", test_string_roundtrips_valid_utf8
+  ; "has_checks_own_property_not_prototype", test_has_checks_own_property_not_prototype
+  ; "has_atom_checks_own_property_not_prototype", test_has_atom_checks_own_property_not_prototype
   ]
 
 let () =
