@@ -61,7 +61,17 @@ let float context value =
   ; raw = Qmljs_raw.value_float (Qmljs_types.context_raw context) value
   }
 
+(* A JS string is Unicode text, not an arbitrary byte buffer. The only total,
+   lossless interchange is valid UTF-8: under that encoding [to_string (string
+   ctx s) = s] for every accepted [s]. QuickJS's [JS_NewStringLen] silently
+   rewrites invalid UTF-8 to U+FFFD, which would corrupt the bytes; rather than
+   accept that silent fallback, [string] fails loudly and points callers at the
+   byte-oriented surfaces (ArrayBuffer / typed arrays) for raw bytes. *)
 let string context value =
+  if not (String.is_valid_utf_8 value) then
+    invalid_arg
+      "Qmljs.Value.string: input is not valid UTF-8; a JS string is Unicode \
+       text, so use Qmljs.Array_buffer or a typed array for arbitrary bytes";
   { Qmljs_types.context
   ; raw = Qmljs_raw.value_string (Qmljs_types.context_raw context) value
   }

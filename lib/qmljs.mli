@@ -195,6 +195,11 @@ module Value : sig
 
   (** [float ctx x] creates a JS [Number] from [x] with no range restriction. *)
   val float : Context.t -> float -> t
+  (** [string ctx s] creates a JS string from [s], which must be valid UTF-8.
+      A JS string is Unicode text, so the round trip [to_string (string ctx s)]
+      is the identity only for valid UTF-8. Raises [Invalid_argument] on invalid
+      UTF-8 rather than silently corrupting the bytes to U+FFFD; use
+      {!Array_buffer} or a typed array to move arbitrary bytes. *)
   val string : Context.t -> string -> t
   val object_ : t -> t
   val array : t -> t

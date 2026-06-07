@@ -271,52 +271,26 @@ let test_entries_default_includes_all () =
   let entries = Qmljs.Object.entries obj in
   check_int "entries default includes non-enumerable entry" 2 (List.length entries)
 
-(* BUG 14 — Value.string / Value.to_string must round-trip all OCaml bytes.
+(* Value.string requires valid UTF-8 and fails loudly otherwise.
 
-   OCaml strings are arbitrary byte sequences. QuickJS strings are UTF-16
-   internally, and [JS_NewStringLen] silently replaces invalid UTF-8 bytes
-   with U+FFFD (the Unicode replacement character). Any OCaml string
-   containing a non-UTF-8 byte (e.g. 0x80–0xFF not in a valid multi-byte
-   sequence) will be corrupted on the round trip: the output string is longer
-   and the original bytes are gone. Tests should fail.
-
-   For example, the single byte 0x9c (not valid UTF-8) becomes the 3-byte
-   UTF-8 sequence 0xef 0xbf 0xbd (U+FFFD). *)
-let test_string_roundtrip_preserves_non_utf8_bytes () =
+   OCaml strings are arbitrary byte sequences, but a JS string is Unicode text.
+   QuickJS's [JS_NewStringLen] silently rewrites invalid UTF-8 to U+FFFD (the
+   single byte 0x9c becomes the 3-byte sequence 0xef 0xbf 0xbd), which would
+   corrupt the data. Per No-Silent-Fallback, [Value.string] rejects invalid
+   UTF-8 instead; raw bytes belong in an ArrayBuffer or typed array. *)
+let test_string_rejects_non_utf8_bytes () =
   with_context @@ fun _runtime context ->
-  let input = "\x9c" in  (* 0x9c — invalid UTF-8 *)
-  let output = Qmljs.Value.string context input |> Qmljs.Value.to_string in
-  if String.length input <> String.length output then
-    fail
-      (Printf.sprintf
-         "string roundtrip corrupted non-UTF8 byte: \\\n        input len=%d, output len=%d"
-         (String.length input) (String.length output));
-  for i = 0 to String.length input - 1 do
-    if String.get input i <> String.get output i then
-      fail
-        (Printf.sprintf
-           "string roundtrip byte %d differs: expected 0x%02x, got 0x%02x"
-           i (Char.code (String.get input i))
-           (Char.code (String.get output i)))
-  done
+  expect_raises "string \\x9c" (fun () ->
+      Qmljs.Value.string context "\x9c")
 
-(* BUG 15 — the same corruption affects property keys: a property set with
-   a non-UTF8 key silently ends up with a different (transcoded) key on the
-   JS object. [Object.keys] reveals the replacement. *)
-let test_property_key_silently_transcodes_non_utf8 () =
+(* Valid UTF-8 still round-trips losslessly, including multi-byte text. *)
+let test_string_roundtrips_valid_utf8 () =
   with_context @@ fun _runtime context ->
-  let key = "k\x9c" in  (* 0x6b, 0x9c *)
-  let obj = Qmljs.Object.create context in
-  Qmljs.Object.define_data_property obj
-    ~key:(Qmljs.Value.string context key)
-    ~value:(Qmljs.Value.int context 999)
-    ~writable:true ~enumerable:true ~configurable:true;
-  let stored_keys = Qmljs.Object.keys obj in
-  match stored_keys with
-  | [ k ] ->
-      check_string_eq
-        "non-UTF8 key should round-trip through JS" key k
-  | _ -> fail "expected exactly one key"
+  List.iter
+    (fun s ->
+      check_string_eq (Printf.sprintf "round trip %S" s) s
+        (Qmljs.Value.to_string (Qmljs.Value.string context s)))
+    [ ""; "ascii"; "\xc3\xa9" (* é *); "\xe2\x9c\x93" (* ✓ *); "\xf0\x9f\x98\x80" (* 😀 *) ]
 
 let tests =
   [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
@@ -332,10 +306,8 @@ let tests =
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
   ; "entries_default_includes_all", test_entries_default_includes_all
-  ; "string_roundtrip_preserves_non_utf8_bytes",
-    test_string_roundtrip_preserves_non_utf8_bytes
-  ; "property_key_silently_transcodes_non_utf8",
-    test_property_key_silently_transcodes_non_utf8
+  ; "string_rejects_non_utf8_bytes", test_string_rejects_non_utf8_bytes
+  ; "string_roundtrips_valid_utf8", test_string_roundtrips_valid_utf8
   ]
 
 let () =

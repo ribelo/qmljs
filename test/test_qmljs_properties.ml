@@ -34,9 +34,27 @@ let () =
   in
   check_property ~name:"int_roundtrip_safe_range" gen prop
 
-(* PROPERTY 2: String round-trip (includes NUL bytes) *)
+(* PROPERTY 2: valid UTF-8 strings round-trip exactly.
+
+   A JS string is Unicode text, so [Value.string] accepts valid UTF-8 (and
+   rejects anything else, covered in the bug-hunt suite). Over its accepted
+   domain the round trip must be the identity, including multi-byte code
+   points. *)
 let () =
-  let gen = QCheck2.Gen.string_small in
+  let uchar =
+    QCheck2.Gen.(
+      map Uchar.of_int
+        (oneof [ int_range 0 0xD7FF; int_range 0xE000 0x10FFFF ]))
+  in
+  let gen =
+    QCheck2.Gen.(
+      map
+        (fun chars ->
+          let buf = Buffer.create 16 in
+          List.iter (Buffer.add_utf_8_uchar buf) chars;
+          Buffer.contents buf)
+        (list_small uchar))
+  in
   let prop s =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
