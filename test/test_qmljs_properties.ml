@@ -192,6 +192,26 @@ let () =
   in
   check_property ~name:"host_fn_int_roundtrip" gen prop
 
+(* PROPERTY 14: Object.has is own-property only.
+
+   A prototype object carries [inherited]; the child carries [own].
+   [has] must be true for the child's own key and false for the inherited
+   key, otherwise it is walking the prototype chain. *)
+let () =
+  let prop (own_key, inherited_key) =
+    Qmljs.Runtime.with_ @@ fun rt ->
+    Qmljs.Context.with_ rt @@ fun ctx ->
+    let proto = Qmljs.Object.create ctx in
+    Qmljs.Object.set proto ~name:inherited_key (Qmljs.Value.int ctx 1);
+    let obj = Qmljs.Object.create ~prototype:(Qmljs.Value.object_ proto) ctx in
+    Qmljs.Object.set obj ~name:own_key (Qmljs.Value.int ctx 2);
+    Qmljs.Object.has obj ~key:(Qmljs.Value.string ctx own_key)
+    && not (Qmljs.Object.has obj ~key:(Qmljs.Value.string ctx inherited_key))
+  in
+  let name_gen = QCheck2.Gen.(map (fun k -> Printf.sprintf "k%d" k) (int_range 0 1000)) in
+  check_property ~name:"has_own_property_only"
+    (QCheck2.Gen.pair name_gen name_gen) prop
+
 let () =
   Printf.eprintf "\n=== RESULTS: %d/%d properties passed ===\n%!"
     (!test_count - !fail_count) !test_count;
