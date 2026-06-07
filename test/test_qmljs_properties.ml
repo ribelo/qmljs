@@ -208,9 +208,11 @@ let () =
     Qmljs.Object.has obj ~key:(Qmljs.Value.string ctx own_key)
     && not (Qmljs.Object.has obj ~key:(Qmljs.Value.string ctx inherited_key))
   in
-  let name_gen = QCheck2.Gen.(map (fun k -> Printf.sprintf "k%d" k) (int_range 0 1000)) in
+  let name_gen prefix =
+    QCheck2.Gen.(map (fun k -> Printf.sprintf "%s%d" prefix k) (int_range 0 1000))
+  in
   check_property ~name:"has_own_property_only"
-    (QCheck2.Gen.pair name_gen name_gen) prop
+    (QCheck2.Gen.pair (name_gen "own") (name_gen "inh")) prop
 
 let () =
   Printf.eprintf "\n=== RESULTS: %d/%d properties passed ===\n%!"

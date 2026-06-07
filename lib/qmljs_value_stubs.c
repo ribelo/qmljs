@@ -390,6 +390,31 @@ CAMLprim value qmljs_object_has(value context, value object, value key)
   if (atom == JS_ATOM_NULL) {
     qmljs_raise_exception(ctx);
   }
+  /* Own-property semantics: JS_GetOwnProperty does not walk the prototype
+     chain (unlike JS_HasProperty, the `in` operator). A NULL descriptor only
+     probes for existence, so there is nothing to free. */
+  int result = JS_GetOwnProperty(ctx, NULL, qmljs_js_value(object), atom);
+  JS_FreeAtom(ctx, atom);
+  if (result < 0) {
+    qmljs_raise_exception(ctx);
+  }
+  CAMLreturn(Val_bool(result));
+}
+
+/* Prototype-chain presence (the JS `in` operator). Kept distinct from
+   qmljs_object_has, which is own-property only: convenience readers such as
+   Object.get_string follow the same chain as [[Get]]. */
+CAMLprim value qmljs_object_has_property(value context, value object, value key)
+{
+  CAMLparam3(context, object, key);
+  JSContext *ctx = qmljs_context(context);
+  qmljs_update_stack_top(ctx);
+  qmljs_ensure_same_context(context, object);
+  qmljs_ensure_same_context(context, key);
+  JSAtom atom = JS_ValueToAtom(ctx, qmljs_js_value(key));
+  if (atom == JS_ATOM_NULL) {
+    qmljs_raise_exception(ctx);
+  }
   int result = JS_HasProperty(ctx, qmljs_js_value(object), atom);
   JS_FreeAtom(ctx, atom);
   if (result < 0) {
@@ -404,9 +429,10 @@ CAMLprim value qmljs_object_has_atom(value context, value object, value atom)
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
   qmljs_ensure_same_context(context, object);
+  /* Own-property semantics: see qmljs_object_has. */
   int result =
-    JS_HasProperty(ctx, qmljs_js_value(object),
-                   qmljs_atom_for_context(context, atom));
+    JS_GetOwnProperty(ctx, NULL, qmljs_js_value(object),
+                      qmljs_atom_for_context(context, atom));
   if (result < 0) {
     qmljs_raise_exception(ctx);
   }

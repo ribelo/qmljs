@@ -361,7 +361,13 @@ module Object : sig
   val set_atom : t -> key:atom -> value -> unit
   val get : t -> key:value -> value
   val get_atom : t -> key:atom -> value
+  (** [has t ~key] reports whether [t] has [key] as an {e own} property. Like
+      JS [Object.hasOwnProperty] (and unlike the [in] operator) it does not walk
+      the prototype chain. *)
   val has : t -> key:value -> bool
+
+  (** [has_atom] is {!has} for an atom key, with the same own-property
+      semantics. *)
   val has_atom : t -> key:atom -> bool
   val get_string : t -> string -> value option
   val delete : t -> key:value -> bool

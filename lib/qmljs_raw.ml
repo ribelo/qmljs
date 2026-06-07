@@ -152,6 +152,8 @@ external object_set : context -> value -> string -> value -> unit = "qmljs_objec
 
 external object_get : context -> value -> value -> value = "qmljs_object_get"
 external object_has : context -> value -> value -> bool = "qmljs_object_has"
+external object_has_property : context -> value -> value -> bool
+  = "qmljs_object_has_property"
 external object_delete : context -> value -> value -> bool = "qmljs_object_delete"
 external object_set_atom : context -> value -> atom -> value -> unit
   = "qmljs_object_set_atom"

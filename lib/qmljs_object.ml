@@ -129,7 +129,15 @@ let has_atom t ~key =
 let get_string t name =
   let context = Qmljs_types.value_context t in
   let key = Qmljs_value.string context name in
-  if has t ~key then Some (get t ~key) else None
+  (* Convenience reader: follows the prototype chain like JS [[Get]], so an
+     inherited property is visible. Public [has] is own-property only. *)
+  let present =
+    Qmljs_raw.object_has_property
+      (Qmljs_types.context_raw context)
+      (Qmljs_types.value_raw t)
+      (Qmljs_types.value_raw key)
+  in
+  if present then Some (get t ~key) else None
 
 let delete t ~key =
   let context = Qmljs_types.value_context t in
