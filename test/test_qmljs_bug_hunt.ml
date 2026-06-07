@@ -234,15 +234,12 @@ let test_as_int_rejects_out_of_range_bigint () =
         (Printf.sprintf
            "as_int(2n**64n) silently returned %d for an out-of-range BigInt" i)
 
-(* BUG 12 — own_keys must return all own property keys by default.
+(* own_keys returns all own property keys by default.
 
-   [own_keys] documents three optional flags: [strings], [symbols], and
-   [enumerable_only]. The default for [enumerable_only] must be [false]:
-   without an explicit filter, callers expect every own key regardless of
-   enumerability. The current implementation defaults [enumerable_only] to
-   [true], which silently discards non-enumerable properties — a violation
-   of the principle of least surprise and the documented contract that
-   [own_keys] returns "own property keys" without qualification. *)
+   [own_keys] mirrors JS [Reflect.ownKeys]: with no filter it returns every own
+   key regardless of enumerability. The optional flags [strings], [symbols], and
+   [enumerable_only] narrow the result; [enumerable_only] defaults to [false] so
+   non-enumerable own properties are included unless the caller opts out. *)
 let test_own_keys_default_includes_all_keys () =
   with_context @@ fun _runtime context ->
   let obj = Qmljs.Object.create context in
@@ -257,10 +254,9 @@ let test_own_keys_default_includes_all_keys () =
   let all = Qmljs.Object.own_keys obj in
   check_int "own_keys default includes non-enumerable key" 2 (List.length all)
 
-(* BUG 13 — entries and values inherit the same broken default
-   via [own_key_flags]. When [own_keys] defaults to enumerable-only,
-   [entries] and [values] are equally affected. Both must return all
-   entries/values unless [enumerable_only] is explicitly set. *)
+(* entries and values share the [own_keys] default via [own_key_flags]:
+   both include non-enumerable entries/values unless [enumerable_only] is
+   set explicitly. *)
 let test_entries_default_includes_all () =
   with_context @@ fun _runtime context ->
   let obj = Qmljs.Object.create context in

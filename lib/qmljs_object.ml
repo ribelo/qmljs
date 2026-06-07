@@ -199,7 +199,7 @@ let keys t =
   |> Array.to_list
 
 let own_key_flags ?(strings = true) ?(symbols = false)
-    ?(enumerable_only = true) () =
+    ?(enumerable_only = false) () =
   (if strings then 1 else 0)
   lor (if symbols then 2 else 0)
   lor (if enumerable_only then 4 else 0)

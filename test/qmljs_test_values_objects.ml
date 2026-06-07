@@ -460,35 +460,35 @@ let test_object_own_key_iteration_api () =
     values |> List.map Qmljs.Value.to_string |> List.sort String.compare
   in
   check_string "default own keys"
-    "visible"
-    (String.concat "," (sorted_strings (Qmljs.Object.own_keys object_)));
-  check_string "all string own keys"
     "hidden,visible"
+    (String.concat "," (sorted_strings (Qmljs.Object.own_keys object_)));
+  check_string "enumerable-only string own keys"
+    "visible"
     (String.concat ","
        (sorted_strings
-          (Qmljs.Object.own_keys ~enumerable_only:false object_)));
+          (Qmljs.Object.own_keys ~enumerable_only:true object_)));
   let object_keys = Qmljs.Object.keys object_ |> List.sort String.compare in
   if object_keys <> [ "visible" ] then
     fail
       ("Object.keys returned wrong keys: "
        ^ String.concat "," object_keys);
   let enum_symbols =
-    Qmljs.Object.own_keys ~strings:false ~symbols:true object_
+    Qmljs.Object.own_keys ~strings:false ~symbols:true ~enumerable_only:true
+      object_
   in
   check_int "enumerable symbol count" 1 (List.length enum_symbols);
   check_bool "enumerable symbol key matches" true
     (Qmljs.Value.strict_equal (List.hd enum_symbols) (Qmljs.Key.symbol symbol));
   check_int "all string and symbol own keys" 4
-    (List.length
-       (Qmljs.Object.own_keys ~symbols:true ~enumerable_only:false object_));
+    (List.length (Qmljs.Object.own_keys ~symbols:true object_));
   let entry_values =
     Qmljs.Object.entries object_
     |> List.map (fun (_key, value) -> Qmljs.Value.to_int value)
     |> List.sort compare
   in
-  if entry_values <> [ 1 ] then fail "default entries returned wrong values";
+  if entry_values <> [ 1; 2 ] then fail "default entries returned wrong values";
   let values =
-    Qmljs.Object.values ~symbols:true object_
+    Qmljs.Object.values ~symbols:true ~enumerable_only:true object_
     |> List.map Qmljs.Value.to_int
     |> List.sort compare
   in
