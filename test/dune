@@ -31,3 +31,8 @@
 (test
  (name test_qmljs_bug_hunt)
  (libraries qmljs eio_main))
+
+(test
+ (name test_qmljs_properties)
+ (libraries qmljs eio_main qcheck qcheck-core))
+

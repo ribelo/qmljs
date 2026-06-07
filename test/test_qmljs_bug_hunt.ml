@@ -234,6 +234,94 @@ let test_as_int_rejects_out_of_range_bigint () =
         (Printf.sprintf
            "as_int(2n**64n) silently returned %d for an out-of-range BigInt" i)
 
+(* BUG 12 — own_keys must return all own property keys by default.
+
+   [own_keys] documents three optional flags: [strings], [symbols], and
+   [enumerable_only]. The default for [enumerable_only] must be [false]:
+   without an explicit filter, callers expect every own key regardless of
+   enumerability. The current implementation defaults [enumerable_only] to
+   [true], which silently discards non-enumerable properties — a violation
+   of the principle of least surprise and the documented contract that
+   [own_keys] returns "own property keys" without qualification. *)
+let test_own_keys_default_includes_all_keys () =
+  with_context @@ fun _runtime context ->
+  let obj = Qmljs.Object.create context in
+  Qmljs.Object.define_data_property obj
+    ~key:(Qmljs.Value.string context "visible")
+    ~value:(Qmljs.Value.int context 1)
+    ~writable:true ~enumerable:true ~configurable:true;
+  Qmljs.Object.define_data_property obj
+    ~key:(Qmljs.Value.string context "hidden")
+    ~value:(Qmljs.Value.int context 2)
+    ~writable:true ~enumerable:false ~configurable:true;
+  let all = Qmljs.Object.own_keys obj in
+  check_int "own_keys default includes non-enumerable key" 2 (List.length all)
+
+(* BUG 13 — entries and values inherit the same broken default
+   via [own_key_flags]. When [own_keys] defaults to enumerable-only,
+   [entries] and [values] are equally affected. Both must return all
+   entries/values unless [enumerable_only] is explicitly set. *)
+let test_entries_default_includes_all () =
+  with_context @@ fun _runtime context ->
+  let obj = Qmljs.Object.create context in
+  Qmljs.Object.define_data_property obj
+    ~key:(Qmljs.Value.string context "a")
+    ~value:(Qmljs.Value.int context 10)
+    ~writable:true ~enumerable:true ~configurable:true;
+  Qmljs.Object.define_data_property obj
+    ~key:(Qmljs.Value.string context "_internal")
+    ~value:(Qmljs.Value.int context 20)
+    ~writable:true ~enumerable:false ~configurable:true;
+  let entries = Qmljs.Object.entries obj in
+  check_int "entries default includes non-enumerable entry" 2 (List.length entries)
+
+(* BUG 14 — Value.string / Value.to_string must round-trip all OCaml bytes.
+
+   OCaml strings are arbitrary byte sequences. QuickJS strings are UTF-16
+   internally, and [JS_NewStringLen] silently replaces invalid UTF-8 bytes
+   with U+FFFD (the Unicode replacement character). Any OCaml string
+   containing a non-UTF-8 byte (e.g. 0x80–0xFF not in a valid multi-byte
+   sequence) will be corrupted on the round trip: the output string is longer
+   and the original bytes are gone. Tests should fail.
+
+   For example, the single byte 0x9c (not valid UTF-8) becomes the 3-byte
+   UTF-8 sequence 0xef 0xbf 0xbd (U+FFFD). *)
+let test_string_roundtrip_preserves_non_utf8_bytes () =
+  with_context @@ fun _runtime context ->
+  let input = "\x9c" in  (* 0x9c — invalid UTF-8 *)
+  let output = Qmljs.Value.string context input |> Qmljs.Value.to_string in
+  if String.length input <> String.length output then
+    fail
+      (Printf.sprintf
+         "string roundtrip corrupted non-UTF8 byte: \\\n        input len=%d, output len=%d"
+         (String.length input) (String.length output));
+  for i = 0 to String.length input - 1 do
+    if String.get input i <> String.get output i then
+      fail
+        (Printf.sprintf
+           "string roundtrip byte %d differs: expected 0x%02x, got 0x%02x"
+           i (Char.code (String.get input i))
+           (Char.code (String.get output i)))
+  done
+
+(* BUG 15 — the same corruption affects property keys: a property set with
+   a non-UTF8 key silently ends up with a different (transcoded) key on the
+   JS object. [Object.keys] reveals the replacement. *)
+let test_property_key_silently_transcodes_non_utf8 () =
+  with_context @@ fun _runtime context ->
+  let key = "k\x9c" in  (* 0x6b, 0x9c *)
+  let obj = Qmljs.Object.create context in
+  Qmljs.Object.define_data_property obj
+    ~key:(Qmljs.Value.string context key)
+    ~value:(Qmljs.Value.int context 999)
+    ~writable:true ~enumerable:true ~configurable:true;
+  let stored_keys = Qmljs.Object.keys obj in
+  match stored_keys with
+  | [ k ] ->
+      check_string_eq
+        "non-UTF8 key should round-trip through JS" key k
+  | _ -> fail "expected exactly one key"
+
 let tests =
   [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
   ; "int_is_a_js_number", test_int_is_a_js_number
@@ -246,6 +334,12 @@ let tests =
   ; "class_finalizers_run_after_gc", test_class_finalizers_run_after_gc
   ; "async_eval_unwraps_result", test_async_eval_unwraps_result
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
+  ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
+  ; "entries_default_includes_all", test_entries_default_includes_all
+  ; "string_roundtrip_preserves_non_utf8_bytes",
+    test_string_roundtrip_preserves_non_utf8_bytes
+  ; "property_key_silently_transcodes_non_utf8",
+    test_property_key_silently_transcodes_non_utf8
   ]
 
 let () =
