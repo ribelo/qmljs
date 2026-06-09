@@ -182,6 +182,14 @@ let test_json_codec_api () =
     | None -> fail "json stringify did not round-trip answer"
   in
   check_int "json roundtrip answer" 42 roundtrip_answer;
+  let spaced = Qmljs.Json.stringify ~space:max_int parsed in
+  let expected_spaced =
+    Qmljs.Value.to_string
+      (Qmljs.Context.eval context
+         "JSON.stringify({ answer: 42 }, null, Number.MAX_SAFE_INTEGER)")
+  in
+  check_string "json stringify large space follows JS clamping" expected_spaced
+    spaced;
   (match Qmljs.Json.of_string context "{not json}" with
    | Error error ->
        check_kind "invalid json kind" Qmljs.Error.JavaScript

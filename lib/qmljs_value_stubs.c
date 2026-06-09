@@ -1790,7 +1790,10 @@ CAMLprim value qmljs_json_stringify(value context, value wrapped, value input_sp
   qmljs_ensure_same_context(context, wrapped);
   JSValue space = JS_UNDEFINED;
   if (Is_block(input_space)) {
-    space = JS_NewInt32(ctx, Int_val(Field(input_space, 0)));
+    space = JS_NewInt64(ctx, Long_val(Field(input_space, 0)));
+    if (JS_IsException(space)) {
+      qmljs_raise_exception(ctx);
+    }
   }
   JSValue json =
     JS_JSONStringify(ctx, qmljs_js_value(wrapped), JS_UNDEFINED, space);
