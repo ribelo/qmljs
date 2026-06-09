@@ -337,6 +337,39 @@ let test_structured_error_preserves_nul_bytes () =
        check_bool "host marker metadata with NUL" true
          (List.mem ("k\000y", "v\000al") (Qmljs.Error.metadata error)))
 
+(* User-thrown [null] is an ordinary JavaScript failure.
+
+   QuickJS internals may use null-like sentinels for some engine failures, but a
+   JS program can explicitly [throw null] or [Promise.reject(null)]. qmljs must
+   not classify those user values as out-of-memory just because the thrown value
+   is JS null. *)
+let test_throw_null_is_javascript_not_oom () =
+  let check_null_error label error =
+    check_bool (label ^ " is not OOM") false
+      (Qmljs.Error.is_out_of_memory error);
+    (match Qmljs.Error.kind error with
+     | Qmljs.Error.JavaScript -> ()
+     | _ -> fail (label ^ " should be a JavaScript error"));
+    check_string_eq (label ^ " message") "null" (Qmljs.Error.message error)
+  in
+  let check_context label context =
+    (match
+       Qmljs.Error.capture (fun () ->
+           Qmljs.Context.eval context "throw null")
+     with
+     | Ok _ -> fail "expected throw null to raise"
+     | Error error -> check_null_error (label ^ " throw null") error);
+    let rejected = Qmljs.Context.eval context "Promise.reject(null)" in
+    match Qmljs.Promise.await_result rejected with
+    | Ok _ -> fail "expected Promise.reject(null) to reject"
+    | Error error ->
+        check_null_error (label ^ " Promise.reject(null)") error
+  in
+  with_context (fun _runtime context -> check_context "default runtime" context);
+  Qmljs.Runtime.with_ ~memory_limit:(16 * 1024 * 1024) @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  check_context "memory-limited runtime" context
+
 (* BUG 11 — as_int must reject (not silently wrap) BigInts outside the OCaml int
    range. [JS_ToInt64Ext] reduces modulo 2^64, so 2n**64n would wrap to 0; the
    decoder must fail loudly instead of returning [Ok 0]. *)
@@ -465,6 +498,7 @@ let tests =
     test_module_eval_pending_tla_is_not_silent_success
   ; "structured_error_preserves_nul_bytes",
     test_structured_error_preserves_nul_bytes
+  ; "throw_null_is_javascript_not_oom", test_throw_null_is_javascript_not_oom
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
   ; "entries_default_includes_all", test_entries_default_includes_all

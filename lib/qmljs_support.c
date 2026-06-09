@@ -2,6 +2,7 @@
 
 #include <limits.h>
 #include <string.h>
+#include <time.h>
 
 /* Diagnostics count live OCaml wrappers and selected native resources whose
    lifetime should return to baseline at safe boundaries. This is leak evidence,
@@ -1497,6 +1498,43 @@ static int qmljs_error_kind_of_marker(
   return 0;
 }
 
+static long long qmljs_support_monotonic_time_ns(void)
+{
+  struct timespec time;
+  clock_gettime(CLOCK_MONOTONIC, &time);
+  return ((long long)time.tv_sec * 1000000000LL) + (long long)time.tv_nsec;
+}
+
+static int qmljs_interrupt_deadline_elapsed(struct qmljs_runtime_state *state)
+{
+  if (state == NULL) {
+    return 0;
+  }
+  long long deadline =
+    atomic_load_explicit(&state->interrupt_deadline_ns, memory_order_acquire);
+  return deadline > 0 && qmljs_support_monotonic_time_ns() >= deadline;
+}
+
+static int qmljs_memory_limit_exhausted(struct qmljs_runtime_state *state)
+{
+  if (state == NULL || state->rt == NULL ||
+      atomic_load_explicit(&state->memory_limit_active, memory_order_acquire)
+        == 0) {
+    return 0;
+  }
+  JSMemoryUsage usage;
+  JS_ComputeMemoryUsage(state->rt, &usage);
+  if (usage.malloc_limit <= 0) {
+    return 0;
+  }
+  if (usage.malloc_size >= usage.malloc_limit) {
+    return 1;
+  }
+  /* The rejected allocation is not counted in malloc_size, so the OOM sentinel
+     can appear one small allocator page below the configured limit. */
+  return usage.malloc_limit - usage.malloc_size <= 4096;
+}
+
 static int qmljs_same_stack_line(const char *left, size_t left_length,
                                const char *right, size_t right_length)
 {
@@ -1716,7 +1754,16 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   int trusted_uncatchable_error = 0;
   struct qmljs_runtime_state *state = qmljs_state_of_context(ctx);
 
-  if (JS_IsNull(js_exception)) {
+  if (JS_IsNull(js_exception) && state != NULL &&
+      (atomic_load_explicit(&state->interrupt_requested,
+                            memory_order_acquire) != 0 ||
+       qmljs_interrupt_deadline_elapsed(state))) {
+    kind = 6;
+    fallback_literal = qmljs_literal_string("interrupted");
+    fallback_message = &fallback_literal;
+  } else if (JS_IsNull(js_exception) &&
+             (JS_IsUncatchableError(js_exception) ||
+              qmljs_memory_limit_exhausted(state))) {
     kind = 1;
     fallback_literal = qmljs_literal_string("out of memory");
     fallback_message = &fallback_literal;
@@ -1770,9 +1817,8 @@ static value qmljs_build_structured_exception(JSContext *ctx,
     fallback_message = &exception_text;
   }
 
-  kind = trusted_marker ? qmljs_error_kind_of_marker(&kind_marker) : 0;
-  if (kind == 0 && JS_IsNull(js_exception)) {
-    kind = 1;
+  if (kind == 0 && trusted_marker) {
+    kind = qmljs_error_kind_of_marker(&kind_marker);
   }
   if (kind == 0 && trusted_engine_error) {
     kind =
