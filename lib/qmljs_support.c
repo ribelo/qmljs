@@ -46,6 +46,13 @@ struct qmljs_deferred_atom {
   struct qmljs_deferred_atom *next;
 };
 
+struct qmljs_deferred_prop_enum {
+  struct qmljs_runtime_state *state;
+  JSPropertyEnum *properties;
+  uint32_t length;
+  struct qmljs_deferred_prop_enum *next;
+};
+
 struct qmljs_deferred_context {
   struct qmljs_runtime_state *state;
   JSContext *ctx;
@@ -544,6 +551,32 @@ static void qmljs_defer_atom(struct qmljs_runtime_state *state, JSAtom atom)
     memory_order_acquire));
 }
 
+void qmljs_defer_prop_enum(struct qmljs_runtime_state *state,
+                           JSPropertyEnum *properties, uint32_t length)
+{
+  if (properties == NULL) {
+    return;
+  }
+  if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
+      == 0) {
+    /* Runtime gone: the atoms and the array died with it. */
+    return;
+  }
+  struct qmljs_deferred_prop_enum *node =
+    caml_stat_alloc(sizeof(struct qmljs_deferred_prop_enum));
+  node->state = state;
+  node->properties = properties;
+  node->length = length;
+  qmljs_state_ref(state);
+  struct qmljs_deferred_prop_enum *head =
+    atomic_load_explicit(&state->deferred_prop_enums, memory_order_acquire);
+  do {
+    node->next = head;
+  } while (!atomic_compare_exchange_weak_explicit(
+    &state->deferred_prop_enums, &head, node, memory_order_release,
+    memory_order_acquire));
+}
+
 static void qmljs_defer_context(struct qmljs_runtime_state *state,
                               JSContext *ctx, JSValue bigint_constructor)
 {
@@ -849,6 +882,22 @@ void qmljs_drain_deferred(struct qmljs_runtime_state *state)
     atoms = next;
   }
 
+  struct qmljs_deferred_prop_enum *prop_enums =
+    atomic_exchange_explicit(&state->deferred_prop_enums, NULL,
+                             memory_order_acquire);
+  while (prop_enums != NULL) {
+    struct qmljs_deferred_prop_enum *next = prop_enums->next;
+    if (runtime_alive && state->rt != NULL && prop_enums->properties != NULL) {
+      for (uint32_t i = 0; i < prop_enums->length; i++) {
+        JS_FreeAtomRT(state->rt, prop_enums->properties[i].atom);
+      }
+      js_free_rt(state->rt, prop_enums->properties);
+    }
+    qmljs_state_unref(prop_enums->state);
+    caml_stat_free(prop_enums);
+    prop_enums = next;
+  }
+
   struct qmljs_deferred_context *contexts =
     atomic_exchange_explicit(&state->deferred_contexts, NULL,
                              memory_order_acquire);
@@ -1144,6 +1193,15 @@ value qmljs_alloc_value(value context, JSValue js_value)
   }
   Qml_value_val(block)->handle = handle;
   CAMLreturn(block);
+}
+
+/* Attach a real JSValue to a wrapper previously allocated holding JS_UNDEFINED.
+   The wrapper takes ownership (its finalizer defers the release). Non-raising,
+   so callers can acquire QuickJS values, then hand them to pre-allocated
+   wrappers with no allocation-failure window in between. */
+void qmljs_value_attach(value wrapper, JSValue js_value)
+{
+  Qml_value_val(wrapper)->handle->value = js_value;
 }
 
 value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)

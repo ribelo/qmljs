@@ -66,6 +66,7 @@ struct qmljs_runtime_state {
   atomic_int module_loader_callback_depth;
   _Atomic(struct qmljs_deferred_value *) deferred_values;
   _Atomic(struct qmljs_deferred_atom *) deferred_atoms;
+  _Atomic(struct qmljs_deferred_prop_enum *) deferred_prop_enums;
   _Atomic(struct qmljs_deferred_context *) deferred_contexts;
   _Atomic(struct qmljs_class_instance *) deferred_class_finalizers;
 };
@@ -94,6 +95,11 @@ struct qmljs_atom {
 value qmljs_alloc_runtime(JSRuntime *rt, struct qmljs_runtime_state *state);
 value qmljs_alloc_context(value runtime, JSContext *ctx);
 value qmljs_alloc_value(value context, JSValue js_value);
+void qmljs_value_attach(value wrapper, JSValue js_value);
+/* Queue a JS_GetOwnPropertyNames result for release on the owner domain. Used by
+   the property-enum holder finalizer, which may run on any domain. */
+void qmljs_defer_prop_enum(struct qmljs_runtime_state *state,
+                           JSPropertyEnum *properties, uint32_t length);
 value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom);
 
 void qmljs_raise_string(const char *message);

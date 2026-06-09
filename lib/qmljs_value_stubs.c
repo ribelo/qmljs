@@ -322,27 +322,65 @@ static value qmljs_optional_bool(int input)
   CAMLreturn(result);
 }
 
-static value qmljs_optional_wrapped_value(value context, JSContext *ctx,
-                                        JSValueConst js_value)
+/* Build the (value option * bool option * bool * bool * value option *
+   value option) descriptor tuple, taking ownership of the descriptor's QuickJS
+   values into the pre-allocated wrappers [w0] and [w1] (each created holding
+   JS_UNDEFINED). Every descriptor value is transferred or freed before any
+   OCaml allocation here, so an allocation failure cannot leave a descriptor
+   value unowned: transferred values are owned by the GC-rooted wrappers. */
+static value qmljs_descriptor_tuple(value context, JSContext *ctx,
+                                    JSPropertyDescriptor *descriptor, value w0,
+                                    value w1)
 {
-  CAMLparam1(context);
-  CAMLlocal2(wrapped, result);
-  if (JS_IsUndefined(js_value)) {
-    CAMLreturn(Val_int(0));
-  }
-  wrapped = qmljs_alloc_value(context, JS_DupValue(ctx, js_value));
-  result = qmljs_option(wrapped);
-  CAMLreturn(result);
-}
+  CAMLparam3(context, w0, w1);
+  CAMLlocal1(tuple);
+  int is_getset = (descriptor->flags & JS_PROP_GETSET) != 0;
+  int writable = (descriptor->flags & JS_PROP_WRITABLE) != 0;
+  int enumerable = (descriptor->flags & JS_PROP_ENUMERABLE) != 0;
+  int configurable = (descriptor->flags & JS_PROP_CONFIGURABLE) != 0;
+  int has_get = 0;
+  int has_set = 0;
 
-static value qmljs_present_wrapped_value(value context, JSContext *ctx,
-                                       JSValueConst js_value)
-{
-  CAMLparam1(context);
-  CAMLlocal2(wrapped, result);
-  wrapped = qmljs_alloc_value(context, JS_DupValue(ctx, js_value));
-  result = qmljs_option(wrapped);
-  CAMLreturn(result);
+  /* Non-raising ownership transfer first. */
+  if (!is_getset) {
+    qmljs_value_attach(w0, descriptor->value);
+    descriptor->value = JS_UNDEFINED;
+    JS_FreeValue(ctx, descriptor->getter);
+    descriptor->getter = JS_UNDEFINED;
+    JS_FreeValue(ctx, descriptor->setter);
+    descriptor->setter = JS_UNDEFINED;
+  } else {
+    has_get = !JS_IsUndefined(descriptor->getter);
+    has_set = !JS_IsUndefined(descriptor->setter);
+    JS_FreeValue(ctx, descriptor->value);
+    descriptor->value = JS_UNDEFINED;
+    qmljs_value_attach(w0, descriptor->getter);
+    descriptor->getter = JS_UNDEFINED;
+    qmljs_value_attach(w1, descriptor->setter);
+    descriptor->setter = JS_UNDEFINED;
+  }
+
+  /* From here every value is owned by w0/w1 (rooted), so the option/tuple
+     allocations below are leak-safe even on OCaml allocation failure. */
+  tuple = caml_alloc_tuple(6);
+  Store_field(tuple, 0, Val_unit);
+  Store_field(tuple, 1, Val_unit);
+  Store_field(tuple, 2, Val_bool(enumerable));
+  Store_field(tuple, 3, Val_bool(configurable));
+  Store_field(tuple, 4, Val_unit);
+  Store_field(tuple, 5, Val_unit);
+  if (!is_getset) {
+    Store_field(tuple, 0, qmljs_option(w0));
+    Store_field(tuple, 1, qmljs_optional_bool(writable));
+  } else {
+    if (has_get) {
+      Store_field(tuple, 4, qmljs_option(w0));
+    }
+    if (has_set) {
+      Store_field(tuple, 5, qmljs_option(w1));
+    }
+  }
+  CAMLreturn(qmljs_option(tuple));
 }
 
 CAMLprim value qmljs_object_get(value context, value object, value key)
@@ -510,11 +548,18 @@ CAMLprim value qmljs_object_get_own_property_descriptor(value context,
                                                       value key)
 {
   CAMLparam3(context, object, key);
-  CAMLlocal2(tuple, result);
+  CAMLlocal2(w0, w1);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
   qmljs_ensure_same_context(context, object);
   qmljs_ensure_same_context(context, key);
+
+  /* Pre-allocate the value wrappers before acquiring the descriptor, so a
+     wrapper allocation failure happens while no QuickJS descriptor value is
+     held. */
+  w0 = qmljs_alloc_value(context, JS_UNDEFINED);
+  w1 = qmljs_alloc_value(context, JS_UNDEFINED);
+
   JSAtom atom = JS_ValueToAtom(ctx, qmljs_js_value(key));
   if (atom == JS_ATOM_NULL) {
     qmljs_raise_exception(ctx);
@@ -534,32 +579,7 @@ CAMLprim value qmljs_object_get_own_property_descriptor(value context,
   if (found == 0) {
     CAMLreturn(Val_int(0));
   }
-
-  tuple = caml_alloc_tuple(6);
-  Store_field(tuple, 0, Val_unit);
-  Store_field(tuple, 1, Val_unit);
-  Store_field(tuple, 2, Val_bool((descriptor.flags & JS_PROP_ENUMERABLE) != 0));
-  Store_field(tuple, 3, Val_bool((descriptor.flags & JS_PROP_CONFIGURABLE) != 0));
-  Store_field(tuple, 4, Val_unit);
-  Store_field(tuple, 5, Val_unit);
-
-  if ((descriptor.flags & JS_PROP_GETSET) == 0) {
-    Store_field(tuple, 0,
-                qmljs_present_wrapped_value(context, ctx, descriptor.value));
-    Store_field(tuple, 1,
-                qmljs_optional_bool((descriptor.flags & JS_PROP_WRITABLE) != 0));
-  } else {
-    Store_field(tuple, 4,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.getter));
-    Store_field(tuple, 5,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.setter));
-  }
-
-  JS_FreeValue(ctx, descriptor.value);
-  JS_FreeValue(ctx, descriptor.getter);
-  JS_FreeValue(ctx, descriptor.setter);
-  result = qmljs_option(tuple);
-  CAMLreturn(result);
+  CAMLreturn(qmljs_descriptor_tuple(context, ctx, &descriptor, w0, w1));
 }
 
 CAMLprim value qmljs_object_get_own_property_descriptor_atom(value context,
@@ -567,10 +587,13 @@ CAMLprim value qmljs_object_get_own_property_descriptor_atom(value context,
                                                            value atom)
 {
   CAMLparam3(context, object, atom);
-  CAMLlocal2(tuple, result);
+  CAMLlocal2(w0, w1);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
   qmljs_ensure_same_context(context, object);
+
+  w0 = qmljs_alloc_value(context, JS_UNDEFINED);
+  w1 = qmljs_alloc_value(context, JS_UNDEFINED);
 
   JSPropertyDescriptor descriptor;
   descriptor.flags = 0;
@@ -587,32 +610,7 @@ CAMLprim value qmljs_object_get_own_property_descriptor_atom(value context,
   if (found == 0) {
     CAMLreturn(Val_int(0));
   }
-
-  tuple = caml_alloc_tuple(6);
-  Store_field(tuple, 0, Val_unit);
-  Store_field(tuple, 1, Val_unit);
-  Store_field(tuple, 2, Val_bool((descriptor.flags & JS_PROP_ENUMERABLE) != 0));
-  Store_field(tuple, 3, Val_bool((descriptor.flags & JS_PROP_CONFIGURABLE) != 0));
-  Store_field(tuple, 4, Val_unit);
-  Store_field(tuple, 5, Val_unit);
-
-  if ((descriptor.flags & JS_PROP_GETSET) == 0) {
-    Store_field(tuple, 0,
-                qmljs_present_wrapped_value(context, ctx, descriptor.value));
-    Store_field(tuple, 1,
-                qmljs_optional_bool((descriptor.flags & JS_PROP_WRITABLE) != 0));
-  } else {
-    Store_field(tuple, 4,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.getter));
-    Store_field(tuple, 5,
-                qmljs_optional_wrapped_value(context, ctx, descriptor.setter));
-  }
-
-  JS_FreeValue(ctx, descriptor.value);
-  JS_FreeValue(ctx, descriptor.getter);
-  JS_FreeValue(ctx, descriptor.setter);
-  result = qmljs_option(tuple);
-  CAMLreturn(result);
+  CAMLreturn(qmljs_descriptor_tuple(context, ctx, &descriptor, w0, w1));
 }
 
 CAMLprim value qmljs_object_keys(value context, value object)
@@ -652,10 +650,43 @@ CAMLprim value qmljs_object_keys(value context, value object)
   CAMLreturn(result);
 }
 
+/* GC-finalizable owner of a JS_GetOwnPropertyNames result. While the keys are
+   wrapped one by one, an OCaml allocation failure unwinds past this stub; the
+   holder then becomes unreachable and its finalizer defers the enum's release to
+   the owner domain (finalizers may run on any domain, so they must not touch
+   QuickJS directly). On the success path the enum is freed promptly and the
+   holder neutralized. */
+struct qmljs_prop_enum_holder {
+  struct qmljs_runtime_state *state;
+  JSPropertyEnum *properties;
+  uint32_t length;
+};
+
+#define Qml_prop_enum_holder_val(v)                                            \
+  ((struct qmljs_prop_enum_holder *)Data_custom_val(v))
+
+static void qmljs_prop_enum_holder_finalize(value v)
+{
+  struct qmljs_prop_enum_holder *holder = Qml_prop_enum_holder_val(v);
+  qmljs_defer_prop_enum(holder->state, holder->properties, holder->length);
+  holder->properties = NULL;
+}
+
+static struct custom_operations qmljs_prop_enum_holder_ops = {
+  "qmljs.prop_enum_holder",
+  qmljs_prop_enum_holder_finalize,
+  custom_compare_default,
+  custom_hash_default,
+  custom_serialize_default,
+  custom_deserialize_default,
+  custom_compare_ext_default,
+  custom_fixed_length_default
+};
+
 CAMLprim value qmljs_object_own_keys(value context, value object, value input_flags)
 {
   CAMLparam3(context, object, input_flags);
-  CAMLlocal2(result, key);
+  CAMLlocal2(result, holder);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
   qmljs_ensure_same_context(context, object);
@@ -672,28 +703,38 @@ CAMLprim value qmljs_object_own_keys(value context, value object, value input_fl
     flags |= JS_GPN_ENUM_ONLY;
   }
 
-  JSPropertyEnum *properties = NULL;
-  uint32_t length = 0;
-  if (JS_GetOwnPropertyNames(ctx, &properties, &length, qmljs_js_value(object),
-                             flags) < 0) {
+  /* Own the enum in a finalizable holder before any key-wrapping allocation,
+     so a failure releases it instead of skipping JS_FreePropertyEnum. */
+  holder = caml_alloc_custom(&qmljs_prop_enum_holder_ops,
+                             sizeof(struct qmljs_prop_enum_holder), 0, 1);
+  Qml_prop_enum_holder_val(holder)->state = qmljs_context_state(context);
+  Qml_prop_enum_holder_val(holder)->properties = NULL;
+  Qml_prop_enum_holder_val(holder)->length = 0;
+  if (JS_GetOwnPropertyNames(ctx, &Qml_prop_enum_holder_val(holder)->properties,
+                             &Qml_prop_enum_holder_val(holder)->length,
+                             qmljs_js_value(object), flags) < 0) {
     qmljs_raise_exception(ctx);
   }
 
+  uint32_t length = Qml_prop_enum_holder_val(holder)->length;
   result = caml_alloc(length, 0);
   for (uint32_t i = 0; i < length; i++) {
     Store_field(result, i, Val_unit);
   }
   for (uint32_t i = 0; i < length; i++) {
-    JSValue js_key = JS_AtomToValue(ctx, properties[i].atom);
+    JSValue js_key =
+      JS_AtomToValue(ctx, Qml_prop_enum_holder_val(holder)->properties[i].atom);
     if (JS_IsException(js_key)) {
-      JS_FreePropertyEnum(ctx, properties, length);
       qmljs_raise_exception(ctx);
     }
-    key = qmljs_alloc_value(context, js_key);
-    Store_field(result, i, key);
+    Store_field(result, i, qmljs_alloc_value(context, js_key));
   }
 
-  JS_FreePropertyEnum(ctx, properties, length);
+  /* Success: free the enum promptly on the owner domain and neutralize the
+     holder so its finalizer becomes a no-op. */
+  JS_FreePropertyEnum(ctx, Qml_prop_enum_holder_val(holder)->properties,
+                      length);
+  Qml_prop_enum_holder_val(holder)->properties = NULL;
   CAMLreturn(result);
 }
 

@@ -1087,6 +1087,98 @@ let test_module_eval_wrapper_failpoint_frees_raw_values () =
   regressed "live allocation count" before.memory_used_count
     after.memory_used_count
 
+(* Property descriptor and own-key enumeration must not leak QuickJS values or
+   property enums when an OCaml wrapper allocation fails partway. Each operation
+   is driven under the value-wrapper failpoint (at several positions) with a
+   fresh context per iteration, so any leaked QuickJS value or enum survives at
+   the runtime level. Before the fix the runtime object count climbs without
+   bound; after it, the object count returns to baseline once GC runs and the
+   deferred releases drain. *)
+let test_descriptor_and_own_keys_failpoints_free_quickjs_resources () =
+  let value_site = 2 (* QMLJS_WRAPPER_FAILPOINT_VALUE *) in
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let build context =
+    let obj = Qmljs.Object.create context in
+    Qmljs.Object.define_data_property obj
+      ~key:(Qmljs.Value.string context "data")
+      ~value:(Qmljs.Object.create context)
+      ~writable:true ~enumerable:true ~configurable:true;
+    let getter =
+      Qmljs.Function.make context ~name:"g" ~arity:0 (fun _ ->
+          Qmljs.Value.int context 1)
+    in
+    let setter =
+      Qmljs.Function.make context ~name:"s" ~arity:1 (fun _ ->
+          Qmljs.Value.undefined context)
+    in
+    Qmljs.Object.define_accessor_property obj
+      ~key:(Qmljs.Value.string context "acc") ~get:getter ~set:setter
+      ~enumerable:true ~configurable:true ();
+    let sym = Qmljs.Symbol.global context "sym-key" in
+    Qmljs.Object.define_data_property obj ~key:(Qmljs.Key.symbol sym)
+      ~value:(Qmljs.Object.create context)
+      ~writable:true ~enumerable:true ~configurable:true;
+    obj
+  in
+  (Qmljs.Context.with_ runtime @@ fun context -> ignore (build context : Qmljs.Object.t));
+  Qmljs.Runtime.run_gc runtime;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  let fail_op ~skip op =
+    Fun.protect
+      ~finally:(fun () -> test_set_wrapper_failpoint 0)
+      (fun () ->
+        test_set_wrapper_failpoint value_site;
+        test_set_wrapper_failpoint_skip skip;
+        expect_structured_error
+          (Printf.sprintf "descriptor/own-keys failpoint skip=%d" skip)
+          op
+          (fun error ->
+            check_string "failpoint message"
+              "qmljs test wrapper allocation failpoint"
+              (Qmljs.Error.message error)))
+  in
+  for _ = 1 to 50 do
+    Qmljs.Context.with_ runtime @@ fun context ->
+    let obj = build context in
+    let data_key = Qmljs.Value.string context "data" in
+    let acc_key = Qmljs.Value.string context "acc" in
+    let acc_atom = Qmljs.Atom.of_string context "acc" in
+    (* data descriptor: value wrapping fails *)
+    fail_op ~skip:0 (fun () ->
+        ignore
+          (Qmljs.Object.get_own_property_descriptor obj ~key:data_key
+            : Qmljs.Object.descriptor option));
+    (* accessor descriptor: getter/setter wrapping fails *)
+    fail_op ~skip:0 (fun () ->
+        ignore
+          (Qmljs.Object.get_own_property_descriptor obj ~key:acc_key
+            : Qmljs.Object.descriptor option));
+    fail_op ~skip:0 (fun () ->
+        ignore
+          (Qmljs.Object.get_own_property_descriptor_atom obj ~key:acc_atom
+            : Qmljs.Object.descriptor option));
+    (* own_keys (including symbols => 3 keys): key wrapping fails at the 1st,
+       2nd, and 3rd key *)
+    fail_op ~skip:0 (fun () ->
+        ignore (Qmljs.Object.own_keys ~symbols:true obj : Qmljs.Value.t list));
+    fail_op ~skip:1 (fun () ->
+        ignore (Qmljs.Object.own_keys ~symbols:true obj : Qmljs.Value.t list));
+    fail_op ~skip:2 (fun () ->
+        ignore (Qmljs.Object.own_keys ~symbols:true obj : Qmljs.Value.t list))
+  done;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  if Int64.compare after.obj_count before.obj_count > 0 then
+    fail
+      (Printf.sprintf
+         "QuickJS objects leaked across failed descriptor/own-keys ops: %Ld -> %Ld"
+         before.obj_count after.obj_count)
+
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
@@ -1166,6 +1258,8 @@ let tests env =
   , test_module_loader_replacement_allocation_failure_keeps_runtime_safe
   ; "module eval wrapper failpoint frees raw values"
   , test_module_eval_wrapper_failpoint_frees_raw_values
+  ; "descriptor and own-keys failpoints free QuickJS resources"
+  , test_descriptor_and_own_keys_failpoints_free_quickjs_resources
   ]
 
 let () =
