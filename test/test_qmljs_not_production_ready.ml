@@ -39,6 +39,9 @@ external test_set_host_callback_failpoint : int -> unit
 external test_set_wrapper_failpoint : int -> unit
   = "qmljs_test_set_wrapper_failpoint"
 
+external test_set_wrapper_failpoint_skip : int -> unit
+  = "qmljs_test_set_wrapper_failpoint_skip"
+
 external test_set_module_loader_install_failpoint : bool -> unit
   = "qmljs_test_set_module_loader_install_failpoint"
 
@@ -1021,6 +1024,69 @@ let test_module_loader_replacement_allocation_failure_keeps_runtime_safe () =
   let after = Qmljs.Diagnostics.snapshot () in
   Qmljs.Diagnostics.assert_no_leaks ~before ~after
 
+(* A module eval that fails while wrapping its raw QuickJS results (namespace,
+   import.meta, evaluation result) must not leak those values. Each raw value is
+   taken into an OCaml wrapper before the next is produced, so a wrapper
+   allocation failure at any position frees the in-flight value and lets GC
+   reclaim the already-wrapped ones. We drive the value-wrapper failpoint at the
+   1st, 2nd, and 3rd allocation, using a fresh context per iteration so the
+   module definitions are reclaimed on context close; only a genuinely leaked
+   raw value (a dangling QuickJS refcount) would survive at the runtime level.
+   Before the fix this pins the whole module object graph and the runtime object
+   count grows without bound. *)
+let test_module_eval_wrapper_failpoint_frees_raw_values () =
+  let value_site = 2 (* QMLJS_WRAPPER_FAILPOINT_VALUE *) in
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  let source = "export default 41 + 1;" in
+  let fail_once ~skip ~eval =
+    Qmljs.Context.with_ runtime @@ fun context ->
+    Fun.protect
+      ~finally:(fun () -> test_set_wrapper_failpoint 0)
+      (fun () ->
+        test_set_wrapper_failpoint value_site;
+        test_set_wrapper_failpoint_skip skip;
+        expect_structured_error
+          (Printf.sprintf "module eval wrapper failpoint skip=%d" skip)
+          (fun () -> eval context)
+          (fun error ->
+            check_string "module eval wrapper failpoint message"
+              "qmljs test wrapper allocation failpoint"
+              (Qmljs.Error.message error)))
+  in
+  let eval_namespace context =
+    ignore
+      (Qmljs.Module.eval ~filename:"ns.js" context source
+        : Qmljs.Module.namespace)
+  in
+  let eval_with_meta context =
+    ignore (Qmljs.Module.eval_with_meta ~filename:"meta.js" context source)
+  in
+  (* Warm up steady-state runtime objects, then take the baseline. *)
+  (Qmljs.Context.with_ runtime @@ fun context -> eval_namespace context);
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  let iterations = 50 in
+  for _ = 1 to iterations do
+    (* eval has two value-wrapper allocations; eval_with_meta has three. *)
+    fail_once ~skip:0 ~eval:eval_namespace;
+    fail_once ~skip:1 ~eval:eval_namespace;
+    fail_once ~skip:0 ~eval:eval_with_meta;
+    fail_once ~skip:1 ~eval:eval_with_meta;
+    fail_once ~skip:2 ~eval:eval_with_meta
+  done;
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  let regressed label before_count after_count =
+    if Int64.compare after_count before_count > 0 then
+      fail
+        (Printf.sprintf
+           "%s leaked across failed module evals: %Ld -> %Ld" label
+           before_count after_count)
+  in
+  regressed "object count" before.obj_count after.obj_count;
+  regressed "live allocation count" before.memory_used_count
+    after.memory_used_count
+
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
@@ -1098,6 +1164,8 @@ let tests env =
   , (fun () -> test_async_host_callback_closed_context_crash env)
   ; "module loader replacement allocation failure keeps runtime safe"
   , test_module_loader_replacement_allocation_failure_keeps_runtime_safe
+  ; "module eval wrapper failpoint frees raw values"
+  , test_module_eval_wrapper_failpoint_frees_raw_values
   ]
 
 let () =

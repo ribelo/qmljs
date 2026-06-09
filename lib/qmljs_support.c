@@ -12,9 +12,21 @@ static atomic_int qmljs_live_value_wrappers;
 static atomic_int qmljs_live_native_runtimes;
 static atomic_int qmljs_live_argv_arrays;
 static atomic_int qmljs_test_wrapper_failpoint_site;
+/* Number of matching allocations to skip before the failpoint fires. Lets a
+   test target the Nth wrapper allocation within one operation. Reset whenever
+   the site is (re)armed. */
+static atomic_int qmljs_test_wrapper_failpoint_skip;
 
 int qmljs_test_take_wrapper_failpoint(int site)
 {
+  if (atomic_load_explicit(&qmljs_test_wrapper_failpoint_site,
+                           memory_order_acquire) != site) {
+    return 0;
+  }
+  if (atomic_fetch_sub_explicit(&qmljs_test_wrapper_failpoint_skip, 1,
+                                memory_order_acq_rel) > 0) {
+    return 0;
+  }
   int expected = site;
   return atomic_compare_exchange_strong_explicit(
     &qmljs_test_wrapper_failpoint_site, &expected,
@@ -86,7 +98,20 @@ CAMLprim value qmljs_test_reject_arg_count(value argc)
 CAMLprim value qmljs_test_set_wrapper_failpoint(value site)
 {
   CAMLparam1(site);
+  atomic_store_explicit(&qmljs_test_wrapper_failpoint_skip, 0,
+                        memory_order_release);
   atomic_store_explicit(&qmljs_test_wrapper_failpoint_site, Int_val(site),
+                        memory_order_release);
+  CAMLreturn(Val_unit);
+}
+
+/* Skip the next [count] matching allocations before firing. Call after
+   arming the site with qmljs_test_set_wrapper_failpoint, which resets the skip
+   so existing single-shot callers are unaffected. */
+CAMLprim value qmljs_test_set_wrapper_failpoint_skip(value count)
+{
+  CAMLparam1(count);
+  atomic_store_explicit(&qmljs_test_wrapper_failpoint_skip, Int_val(count),
                         memory_order_release);
   CAMLreturn(Val_unit);
 }

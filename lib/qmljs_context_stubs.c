@@ -204,15 +204,18 @@ CAMLprim value qmljs_context_eval_module_namespace(value context, value source,
     qmljs_raise_exception(ctx);
   }
   (void)qmljs_check_module_eval_result(ctx, eval_result);
+  /* Take ownership of each raw value before producing the next one, so the
+     only unwrapped JSValue at any raising point is the one inside the
+     qmljs_alloc_value that fails (which frees it). Already-wrapped values are
+     owned by OCaml and freed by GC on unwind. */
+  wrapped_eval_result = qmljs_alloc_value(context, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
   if (JS_IsException(namespace)) {
-    JS_FreeValue(ctx, eval_result);
     qmljs_raise_exception(ctx);
   }
-
   wrapped_namespace = qmljs_alloc_value(context, namespace);
-  wrapped_eval_result = qmljs_alloc_value(context, eval_result);
+
   result = caml_alloc_tuple(2);
   Store_field(result, 0, wrapped_namespace);
   Store_field(result, 1, wrapped_eval_result);
@@ -241,22 +244,22 @@ CAMLprim value qmljs_context_eval_module_with_meta(value context, value source,
     qmljs_raise_exception(ctx);
   }
   (void)qmljs_check_module_eval_result(ctx, eval_result);
+  /* Wrap each raw value before producing the next (see the namespace variant):
+     at most one unwrapped JSValue is live at any raising point. */
+  wrapped_eval_result = qmljs_alloc_value(context, eval_result);
 
   JSValue namespace = JS_GetModuleNamespace(ctx, module);
   if (JS_IsException(namespace)) {
-    JS_FreeValue(ctx, eval_result);
     qmljs_raise_exception(ctx);
   }
+  wrapped_namespace = qmljs_alloc_value(context, namespace);
+
   JSValue import_meta = JS_GetImportMeta(ctx, module);
   if (JS_IsException(import_meta)) {
-    JS_FreeValue(ctx, namespace);
-    JS_FreeValue(ctx, eval_result);
     qmljs_raise_exception(ctx);
   }
-
-  wrapped_namespace = qmljs_alloc_value(context, namespace);
   wrapped_meta = qmljs_alloc_value(context, import_meta);
-  wrapped_eval_result = qmljs_alloc_value(context, eval_result);
+
   result = caml_alloc_tuple(3);
   Store_field(result, 0, wrapped_namespace);
   Store_field(result, 1, wrapped_meta);
