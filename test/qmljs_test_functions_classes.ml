@@ -241,6 +241,43 @@ let test_async_function_value_api () =
       fail ("unexpected async function structured error: "
             ^ Qmljs.Error.message error)
 
+let test_eio_promise_settles_module_top_level_await () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+  @@ fun driver _runtime context ->
+  let native =
+    Qmljs.Module.Native.define
+      (fun declarations ->
+        Qmljs.Module.Native.declare declarations "default")
+      ~evaluate:(fun exports ->
+        let api = Qmljs.Object.create context in
+        let slow =
+          Qmljs.Function.make context ~name:"slow" ~arity:0 (fun _args ->
+              Qmljs.Eio.promise driver context (fun () ->
+                  Eio.Fiber.yield ();
+                  Eio.Fiber.yield ();
+                  Qmljs.Value.int context 42))
+        in
+        Qmljs.Object.set_string api "slow" slow;
+        Qmljs.Module.Native.export exports ~name:"default"
+          (Qmljs.Value.object_ api))
+  in
+  Qmljs.Module.declare_native context ~name:"native:eio-api" native;
+  let namespace =
+    match
+      Qmljs.Error.capture (fun () ->
+          Qmljs.Module.eval ~filename:"eio-api-main.js" context
+            {|import api from "native:eio-api";
+              export default await api.slow();|})
+    with
+    | Ok namespace -> namespace
+    | Error error ->
+        fail ("Eio promise module await rejected: " ^ Qmljs.Error.message error)
+  in
+  check_int "Eio promise module default export" 42
+    (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+
 let test_function_defer_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -401,6 +438,8 @@ let tests =
   ; "host function name NUL is rejected"
   , test_host_function_name_nul_is_rejected
   ; "async function value API", test_async_function_value_api
+  ; "Eio promise settles module top-level await"
+  , test_eio_promise_settles_module_top_level_await
   ; "function defer API", test_function_defer_api
   ; "host class API", test_host_class_api
   ; "iterable API", test_iterable_api

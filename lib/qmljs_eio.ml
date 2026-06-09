@@ -35,27 +35,30 @@ let promise ?(name = "Qmljs.Eio.promise") driver context fn =
     invalid_arg "QuickJS Eio driver is closed";
   let promise, resolve, reject = Qmljs_promise.create context in
   let runtime = Qmljs_types.context_runtime context in
-  Eio.Fiber.fork ~sw:driver.Qmljs_types.worker_switch (fun () ->
-      match fn () with
-      | result ->
-          let on_cancel () =
-            reject_with_exn_noerr context reject name
-              (Eio.Cancel.Cancelled (Failure "Eio driver cancelled"))
-          in
-          enqueue_settlement ~on_cancel driver runtime (fun () ->
-              resolve_or_reject context ~name ~resolve ~reject result)
-      | exception (Eio.Cancel.Cancelled _ as exn) ->
-          (* The worker scope was cancelled (driver cancel/close). Reject the
-             promise with structured cancellation; the rejection runs even on
-             the cancelled path (on_cancel), but is dropped if the driver has
-             already closed and the context is gone. *)
-          Eio.Cancel.protect (fun () ->
-              let do_reject () = reject_with_exn_noerr context reject name exn in
-              enqueue_settlement ~on_cancel:do_reject driver runtime do_reject)
-      | exception exn ->
-          enqueue_settlement driver runtime (fun () ->
-              reject_with_exn_noerr context reject name exn));
-    promise
+  let reject_cancelled () =
+    reject_with_exn_noerr context reject name
+      (Eio.Cancel.Cancelled (Failure "Eio driver cancelled"))
+  in
+  let start_worker () =
+    Eio.Fiber.fork ~sw:driver.Qmljs_types.worker_switch (fun () ->
+        match fn () with
+        | result ->
+            enqueue_settlement ~on_cancel:reject_cancelled driver runtime (fun () ->
+                resolve_or_reject context ~name ~resolve ~reject result)
+        | exception (Eio.Cancel.Cancelled _ as exn) ->
+            (* The worker scope was cancelled (driver cancel/close). Reject the
+               promise with structured cancellation; the rejection runs even on
+               the cancelled path (on_cancel), but is dropped if the driver has
+               already closed and the context is gone. *)
+            Eio.Cancel.protect (fun () ->
+                let do_reject () = reject_with_exn_noerr context reject name exn in
+                enqueue_settlement ~on_cancel:do_reject driver runtime do_reject)
+        | exception exn ->
+            enqueue_settlement driver runtime (fun () ->
+                reject_with_exn_noerr context reject name exn))
+  in
+  enqueue_settlement ~on_cancel:reject_cancelled driver runtime start_worker;
+  promise
 
 let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
     ?promise_job_limit f =
