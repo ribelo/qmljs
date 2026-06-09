@@ -1179,6 +1179,51 @@ let test_descriptor_and_own_keys_failpoints_free_quickjs_resources () =
          "QuickJS objects leaked across failed descriptor/own-keys ops: %Ld -> %Ld"
          before.obj_count after.obj_count)
 
+(* Promise.create wraps a promise and its two resolving functions. A generic
+   value-wrapper allocation failure while wrapping any of the three must not
+   leak the others. Driven under the value-wrapper failpoint at the 1st, 2nd,
+   and 3rd allocation, with a fresh context per iteration so a leaked resolving
+   function survives at the runtime level. *)
+let test_promise_create_generic_wrapper_failpoint_no_leak () =
+  let value_site = 2 (* QMLJS_WRAPPER_FAILPOINT_VALUE *) in
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  (Qmljs.Context.with_ runtime @@ fun context ->
+   ignore (Qmljs.Promise.create context : _));
+  Qmljs.Runtime.run_gc runtime;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  let before = Qmljs.Runtime.memory_usage runtime in
+  let fail_create ~skip =
+    Qmljs.Context.with_ runtime @@ fun context ->
+    Fun.protect
+      ~finally:(fun () -> test_set_wrapper_failpoint 0)
+      (fun () ->
+        test_set_wrapper_failpoint value_site;
+        test_set_wrapper_failpoint_skip skip;
+        expect_structured_error
+          (Printf.sprintf "promise create wrapper failpoint skip=%d" skip)
+          (fun () -> ignore (Qmljs.Promise.create context : _))
+          (fun error ->
+            check_string "promise create failpoint message"
+              "qmljs test wrapper allocation failpoint"
+              (Qmljs.Error.message error)))
+  in
+  for _ = 1 to 50 do
+    fail_create ~skip:0;
+    fail_create ~skip:1;
+    fail_create ~skip:2
+  done;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  Gc.full_major ();
+  Qmljs.Runtime.run_gc runtime;
+  let after = Qmljs.Runtime.memory_usage runtime in
+  if Int64.compare after.obj_count before.obj_count > 0 then
+    fail
+      (Printf.sprintf
+         "QuickJS objects leaked across failed Promise.create: %Ld -> %Ld"
+         before.obj_count after.obj_count)
+
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
@@ -1260,6 +1305,8 @@ let tests env =
   , test_module_eval_wrapper_failpoint_frees_raw_values
   ; "descriptor and own-keys failpoints free QuickJS resources"
   , test_descriptor_and_own_keys_failpoints_free_quickjs_resources
+  ; "promise create generic wrapper failpoint no leak"
+  , test_promise_create_generic_wrapper_failpoint_no_leak
   ]
 
 let () =
