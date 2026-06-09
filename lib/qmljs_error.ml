@@ -323,3 +323,22 @@ module Structured = struct
     | Host_callback_defect_kind -> true
     | _ -> false
 end
+
+let structured_of_host_exception = function
+  | Structured_error error -> error
+  | ( Host_error _
+    | Policy_violation _
+    | Out_of_memory
+    | Stack_overflow
+    | Resource_limit _
+    | Timeout _ ) as exn ->
+      Structured.of_exception exn
+  | Error message -> make ~kind:Host_callback_defect_kind message
+  | exn -> make ~kind:Host_callback_defect_kind (Printexc.to_string exn)
+
+let host_exception_marker name exn =
+  Structured.to_marker ~ocaml_frame:name
+    (structured_of_host_exception exn)
+
+let () =
+  Callback.Safe.register "qmljs.host_exception_marker" host_exception_marker

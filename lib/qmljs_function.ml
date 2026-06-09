@@ -69,9 +69,7 @@ let reject_with_exn context reject name exn =
     ; raw =
         Qmljs_raw.function_host_error
           (Qmljs_types.context_raw context)
-          name
-          (Qmljs_error.host_exception_message exn)
-          (Qmljs_error.host_exception_metadata exn)
+          (Qmljs_error.host_exception_marker name exn)
     }
   in
   ignore (Qmljs_value.call reject [| reason |] : Qmljs_value.t)

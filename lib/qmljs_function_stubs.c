@@ -55,187 +55,42 @@ static void qmljs_callback_finalize(void *opaque)
   caml_stat_free(callback);
 }
 
+static JSValue qmljs_error_marker_to_js(JSContext *ctx, value marker, int depth);
+
+static JSValue qmljs_throw_host_defect_message(JSContext *ctx,
+                                             const char *message,
+                                             const char *name);
+
 static JSValue qmljs_throw_ocaml_exception(JSContext *ctx, value exception,
                                          const char *name)
 {
   CAMLparam1(exception);
-  CAMLlocal3(message_value, metadata_value, metadata_pair);
-  static const value *message_fn = NULL;
-  static const value *metadata_fn = NULL;
-  char *fallback = NULL;
-  const char *message = NULL;
-  size_t message_length = 0;
+  CAMLlocal2(name_value, marker);
+  static const value *marker_fn = NULL;
 
-  if (message_fn == NULL) {
-    message_fn = caml_named_value("qmljs.host_exception_message");
+  if (marker_fn == NULL) {
+    marker_fn = caml_named_value("qmljs.host_exception_marker");
   }
-  if (metadata_fn == NULL) {
-    metadata_fn = caml_named_value("qmljs.host_exception_metadata");
-  }
-
-  if (message_fn != NULL) {
-    value result = caml_callback_exn(*message_fn, exception);
-    if (Is_exception_result(result)) {
-      fallback = caml_format_exception(Extract_exception(result));
-      message = fallback;
-      message_length = strlen(fallback);
-    } else {
-      message_value = result;
-      message = String_val(message_value);
-      message_length = caml_string_length(message_value);
-    }
-  } else {
-    fallback = caml_format_exception(exception);
-    message = fallback;
-    message_length = strlen(fallback);
-  }
-
-  JSValue error = qmljs_new_error_marker(ctx);
-  if (JS_IsException(error)) {
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
+  if (marker_fn == NULL) {
+    char *fallback = caml_format_exception(exception);
+    JSValue error = qmljs_throw_host_defect_message(ctx, fallback, name);
+    caml_stat_free(fallback);
     CAMLreturnT(JSValue, error);
   }
 
-  JSValue js_message = JS_NewStringLen(ctx, message, message_length);
-  if (JS_IsException(js_message)) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-  if (JS_DefinePropertyValueStr(ctx, error, "message", js_message,
-                                JS_PROP_C_W_E) < 0) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-
-  JSValue frame = JS_NewString(ctx, name);
-  if (JS_IsException(frame)) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-  if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_ocaml_frame", frame,
-                                JS_PROP_C_W_E) < 0) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-
-  JSValue kind = JS_NewString(ctx, "host_callback_defect");
-  if (JS_IsException(kind)) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-  if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_kind", kind,
-                                JS_PROP_C_W_E) < 0) {
-    JS_FreeValue(ctx, error);
-    if (fallback != NULL) {
-      caml_stat_free(fallback);
-    }
-    CAMLreturnT(JSValue, JS_EXCEPTION);
-  }
-
-  if (metadata_fn != NULL) {
-    value metadata_result = caml_callback_exn(*metadata_fn, exception);
-    if (!Is_exception_result(metadata_result)) {
-      metadata_value = metadata_result;
-      mlsize_t length = Wosize_val(metadata_value);
-      if (length > 0) {
-        JSValue metadata = JS_NewArray(ctx);
-        if (JS_IsException(metadata)) {
-          JS_FreeValue(ctx, error);
-          if (fallback != NULL) {
-            caml_stat_free(fallback);
-          }
-          CAMLreturnT(JSValue, JS_EXCEPTION);
-        }
-
-        for (mlsize_t i = 0; i < length; i++) {
-          metadata_pair = Field(metadata_value, i);
-          value key = Field(metadata_pair, 0);
-          value value_ = Field(metadata_pair, 1);
-          JSValue js_pair = JS_NewArray(ctx);
-          if (JS_IsException(js_pair)) {
-            JS_FreeValue(ctx, metadata);
-            JS_FreeValue(ctx, error);
-            if (fallback != NULL) {
-              caml_stat_free(fallback);
-            }
-            CAMLreturnT(JSValue, JS_EXCEPTION);
-          }
-
-          JSValue js_key =
-            JS_NewStringLen(ctx, String_val(key), caml_string_length(key));
-          JSValue js_value =
-            JS_NewStringLen(ctx, String_val(value_), caml_string_length(value_));
-          if (JS_IsException(js_key) || JS_IsException(js_value)) {
-            JS_FreeValue(ctx, js_value);
-            JS_FreeValue(ctx, js_key);
-            JS_FreeValue(ctx, js_pair);
-            JS_FreeValue(ctx, metadata);
-            JS_FreeValue(ctx, error);
-            if (fallback != NULL) {
-              caml_stat_free(fallback);
-            }
-            CAMLreturnT(JSValue, JS_EXCEPTION);
-          }
-          if (JS_SetPropertyUint32(ctx, js_pair, 0, js_key) < 0) {
-            JS_FreeValue(ctx, js_value);
-            JS_FreeValue(ctx, js_pair);
-            JS_FreeValue(ctx, metadata);
-            JS_FreeValue(ctx, error);
-            if (fallback != NULL) {
-              caml_stat_free(fallback);
-            }
-            CAMLreturnT(JSValue, JS_EXCEPTION);
-          }
-          if (JS_SetPropertyUint32(ctx, js_pair, 1, js_value) < 0) {
-            JS_FreeValue(ctx, js_pair);
-            JS_FreeValue(ctx, metadata);
-            JS_FreeValue(ctx, error);
-            if (fallback != NULL) {
-              caml_stat_free(fallback);
-            }
-            CAMLreturnT(JSValue, JS_EXCEPTION);
-          }
-          if (JS_SetPropertyUint32(ctx, metadata, (uint32_t)i, js_pair) < 0) {
-            JS_FreeValue(ctx, metadata);
-            JS_FreeValue(ctx, error);
-            if (fallback != NULL) {
-              caml_stat_free(fallback);
-            }
-            CAMLreturnT(JSValue, JS_EXCEPTION);
-          }
-        }
-
-        if (JS_DefinePropertyValueStr(ctx, error, "_qmljs_metadata", metadata,
-                                      JS_PROP_C_W_E) < 0) {
-          JS_FreeValue(ctx, error);
-          if (fallback != NULL) {
-            caml_stat_free(fallback);
-          }
-          CAMLreturnT(JSValue, JS_EXCEPTION);
-        }
-      }
-    }
-  }
-
-  if (fallback != NULL) {
+  name_value = caml_copy_string(name);
+  value marker_result = caml_callback2_exn(*marker_fn, name_value, exception);
+  if (Is_exception_result(marker_result)) {
+    char *fallback = caml_format_exception(Extract_exception(marker_result));
+    JSValue error = qmljs_throw_host_defect_message(ctx, fallback, name);
     caml_stat_free(fallback);
+    CAMLreturnT(JSValue, error);
+  }
+
+  marker = marker_result;
+  JSValue error = qmljs_error_marker_to_js(ctx, marker, 0);
+  if (JS_IsException(error)) {
+    CAMLreturnT(JSValue, error);
   }
   CAMLreturnT(JSValue, JS_Throw(ctx, error));
 }
@@ -316,6 +171,70 @@ static int qmljs_define_metadata_property(JSContext *ctx, JSValueConst object,
                                    JS_PROP_C_W_E);
 }
 
+enum {
+  QMLJS_ERROR_MARKER_NAME = 0,
+  QMLJS_ERROR_MARKER_MESSAGE = 1,
+  QMLJS_ERROR_MARKER_KIND = 2,
+  QMLJS_ERROR_MARKER_DENIED_SPECIFIER = 3,
+  QMLJS_ERROR_MARKER_STACK = 4,
+  QMLJS_ERROR_MARKER_OCAML_FRAME = 5,
+  QMLJS_ERROR_MARKER_METADATA = 6,
+  QMLJS_ERROR_MARKER_CAUSE = 7
+};
+
+static int qmljs_define_error_marker_cause(JSContext *ctx,
+                                         JSValueConst error,
+                                         value cause, int depth)
+{
+  if (cause == Val_int(0) || depth >= 64) {
+    return 0;
+  }
+
+  JSValue js_cause = qmljs_error_marker_to_js(ctx, Field(cause, 0), depth + 1);
+  if (JS_IsException(js_cause)) {
+    return -1;
+  }
+  return JS_DefinePropertyValueStr(ctx, error, "cause", js_cause,
+                                   JS_PROP_C_W_E);
+}
+
+static JSValue qmljs_error_marker_to_js(JSContext *ctx, value marker, int depth)
+{
+  JSValue error = qmljs_new_error_marker(ctx);
+  if (JS_IsException(error)) {
+    return error;
+  }
+
+  value name = Field(marker, QMLJS_ERROR_MARKER_NAME);
+  value message = Field(marker, QMLJS_ERROR_MARKER_MESSAGE);
+  value kind = Field(marker, QMLJS_ERROR_MARKER_KIND);
+  value denied_specifier = Field(marker, QMLJS_ERROR_MARKER_DENIED_SPECIFIER);
+  value stack = Field(marker, QMLJS_ERROR_MARKER_STACK);
+  value ocaml_frame = Field(marker, QMLJS_ERROR_MARKER_OCAML_FRAME);
+  value metadata = Field(marker, QMLJS_ERROR_MARKER_METADATA);
+  value cause = Field(marker, QMLJS_ERROR_MARKER_CAUSE);
+
+  if ((caml_string_length(name) > 0 &&
+       qmljs_define_ocaml_string_property(ctx, error, "name", name) < 0) ||
+      qmljs_define_ocaml_string_property(ctx, error, "message", message) < 0 ||
+      qmljs_define_ocaml_string_property(ctx, error, "_qmljs_kind", kind) < 0 ||
+      (caml_string_length(denied_specifier) > 0 &&
+       qmljs_define_ocaml_string_property(
+         ctx, error, "_qmljs_denied_module_specifier", denied_specifier) < 0) ||
+      (caml_string_length(stack) > 0 &&
+       qmljs_define_ocaml_string_property(ctx, error, "stack", stack) < 0) ||
+      (caml_string_length(ocaml_frame) > 0 &&
+       qmljs_define_ocaml_string_property(ctx, error, "_qmljs_ocaml_frame",
+                                        ocaml_frame) < 0) ||
+      qmljs_define_metadata_property(ctx, error, metadata) < 0 ||
+      qmljs_define_error_marker_cause(ctx, error, cause, depth) < 0) {
+    JS_FreeValue(ctx, error);
+    return JS_EXCEPTION;
+  }
+
+  return error;
+}
+
 static JSValue qmljs_throw_host_deadline_error(JSContext *ctx)
 {
   JSValue error = qmljs_new_error_marker(ctx);
@@ -349,24 +268,13 @@ static JSValue qmljs_throw_host_defect_message(JSContext *ctx, const char *messa
   return JS_Throw(ctx, error);
 }
 
-CAMLprim value qmljs_function_host_error(value context, value name, value message,
-                                       value metadata)
+CAMLprim value qmljs_function_host_error(value context, value marker)
 {
-  CAMLparam4(context, name, message, metadata);
+  CAMLparam2(context, marker);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
-  JSValue error = qmljs_new_error_marker(ctx);
+  JSValue error = qmljs_error_marker_to_js(ctx, marker, 0);
   if (JS_IsException(error)) {
-    qmljs_raise_exception(ctx);
-  }
-
-  if (qmljs_define_ocaml_string_property(ctx, error, "message", message) < 0 ||
-      qmljs_define_ocaml_string_property(ctx, error, "_qmljs_ocaml_frame",
-                                       name) < 0 ||
-      qmljs_define_string_property(ctx, error, "_qmljs_kind",
-                                 "host_callback_defect") < 0 ||
-      qmljs_define_metadata_property(ctx, error, metadata) < 0) {
-    JS_FreeValue(ctx, error);
     qmljs_raise_exception(ctx);
   }
 

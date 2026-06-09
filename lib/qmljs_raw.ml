@@ -137,7 +137,7 @@ external function_is_constructor : context -> value -> bool
 external function_set_constructor : context -> value -> bool -> unit
   = "qmljs_function_set_constructor"
 
-external function_host_error : context -> string -> string -> (string * string) array -> value
+external function_host_error : context -> Qmljs_error.marker -> value
   = "qmljs_function_host_error"
 
 external value_undefined : context -> value = "qmljs_value_undefined"

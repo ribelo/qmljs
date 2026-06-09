@@ -599,6 +599,73 @@ let test_module_loader_deny_host_error_metadata_survives () =
       check_bool "module loader deny host frame survives" true
         (Qmljs.Error.has_ocaml_frame error ~function_name:"module_loader.deny"))
 
+let test_host_callback_preserves_nested_structured_error () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let js_cause_error =
+    match
+      Qmljs.Error.capture (fun () ->
+          ignore
+            (Qmljs.Context.eval context
+               {|throw new Error("outer", { cause: new Error("inner") });|}
+              : Qmljs.value))
+    with
+    | Ok _ -> fail "expected nested JS error"
+    | Error error -> error
+  in
+  let host_metadata_error =
+    host_error ~message:"nested host"
+      ~metadata:[ "request_id", "host-callback-1" ]
+  in
+  Qmljs.Function.set_global context ~name:"raise_js_cause" ~arity:0
+    (fun _args -> Qmljs.Error.raise js_cause_error);
+  Qmljs.Function.set_global context ~name:"raise_host_metadata" ~arity:0
+    (fun _args -> Qmljs.Error.raise host_metadata_error);
+  Qmljs.Function.set_global_async context ~name:"raise_async_js_cause" ~arity:0
+    (fun _args -> Qmljs.Error.raise js_cause_error);
+  expect_structured_error "host callback nested JS cause"
+    (fun () ->
+      ignore (Qmljs.Context.eval context "raise_js_cause()" : Qmljs.value))
+    (fun error ->
+      check_kind "host callback nested JS kind" Qmljs.Error.JavaScript
+        (Qmljs.Error.kind error);
+      check_string "host callback nested JS message" "outer"
+        (Qmljs.Error.message error);
+      check_string "host callback nested JS cause" "inner"
+        (Qmljs.Error.message (Qmljs.Error.cause_exn error));
+      check_bool "host callback nested JS frame" true
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"raise_js_cause"));
+  expect_structured_error "host callback nested host metadata"
+    (fun () ->
+      ignore
+        (Qmljs.Context.eval context "raise_host_metadata()" : Qmljs.value))
+    (fun error ->
+      check_kind "host callback nested host kind"
+        Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+      check_string "host callback nested host message" "nested host"
+        (Qmljs.Error.message error);
+      check_bool "host callback nested metadata" true
+        (List.mem ("request_id", "host-callback-1")
+           (Qmljs.Error.metadata error));
+      check_bool "host callback nested host frame" true
+        (Qmljs.Error.has_ocaml_frame error ~function_name:"raise_host_metadata"))
+  ;
+  let async_rejection =
+    Qmljs.Context.eval context "raise_async_js_cause()"
+  in
+  match Qmljs.Promise.await_result async_rejection with
+  | Ok _ -> fail "expected async nested structured rejection"
+  | Error error ->
+      check_kind "async host callback nested JS kind" Qmljs.Error.JavaScript
+        (Qmljs.Error.kind error);
+      check_string "async host callback nested JS message" "outer"
+        (Qmljs.Error.message error);
+      check_string "async host callback nested JS cause" "inner"
+        (Qmljs.Error.message (Qmljs.Error.cause_exn error));
+      check_bool "async host callback nested JS frame" true
+        (Qmljs.Error.has_ocaml_frame error
+           ~function_name:"raise_async_js_cause")
+
 let test_promise_rejection_preserves_js_stack () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -1350,6 +1417,8 @@ let tests env =
   , test_module_loader_host_error_metadata_survives
   ; "module loader deny host error metadata survives"
   , test_module_loader_deny_host_error_metadata_survives
+  ; "host callback preserves nested structured error"
+  , test_host_callback_preserves_nested_structured_error
   ; "promise rejection preserves JS stack"
   , test_promise_rejection_preserves_js_stack
   ; "deep JS cause chain is preserved", test_deep_js_cause_chain_is_preserved
