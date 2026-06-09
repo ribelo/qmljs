@@ -306,6 +306,37 @@ let test_module_eval_pending_tla_is_not_silent_success () =
       check_bool "pending module evaluation is a resource-limit failure" true
         (Qmljs.Error.is_resource_limit error)
 
+(* Structured error strings are byte-preserving OCaml strings.
+
+   JavaScript strings can contain U+0000, and qmljs metadata is passed as
+   length-bearing OCaml strings when host exceptions are marked. Structured
+   extraction must therefore use length-preserving conversions. C-string based
+   extraction silently truncated [message] and marker metadata at the first NUL. *)
+let test_structured_error_preserves_nul_bytes () =
+  with_context @@ fun _runtime context ->
+  (match
+     Qmljs.Error.capture (fun () ->
+         Qmljs.Context.eval context {|throw new Error("a\0b")|})
+   with
+   | Ok _ -> fail "expected JS Error with NUL message"
+   | Error error ->
+       check_string_eq "JS Error message with NUL" "a\000b"
+         (Qmljs.Error.message error));
+  Qmljs.Function.set_global context ~name:"nul_metadata" ~arity:0 (fun _args ->
+    raise
+      (Qmljs.Error.host ~message:"m\000sg"
+         ~metadata:[ "k\000y", "v\000al" ]));
+  (match
+     Qmljs.Error.capture (fun () ->
+         Qmljs.Context.eval context "nul_metadata()")
+   with
+   | Ok _ -> fail "expected host marker error with NUL metadata"
+   | Error error ->
+       check_string_eq "host marker message with NUL" "m\000sg"
+         (Qmljs.Error.message error);
+       check_bool "host marker metadata with NUL" true
+         (List.mem ("k\000y", "v\000al") (Qmljs.Error.metadata error)))
+
 (* BUG 11 — as_int must reject (not silently wrap) BigInts outside the OCaml int
    range. [JS_ToInt64Ext] reduces modulo 2^64, so 2n**64n would wrap to 0; the
    decoder must fail loudly instead of returning [Ok 0]. *)
@@ -432,6 +463,8 @@ let tests =
     test_async_eval_unwrap_ignores_tampered_then
   ; "module_eval_pending_tla_is_not_silent_success",
     test_module_eval_pending_tla_is_not_silent_success
+  ; "structured_error_preserves_nul_bytes",
+    test_structured_error_preserves_nul_bytes
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
   ; "entries_default_includes_all", test_entries_default_includes_all

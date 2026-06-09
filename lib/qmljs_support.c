@@ -1353,72 +1353,145 @@ static void qmljs_clear_pending_exception(JSContext *ctx)
   JS_FreeValue(ctx, exception);
 }
 
-static const char *qmljs_cstring_or_clear_exception(JSContext *ctx,
-                                                  JSValueConst value)
+struct qmljs_extracted_string {
+  const char *data;
+  size_t length;
+  int present;
+  int owned;
+};
+
+static struct qmljs_extracted_string qmljs_literal_string(const char *text)
 {
-  const char *string = JS_ToCString(ctx, value);
-  if (string == NULL) {
-    qmljs_clear_pending_exception(ctx);
-  }
-  return string;
+  struct qmljs_extracted_string result = { text, strlen(text), 1, 0 };
+  return result;
 }
 
-static const char *qmljs_optional_cstring(JSContext *ctx, JSValueConst value)
+static int qmljs_string_or_clear_exception(JSContext *ctx, JSValueConst value,
+                                         struct qmljs_extracted_string *out)
+{
+  size_t length = 0;
+  const char *string = JS_ToCStringLen(ctx, &length, value);
+  if (string == NULL) {
+    qmljs_clear_pending_exception(ctx);
+    return 0;
+  }
+  out->data = string;
+  out->length = length;
+  out->present = 1;
+  out->owned = 1;
+  return 1;
+}
+
+static int qmljs_optional_string(JSContext *ctx, JSValueConst value,
+                               struct qmljs_extracted_string *out)
 {
   if (JS_IsException(value)) {
     qmljs_clear_pending_exception(ctx);
-    return NULL;
-  }
-  return qmljs_cstring_or_clear_exception(ctx, value);
-}
-
-static const char *qmljs_property_cstring(JSContext *ctx, JSValueConst object,
-                                        const char *name, JSValue *slot)
-{
-  *slot = JS_GetPropertyStr(ctx, object, name);
-  if (JS_IsException(*slot) || JS_IsUndefined(*slot) || JS_IsNull(*slot)) {
-    if (JS_IsException(*slot)) {
-      qmljs_clear_pending_exception(ctx);
-      *slot = JS_UNDEFINED;
-    }
-    return NULL;
-  }
-  return qmljs_cstring_or_clear_exception(ctx, *slot);
-}
-
-static value qmljs_copy_optional_string(const char *text)
-{
-  return caml_copy_string(text == NULL ? "" : text);
-}
-
-static int qmljs_error_kind_of_marker(const char *marker)
-{
-  if (marker == NULL) {
     return 0;
   }
-  if (strcmp(marker, "out_of_memory") == 0) {
+  if (JS_IsUndefined(value) || JS_IsNull(value)) {
+    return 0;
+  }
+  return qmljs_string_or_clear_exception(ctx, value, out);
+}
+
+static int qmljs_property_string(JSContext *ctx, JSValueConst object,
+                               const char *name, JSValue *slot,
+                               struct qmljs_extracted_string *out)
+{
+  *slot = JS_GetPropertyStr(ctx, object, name);
+  if (JS_IsException(*slot)) {
+    qmljs_clear_pending_exception(ctx);
+    *slot = JS_UNDEFINED;
+    return 0;
+  }
+  return qmljs_optional_string(ctx, *slot, out);
+}
+
+static void qmljs_free_extracted_string(JSContext *ctx,
+                                      struct qmljs_extracted_string *text)
+{
+  if (text->present && text->owned && text->data != NULL) {
+    JS_FreeCString(ctx, text->data);
+  }
+  text->data = NULL;
+  text->length = 0;
+  text->present = 0;
+  text->owned = 0;
+}
+
+static value qmljs_copy_optional_string(
+  const struct qmljs_extracted_string *text)
+{
+  CAMLparam0();
+  CAMLlocal1(result);
+  if (text == NULL || !text->present) {
+    result = caml_alloc_string(0);
+  } else {
+    result = caml_alloc_string(text->length);
+    memcpy(Bytes_val(result), text->data, text->length);
+  }
+  CAMLreturn(result);
+}
+
+static int qmljs_string_equals_literal(
+  const struct qmljs_extracted_string *text, const char *literal)
+{
+  size_t length = strlen(literal);
+  return text != NULL && text->present && text->length == length &&
+         memcmp(text->data, literal, length) == 0;
+}
+
+static int qmljs_string_contains_literal(
+  const struct qmljs_extracted_string *text, const char *needle)
+{
+  if (text == NULL || !text->present) {
+    return 0;
+  }
+  size_t needle_length = strlen(needle);
+  if (needle_length == 0) {
     return 1;
   }
-  if (strcmp(marker, "stack_overflow") == 0) {
+  if (needle_length > text->length) {
+    return 0;
+  }
+  for (size_t i = 0; i + needle_length <= text->length; i++) {
+    if (memcmp(text->data + i, needle, needle_length) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int qmljs_error_kind_of_marker(
+  const struct qmljs_extracted_string *marker)
+{
+  if (marker == NULL || !marker->present) {
+    return 0;
+  }
+  if (qmljs_string_equals_literal(marker, "out_of_memory")) {
+    return 1;
+  }
+  if (qmljs_string_equals_literal(marker, "stack_overflow")) {
     return 2;
   }
-  if (strcmp(marker, "resource_limit") == 0 ||
-      strcmp(marker, "interrupt") == 0) {
+  if (qmljs_string_equals_literal(marker, "resource_limit") ||
+      qmljs_string_equals_literal(marker, "interrupt")) {
     return 3;
   }
-  if (strcmp(marker, "policy_violation") == 0) {
+  if (qmljs_string_equals_literal(marker, "policy_violation")) {
     return 4;
   }
-  if (strcmp(marker, "host_callback_defect") == 0) {
+  if (qmljs_string_equals_literal(marker, "host_callback_defect")) {
     return 5;
   }
-  if (strcmp(marker, "timeout") == 0) {
+  if (qmljs_string_equals_literal(marker, "timeout")) {
     return 6;
   }
-  if (strcmp(marker, "closed_handle") == 0) {
+  if (qmljs_string_equals_literal(marker, "closed_handle")) {
     return 7;
   }
-  if (strcmp(marker, "wrong_domain") == 0) {
+  if (qmljs_string_equals_literal(marker, "wrong_domain")) {
     return 8;
   }
   return 0;
@@ -1438,18 +1511,21 @@ static int qmljs_same_stack_line(const char *left, size_t left_length,
   return left_length == right_length && memcmp(left, right, left_length) == 0;
 }
 
-static size_t qmljs_stack_first_lines(const char *stack, const char **lines,
-                                    size_t *lengths, size_t capacity)
+static size_t qmljs_stack_first_lines(const char *stack, size_t stack_length,
+                                    const char **lines, size_t *lengths,
+                                    size_t capacity)
 {
-  if (stack == NULL) {
+  if (stack == NULL || stack_length == 0) {
     return 0;
   }
 
   size_t count = 0;
-  const char *line = stack;
-  while (*line != '\0' && count < capacity) {
-    const char *end = strchr(line, '\n');
-    size_t length = end == NULL ? strlen(line) : (size_t)(end - line);
+  size_t offset = 0;
+  while (offset < stack_length && count < capacity) {
+    const char *line = stack + offset;
+    const char *end = memchr(line, '\n', stack_length - offset);
+    size_t length =
+      end == NULL ? stack_length - offset : (size_t)(end - line);
     while (length > 0 &&
            (line[length - 1] == '\n' || line[length - 1] == '\r')) {
       length--;
@@ -1459,20 +1535,21 @@ static size_t qmljs_stack_first_lines(const char *stack, const char **lines,
       lengths[count] = length;
       count++;
     }
-    if (end == NULL) {
-      break;
-    }
-    line = end + 1;
+    offset = end == NULL ? stack_length : (size_t)(end - stack) + 1;
   }
   return count;
 }
 
-static int qmljs_stack_starts_with_repeating_cycle(const char *stack)
+static int qmljs_stack_starts_with_repeating_cycle(
+  const struct qmljs_extracted_string *stack)
 {
+  if (stack == NULL || !stack->present) {
+    return 0;
+  }
   const char *lines[12];
   size_t lengths[12];
   size_t count =
-    qmljs_stack_first_lines(stack, lines, lengths,
+    qmljs_stack_first_lines(stack->data, stack->length, lines, lengths,
                            sizeof(lines) / sizeof(lines[0]));
 
   for (size_t cycle = 1; cycle <= 4; cycle++) {
@@ -1496,13 +1573,14 @@ static int qmljs_stack_starts_with_repeating_cycle(const char *stack)
   return 0;
 }
 
-static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
-                                          const char *name,
-                                          const char *message,
-                                          const char *stack,
-                                          int is_uncatchable)
+static int qmljs_error_kind_of_engine_error(
+  struct qmljs_runtime_state *state,
+  const struct qmljs_extracted_string *name,
+  const struct qmljs_extracted_string *message,
+  const struct qmljs_extracted_string *stack,
+  int is_uncatchable)
 {
-  if (name == NULL || message == NULL) {
+  if (name == NULL || !name->present || message == NULL || !message->present) {
     return 0;
   }
   int memory_limit_active =
@@ -1511,21 +1589,22 @@ static int qmljs_error_kind_of_engine_error(struct qmljs_runtime_state *state,
   int max_stack_size_active =
     state != NULL &&
     atomic_load_explicit(&state->max_stack_size_active, memory_order_acquire);
-  if (strcmp(name, "InternalError") == 0 &&
-      strcmp(message, "out of memory") == 0 &&
+  if (qmljs_string_equals_literal(name, "InternalError") &&
+      qmljs_string_equals_literal(message, "out of memory") &&
       (is_uncatchable || memory_limit_active)) {
     return 1;
   }
-  if ((strcmp(name, "InternalError") == 0 ||
-       strcmp(name, "RangeError") == 0) &&
-      (strstr(message, "stack overflow") != NULL ||
-       strstr(message, "Maximum call stack size exceeded") != NULL) &&
+  if ((qmljs_string_equals_literal(name, "InternalError") ||
+       qmljs_string_equals_literal(name, "RangeError")) &&
+      (qmljs_string_contains_literal(message, "stack overflow") ||
+       qmljs_string_contains_literal(message,
+                                   "Maximum call stack size exceeded")) &&
       (is_uncatchable || max_stack_size_active ||
        qmljs_stack_starts_with_repeating_cycle(stack))) {
     return 2;
   }
-  if (is_uncatchable && strcmp(name, "InternalError") == 0 &&
-      strstr(message, "interrupted") != NULL) {
+  if (is_uncatchable && qmljs_string_equals_literal(name, "InternalError") &&
+      qmljs_string_contains_literal(message, "interrupted")) {
     return 6;
   }
   return 0;
@@ -1584,22 +1663,20 @@ static value qmljs_metadata_array(JSContext *ctx, JSValueConst js_metadata)
 
     JSValue js_key = JS_GetPropertyUint32(ctx, js_pair, 0);
     JSValue js_value = JS_GetPropertyUint32(ctx, js_pair, 1);
-    const char *key_string = qmljs_optional_cstring(ctx, js_key);
-    const char *value_string = qmljs_optional_cstring(ctx, js_value);
+    struct qmljs_extracted_string key_string = { 0 };
+    struct qmljs_extracted_string value_string = { 0 };
+    qmljs_optional_string(ctx, js_key, &key_string);
+    qmljs_optional_string(ctx, js_value, &value_string);
 
-    key = caml_copy_string(key_string == NULL ? "" : key_string);
-    value_ = caml_copy_string(value_string == NULL ? "" : value_string);
+    key = qmljs_copy_optional_string(&key_string);
+    value_ = qmljs_copy_optional_string(&value_string);
     pair = caml_alloc_tuple(2);
     Store_field(pair, 0, key);
     Store_field(pair, 1, value_);
     Store_field(result, i, pair);
 
-    if (value_string != NULL) {
-      JS_FreeCString(ctx, value_string);
-    }
-    if (key_string != NULL) {
-      JS_FreeCString(ctx, key_string);
-    }
+    qmljs_free_extracted_string(ctx, &value_string);
+    qmljs_free_extracted_string(ctx, &key_string);
     JS_FreeValue(ctx, js_value);
     JS_FreeValue(ctx, js_key);
     JS_FreeValue(ctx, js_pair);
@@ -1624,14 +1701,15 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   JSValue js_denied_specifier = JS_UNDEFINED;
   JSValue js_metadata = JS_UNDEFINED;
   JSValue js_cause = JS_UNDEFINED;
-  const char *name = NULL;
-  const char *message = NULL;
-  const char *exception_text = NULL;
-  const char *fallback_message = NULL;
-  const char *stack = NULL;
-  const char *ocaml_frame = NULL;
-  const char *kind_marker = NULL;
-  const char *denied_specifier = NULL;
+  struct qmljs_extracted_string name = { 0 };
+  struct qmljs_extracted_string message = { 0 };
+  struct qmljs_extracted_string exception_text = { 0 };
+  struct qmljs_extracted_string fallback_literal = { 0 };
+  const struct qmljs_extracted_string *fallback_message = NULL;
+  struct qmljs_extracted_string stack = { 0 };
+  struct qmljs_extracted_string ocaml_frame = { 0 };
+  struct qmljs_extracted_string kind_marker = { 0 };
+  struct qmljs_extracted_string denied_specifier = { 0 };
   int kind = 0;
   int trusted_marker = 0;
   int trusted_engine_error = 0;
@@ -1640,26 +1718,25 @@ static value qmljs_build_structured_exception(JSContext *ctx,
 
   if (JS_IsNull(js_exception)) {
     kind = 1;
-    fallback_message = "out of memory";
+    fallback_literal = qmljs_literal_string("out of memory");
+    fallback_message = &fallback_literal;
   }
 
   if (JS_IsObject(js_exception)) {
-    name = qmljs_property_cstring(ctx, js_exception, "name", &js_name);
-    message = qmljs_property_cstring(ctx, js_exception, "message", &js_message);
-    stack = qmljs_property_cstring(ctx, js_exception, "stack", &js_stack);
+    qmljs_property_string(ctx, js_exception, "name", &js_name, &name);
+    qmljs_property_string(ctx, js_exception, "message", &js_message, &message);
+    qmljs_property_string(ctx, js_exception, "stack", &js_stack, &stack);
     trusted_marker = qmljs_is_error_marker(ctx, js_exception);
     trusted_engine_error = JS_IsError(js_exception);
     trusted_uncatchable_error = JS_IsUncatchableError(js_exception);
     if (trusted_marker) {
-      ocaml_frame =
-        qmljs_property_cstring(ctx, js_exception, "_qmljs_ocaml_frame",
-                             &js_ocaml_frame);
-      kind_marker =
-        qmljs_property_cstring(ctx, js_exception, "_qmljs_kind", &js_kind);
-      denied_specifier =
-        qmljs_property_cstring(ctx, js_exception,
-                             "_qmljs_denied_module_specifier",
-                             &js_denied_specifier);
+      qmljs_property_string(ctx, js_exception, "_qmljs_ocaml_frame",
+                          &js_ocaml_frame, &ocaml_frame);
+      qmljs_property_string(ctx, js_exception, "_qmljs_kind", &js_kind,
+                          &kind_marker);
+      qmljs_property_string(ctx, js_exception,
+                          "_qmljs_denied_module_specifier",
+                          &js_denied_specifier, &denied_specifier);
       js_metadata = JS_GetPropertyStr(ctx, js_exception, "_qmljs_metadata");
       if (JS_IsException(js_metadata)) {
         qmljs_clear_pending_exception(ctx);
@@ -1688,54 +1765,40 @@ static value qmljs_build_structured_exception(JSContext *ctx,
     metadata = caml_alloc(0, 0);
   }
 
-  exception_text = qmljs_cstring_or_clear_exception(ctx, js_exception);
-  if ((message == NULL || message[0] == '\0') && exception_text != NULL) {
-    fallback_message = exception_text;
+  qmljs_string_or_clear_exception(ctx, js_exception, &exception_text);
+  if ((!message.present || message.length == 0) && exception_text.present) {
+    fallback_message = &exception_text;
   }
 
-  kind = trusted_marker ? qmljs_error_kind_of_marker(kind_marker) : 0;
+  kind = trusted_marker ? qmljs_error_kind_of_marker(&kind_marker) : 0;
   if (kind == 0 && JS_IsNull(js_exception)) {
     kind = 1;
   }
   if (kind == 0 && trusted_engine_error) {
     kind =
-      qmljs_error_kind_of_engine_error(state, name, message, stack,
+      qmljs_error_kind_of_engine_error(state, &name, &message, &stack,
                                      trusted_uncatchable_error);
   }
 
-  args[0] = qmljs_copy_optional_string(name);
+  args[0] = qmljs_copy_optional_string(&name);
   args[1] =
-    qmljs_copy_optional_string(message != NULL && message[0] != '\0'
-                               ? message
-                               : fallback_message);
-  args[2] = qmljs_copy_optional_string(stack);
-  args[3] = qmljs_copy_optional_string(ocaml_frame);
+    qmljs_copy_optional_string(message.present && message.length != 0
+                                 ? &message
+                                 : fallback_message);
+  args[2] = qmljs_copy_optional_string(&stack);
+  args[3] = qmljs_copy_optional_string(&ocaml_frame);
   args[4] = Val_int(kind);
-  args[5] = qmljs_copy_optional_string(denied_specifier);
+  args[5] = qmljs_copy_optional_string(&denied_specifier);
   args[6] = cause;
   args[7] = metadata;
 
-  if (denied_specifier != NULL) {
-    JS_FreeCString(ctx, denied_specifier);
-  }
-  if (kind_marker != NULL) {
-    JS_FreeCString(ctx, kind_marker);
-  }
-  if (ocaml_frame != NULL) {
-    JS_FreeCString(ctx, ocaml_frame);
-  }
-  if (stack != NULL) {
-    JS_FreeCString(ctx, stack);
-  }
-  if (message != NULL) {
-    JS_FreeCString(ctx, message);
-  }
-  if (name != NULL) {
-    JS_FreeCString(ctx, name);
-  }
-  if (exception_text != NULL) {
-    JS_FreeCString(ctx, exception_text);
-  }
+  qmljs_free_extracted_string(ctx, &denied_specifier);
+  qmljs_free_extracted_string(ctx, &kind_marker);
+  qmljs_free_extracted_string(ctx, &ocaml_frame);
+  qmljs_free_extracted_string(ctx, &stack);
+  qmljs_free_extracted_string(ctx, &message);
+  qmljs_free_extracted_string(ctx, &name);
+  qmljs_free_extracted_string(ctx, &exception_text);
   JS_FreeValue(ctx, js_cause);
   JS_FreeValue(ctx, js_metadata);
   JS_FreeValue(ctx, js_denied_specifier);
