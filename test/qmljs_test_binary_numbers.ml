@@ -45,6 +45,15 @@ let test_array_buffer_api () =
       check_kind "detached to_bytes kind" Qmljs.Error.JavaScript
         (Qmljs.Error.kind error))
 
+let test_empty_array_buffer_is_not_detached () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer = Qmljs.Array_buffer.of_bytes_copy context Bytes.empty in
+  check_int "empty ArrayBuffer byte length" 0
+    (Qmljs.Array_buffer.byte_length buffer);
+  check_bytes "empty ArrayBuffer bytes" Bytes.empty
+    (Qmljs.Array_buffer.to_bytes_copy buffer)
+
 let test_uint8_array_buffer_interop_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -338,6 +347,8 @@ let test_bigint_readback_api () =
 let tests =
   [ "typed array readback API", test_typed_array_readback_api
   ; "array buffer API", test_array_buffer_api
+  ; "empty_array_buffer_is_not_detached",
+    test_empty_array_buffer_is_not_detached
   ; "uint8 array buffer interop API", test_uint8_array_buffer_interop_api
   ; "typed array family API", test_typed_array_family_api
   ; "typed array index over UINT32_MAX is rejected"

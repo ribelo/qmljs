@@ -1050,6 +1050,21 @@ CAMLprim value qmljs_array_buffer_of_bigarray_copy(value context, value bigarray
   CAMLreturn(qmljs_alloc_value(context, result));
 }
 
+static int qmljs_array_buffer_is_detached(JSContext *ctx, JSValueConst value)
+{
+  /* JS_GetArrayBuffer reports both detached and empty buffers as NULL/0 on
+     QuickJS; constructing a view throws only for the detached case. */
+  JSValue buffer = JS_DupValue(ctx, value);
+  JSValue view = JS_NewTypedArray(ctx, 1, &buffer, JS_TYPED_ARRAY_UINT8);
+  JS_FreeValue(ctx, buffer);
+  if (JS_IsException(view)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return 1;
+  }
+  JS_FreeValue(ctx, view);
+  return 0;
+}
+
 static uint8_t *qmljs_array_buffer_data(JSContext *ctx, JSValueConst value,
                                       size_t *length)
 {
@@ -1058,7 +1073,8 @@ static uint8_t *qmljs_array_buffer_data(JSContext *ctx, JSValueConst value,
   }
   *length = 0;
   uint8_t *data = JS_GetArrayBuffer(ctx, length, value);
-  if (data == NULL) {
+  if (data == NULL &&
+      (*length > 0 || qmljs_array_buffer_is_detached(ctx, value))) {
     qmljs_raise_string("ArrayBuffer is detached");
   }
   return data;
@@ -1091,7 +1107,9 @@ CAMLprim value qmljs_array_buffer_to_bytes_copy(value context, value wrapped)
     qmljs_raise_string("ArrayBuffer length is outside the OCaml bytes range");
   }
   result = caml_alloc_string(length);
-  memcpy(Bytes_val(result), data, length);
+  if (length > 0) {
+    memcpy(Bytes_val(result), data, length);
+  }
   CAMLreturn(result);
 }
 
