@@ -56,6 +56,24 @@ let test_int_safe_range_roundtrips () =
         (Qmljs.Value.to_int (Qmljs.Value.int context n)))
     [ 0; 1; -1; 42; -42; 2147483648; max_safe_integer; -max_safe_integer ]
 
+(* INT 1b — as_int accepts safe integer Numbers above QuickJS's int32 tag.
+
+   QuickJS commonly stores Numbers above int32 range as a floating-number tag,
+   even when the value is a finite integral safe integer. [Value.as_int] is the
+   OCaml int decoder, so it must accept any accepted [Value.int] Number that
+   [Value.to_int] can decode; it must not confuse the QuickJS storage tag with
+   qmljs's integer contract. *)
+let test_as_int_accepts_safe_integer_numbers_above_int32 () =
+  with_context @@ fun _runtime context ->
+  let n = 2147483648 in
+  let v = Qmljs.Value.int context n in
+  match Qmljs.Value.as_int v with
+  | Ok got -> check_int "as_int safe Number above int32" n got
+  | Error error ->
+      fail
+        ("as_int rejected a safe integral Number: "
+        ^ Qmljs.Error.message error)
+
 (* INT 2 — a Value.int is a genuine JS Number.
 
    The whole point of contract B is that an accepted [Value.int] behaves like a
@@ -363,6 +381,8 @@ let test_has_atom_checks_own_property_not_prototype () =
 
 let tests =
   [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
+  ; "as_int_accepts_safe_integer_numbers_above_int32",
+    test_as_int_accepts_safe_integer_numbers_above_int32
   ; "int_is_a_js_number", test_int_is_a_js_number
   ; "int_rejects_out_of_safe_range", test_int_rejects_out_of_safe_range
   ; "define_data_property_rejection_is_loud",

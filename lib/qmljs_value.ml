@@ -163,10 +163,14 @@ let as_bool t =
   | Bool -> Ok (to_bool t)
   | _ -> expected "bool"
 
+let is_integral_float value =
+  Float.is_finite value && mod_float value 1.0 = 0.0
+
 let as_int t =
   capture_conversion @@ fun () ->
   match kind t with
   | Int | Bigint -> Ok (to_int t)
+  | Float when is_integral_float (to_float t) -> Ok (to_int t)
   | _ -> expected "int"
 
 let as_float t =
