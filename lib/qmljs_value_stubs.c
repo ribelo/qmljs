@@ -2,6 +2,7 @@
 
 #include <caml/bigarray.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1920,6 +1921,16 @@ static int qmljs_bigint_to_ocaml_int(JSContext *ctx, JSValueConst js_value,
   return parsed ? 0 : 1;
 }
 
+static int qmljs_number_outside_ocaml_int_range(double number)
+{
+  if (!isfinite(number)) {
+    return 1;
+  }
+  double lower_bound = (double)(int64_t)Min_long;
+  double exclusive_upper_bound = -lower_bound;
+  return number < lower_bound || number >= exclusive_upper_bound;
+}
+
 CAMLprim value qmljs_value_to_int(value context, value wrapped)
 {
   CAMLparam2(context, wrapped);
@@ -1937,6 +1948,15 @@ CAMLprim value qmljs_value_to_int(value context, value wrapped)
       qmljs_raise_string("BigInt is outside the OCaml int range");
     }
     CAMLreturn(Val_long((intnat)result));
+  }
+  if (JS_IsNumber(js_value)) {
+    double number = 0.0;
+    if (JS_ToFloat64(ctx, &number, js_value) < 0) {
+      qmljs_raise_exception(ctx);
+    }
+    if (qmljs_number_outside_ocaml_int_range(number)) {
+      qmljs_raise_string("JavaScript number is outside the OCaml int range");
+    }
   }
   if (JS_ToInt64Ext(ctx, &result, js_value) < 0) {
     qmljs_raise_exception(ctx);

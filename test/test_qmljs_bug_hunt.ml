@@ -74,6 +74,40 @@ let test_as_int_accepts_safe_integer_numbers_above_int32 () =
         ("as_int rejected a safe integral Number: "
         ^ Qmljs.Error.message error)
 
+(* INT 1c — to_int rejects out-of-range JS Numbers before integer coercion.
+
+   QuickJS's integer conversion can reduce huge Numbers before returning an
+   int64_t. Once that has happened, qmljs can no longer tell whether a small
+   int64 result came from an in-range Number or from an out-of-range Number that
+   wrapped. [Value.to_int] must check finite Number magnitude before integer
+   conversion and fail loudly for values outside OCaml's int range. *)
+let test_to_int_rejects_out_of_range_numbers_without_wrap () =
+  with_context @@ fun _runtime context ->
+  List.iter
+    (fun source ->
+      match
+        Qmljs.Error.capture (fun () ->
+            Qmljs.Value.to_int (Qmljs.Context.eval context source))
+      with
+      | Error error ->
+          check_bool (source ^ " mentions range") true
+            (let message = Qmljs.Error.message error in
+             let needle = "outside the OCaml int range" in
+             let message_length = String.length message in
+             let needle_length = String.length needle in
+             let rec contains index =
+               index + needle_length <= message_length
+               && (String.sub message index needle_length = needle
+                   || contains (index + 1))
+             in
+             contains 0)
+      | Ok value ->
+          fail
+            (Printf.sprintf
+               "to_int(%s) silently returned %d instead of rejecting an out-of-range Number"
+               source value))
+    [ "2 ** 63"; "-(2 ** 63)"; "Number.MAX_VALUE"; "Infinity" ]
+
 (* INT 2 — a Value.int is a genuine JS Number.
 
    The whole point of contract B is that an accepted [Value.int] behaves like a
@@ -383,6 +417,8 @@ let tests =
   [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
   ; "as_int_accepts_safe_integer_numbers_above_int32",
     test_as_int_accepts_safe_integer_numbers_above_int32
+  ; "to_int_rejects_out_of_range_numbers_without_wrap",
+    test_to_int_rejects_out_of_range_numbers_without_wrap
   ; "int_is_a_js_number", test_int_is_a_js_number
   ; "int_rejects_out_of_safe_range", test_int_rejects_out_of_safe_range
   ; "define_data_property_rejection_is_loud",
