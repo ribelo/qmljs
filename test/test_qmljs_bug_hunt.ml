@@ -236,6 +236,24 @@ let test_async_eval_unwrap_ignores_tampered_then () =
   let result = Qmljs.Promise.await promise in
   check_int "async eval ignores tampered then" 42 (Qmljs.Value.to_int result)
 
+(* Module evaluation must not return a namespace while top-level await is still
+   pending. A module that awaits a promise that never settles cannot complete;
+   with no driver to make progress, [Module.eval] must fail loudly with a
+   structured resource-limit error rather than silently exposing a
+   half-evaluated module. *)
+let test_module_eval_pending_tla_is_not_silent_success () =
+  with_context @@ fun _runtime context ->
+  match
+    Qmljs.Error.capture (fun () ->
+        Qmljs.Module.eval context
+          "await new Promise(() => {}); export default 1;")
+  with
+  | Ok _ ->
+      fail "Module.eval returned a namespace while top-level await was pending"
+  | Error error ->
+      check_bool "pending module evaluation is a resource-limit failure" true
+        (Qmljs.Error.is_resource_limit error)
+
 (* BUG 11 — as_int must reject (not silently wrap) BigInts outside the OCaml int
    range. [JS_ToInt64Ext] reduces modulo 2^64, so 2n**64n would wrap to 0; the
    decoder must fail loudly instead of returning [Ok 0]. *)
@@ -356,6 +374,8 @@ let tests =
   ; "async_eval_unwraps_result", test_async_eval_unwraps_result
   ; "async_eval_unwrap_ignores_tampered_then",
     test_async_eval_unwrap_ignores_tampered_then
+  ; "module_eval_pending_tla_is_not_silent_success",
+    test_module_eval_pending_tla_is_not_silent_success
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
   ; "entries_default_includes_all", test_entries_default_includes_all

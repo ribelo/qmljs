@@ -929,6 +929,32 @@ let test_eio_promise_helper_api env =
           check_bool "Eio promise cancellation has message" true
             (String.length (Qmljs.Error.message error) > 0))
 
+(* Module top-level await must be driven to completion through the Eio driver:
+   a module awaiting a driver-backed promise that settles only after several
+   yields must not return early. With the driver present, Module.eval drives via
+   driver wakeups until the promise settles and the default export is the
+   settled value. *)
+let test_module_eval_awaits_eio_driver_promise env =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver _runtime context ->
+      (* A driver-backed promise that settles only after several scheduler
+         turns, resolved by an independent fiber. A single job drain leaves it
+         pending, so module evaluation must keep driving through the driver. *)
+      let delayed =
+        Qmljs.Eio.promise driver context (fun () ->
+            for _ = 1 to 5 do
+              Eio.Fiber.yield ()
+            done;
+            Qmljs.Value.int context 42)
+      in
+      Qmljs.Context.set_global context ~name:"hostDelayed" delayed;
+      let namespace =
+        Qmljs.Module.eval context "export default await hostDelayed;"
+      in
+      check_int "module eval awaited eio driver promise" 42
+        (Qmljs.Value.to_int (Qmljs.Module.default namespace)))
+
 let test_eio_queued_host_jobs_are_scoped env =
   let callback_ran = ref false in
   Eio.Switch.run @@ fun sw ->
@@ -1295,6 +1321,8 @@ let tests env =
   ; "module namespace API", test_module_namespace_api
   ; "Eio scoped driver API", (fun () -> test_eio_scoped_driver_api env)
   ; "Eio promise helper API", (fun () -> test_eio_promise_helper_api env)
+  ; "module eval awaits eio driver promise"
+  , (fun () -> test_module_eval_awaits_eio_driver_promise env)
   ; "Eio queued host jobs are scoped"
   , (fun () -> test_eio_queued_host_jobs_are_scoped env)
   ; "async host callback closed context crash"

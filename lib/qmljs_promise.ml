@@ -55,38 +55,66 @@ let structured_rejection reason =
   | Error error -> error
   | Ok () -> Qmljs_error.Structured.of_legacy_error "promise rejected"
 
+let driver_wakeup_of runtime =
+  match runtime.Qmljs_types.driver with
+  | Some driver ->
+      Option.map
+        (fun generation -> driver, generation)
+        (Qmljs_runtime.driver_wakeup_generation driver)
+  | None -> None
+
 let drive_module_evaluation eval_result =
   if is eval_result then begin
-    (match state eval_result with
-     | Pending ->
-         let runtime =
-           Qmljs_types.context_runtime (Qmljs_types.value_context eval_result)
-         in
-         (try ignore (Qmljs_async.drain_jobs runtime : int) with
-          | exn ->
-              let backtrace = Printexc.get_raw_backtrace () in
-              Qmljs_runtime.reclaim_pending_jobs runtime;
-              Printexc.raise_with_backtrace exn backtrace)
-     | Fulfilled | Rejected | Not_a_promise -> ());
-    match state eval_result with
-    | Rejected ->
-        Qmljs_error.Structured.raise
-          (structured_rejection (result eval_result))
-    | Pending | Fulfilled | Not_a_promise -> ()
+    let runtime =
+      Qmljs_types.context_runtime (Qmljs_types.value_context eval_result)
+    in
+    let drain () =
+      try Qmljs_async.drain_jobs runtime with
+      | exn ->
+          let backtrace = Printexc.get_raw_backtrace () in
+          Qmljs_runtime.reclaim_pending_jobs runtime;
+          Printexc.raise_with_backtrace exn backtrace
+    in
+    let settle () =
+      match state eval_result with
+      | Not_a_promise | Fulfilled -> `Done
+      | Rejected ->
+          Qmljs_error.Structured.raise (structured_rejection (result eval_result))
+      | Pending -> `Pending
+    in
+    (* Module evaluation must reach a terminal state before the namespace is
+       handed back: returning while top-level await is still pending would
+       expose a half-evaluated module and hide queued async work. Drive with the
+       same semantics as Promise.await — keep draining, wait on driver wakeups
+       when a driver exists — but fail loudly when the module is permanently
+       pending and no driver can make further progress. *)
+    let rec loop () =
+      let wakeup = driver_wakeup_of runtime in
+      let jobs = drain () in
+      match settle () with
+      | `Done -> ()
+      | `Pending ->
+          (match wakeup with
+           | Some (driver, generation) ->
+               Qmljs_runtime.await_driver_wakeup driver generation;
+               loop ()
+           | None ->
+               if jobs > 0 then loop ()
+               else
+                 Qmljs_error.raise_resource_limit
+                   "module evaluation did not complete: top-level await is \
+                    still pending and no driver can make progress")
+    in
+    match settle () with
+    | `Done -> ()
+    | `Pending -> loop ()
   end
 
 let await_result ?yield_every promise =
   let runtime =
     Qmljs_types.context_runtime (Qmljs_types.value_context promise)
   in
-  let driver_wakeup () =
-    match runtime.Qmljs_types.driver with
-    | Some driver ->
-        Option.map
-          (fun generation -> driver, generation)
-          (Qmljs_runtime.driver_wakeup_generation driver)
-    | None -> None
-  in
+  let driver_wakeup () = driver_wakeup_of runtime in
   let rec loop () =
     let wakeup = driver_wakeup () in
     ignore (Qmljs_async.drain_jobs ?yield_every runtime : int);
