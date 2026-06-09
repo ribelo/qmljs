@@ -39,6 +39,9 @@ external test_set_host_callback_failpoint : int -> unit
 external test_set_wrapper_failpoint : int -> unit
   = "qmljs_test_set_wrapper_failpoint"
 
+external test_set_module_loader_install_failpoint : bool -> unit
+  = "qmljs_test_set_module_loader_install_failpoint"
+
 external test_host_callback_depth : Qmljs.Runtime.t -> int
   = "qmljs_test_host_callback_depth"
 
@@ -981,6 +984,43 @@ let test_async_host_callback_closed_context_crash env =
       check_int "runtime reusable after closed async context" 2
         (Qmljs.Value.to_int (Qmljs.Context.eval fresh "1 + 1")))
 
+(* A failed module-loader replacement must never leave QuickJS with a loader
+   opaque that points at freed memory. The replacement is two-phase: the new
+   loader is built and rooted first, and QuickJS is only repointed at it once it
+   is fully live; if installation fails partway, the previous loader and its
+   QuickJS callbacks stay intact. A failpoint fires in that window, and we then
+   confirm the runtime still tracks a single live loader and the original
+   "old.js" module still resolves. *)
+let test_module_loader_replacement_allocation_failure_keeps_runtime_safe () =
+  let before = Qmljs.Diagnostics.snapshot () in
+  (Qmljs.Runtime.with_ @@ fun runtime ->
+   Qmljs.Context.with_ runtime @@ fun context ->
+   Qmljs.Runtime.set_module_loader runtime
+     (Qmljs.Module.Loader.memory [ "old.js", "export default 7;" ]);
+   Fun.protect
+     ~finally:(fun () -> test_set_module_loader_install_failpoint false)
+     (fun () ->
+       test_set_module_loader_install_failpoint true;
+       expect_structured_error "module loader install failpoint"
+         (fun () ->
+           Qmljs.Runtime.set_module_loader runtime
+             (Qmljs.Module.Loader.memory [ "new.js", "export default 1;" ]))
+         (fun error ->
+           check_string "module loader install failpoint message"
+             "qmljs test module loader install failpoint"
+             (Qmljs.Error.message error)));
+   (* The previous loader must remain valid and installed: "old.js" still
+      resolves. A stale opaque pointing at the freed/replacement loader would
+      instead fail to find the module or dereference freed memory. *)
+   let namespace =
+     Qmljs.Module.eval ~filename:"old-main.js" context
+       {|import value from "old.js"; export default value;|}
+   in
+   check_int "original loader still resolves after a failed replace" 7
+     (Qmljs.Value.to_int (Qmljs.Module.default namespace)));
+  let after = Qmljs.Diagnostics.snapshot () in
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after
+
 let tests env =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
@@ -1056,6 +1096,8 @@ let tests env =
   , (fun () -> test_eio_queued_host_jobs_are_scoped env)
   ; "async host callback closed context crash"
   , (fun () -> test_async_host_callback_closed_context_crash env)
+  ; "module loader replacement allocation failure keeps runtime safe"
+  , test_module_loader_replacement_allocation_failure_keeps_runtime_safe
   ]
 
 let () =

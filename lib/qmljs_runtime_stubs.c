@@ -1229,6 +1229,26 @@ CAMLprim value qmljs_runtime_take_promise_hooks(value runtime)
   CAMLreturn(result);
 }
 
+/* Test-only failpoint: when armed, fires during a module-loader replacement,
+   after the replacement loader is built but before QuickJS is repointed at it. */
+static atomic_int qmljs_test_module_loader_install_failpoint = 0;
+
+CAMLprim value qmljs_test_set_module_loader_install_failpoint(value enabled)
+{
+  CAMLparam1(enabled);
+  atomic_store_explicit(&qmljs_test_module_loader_install_failpoint,
+                        Bool_val(enabled), memory_order_release);
+  CAMLreturn(Val_unit);
+}
+
+static int qmljs_test_take_module_loader_install_failpoint(void)
+{
+  int expected = 1;
+  return atomic_compare_exchange_strong_explicit(
+    &qmljs_test_module_loader_install_failpoint, &expected, 0,
+    memory_order_acq_rel, memory_order_acquire);
+}
+
 void qmljs_module_loader_free(struct qmljs_runtime_state *state)
 {
   struct qmljs_module_loader *loader = state->module_loader;
@@ -1254,8 +1274,12 @@ CAMLprim value qmljs_runtime_install_module_loader(value runtime, value deny,
     qmljs_raise_string(
       "cannot replace module loader during module loader callback");
   }
-  qmljs_module_loader_free(state);
 
+  /* Two-phase replacement so QuickJS never holds a loader opaque that points
+     at freed memory. Phase 1: build and root the replacement. Until it is
+     committed below, the previously installed loader and its QuickJS callbacks
+     remain untouched, so any failure here leaves the runtime on the old
+     loader. */
   struct qmljs_module_loader *loader =
     caml_stat_alloc(sizeof(struct qmljs_module_loader));
   loader->state = state;
@@ -1266,10 +1290,29 @@ CAMLprim value qmljs_runtime_install_module_loader(value runtime, value deny,
   caml_register_generational_global_root(&loader->deny);
   caml_register_generational_global_root(&loader->normalize);
   caml_register_generational_global_root(&loader->load);
+
+  if (qmljs_test_take_module_loader_install_failpoint()) {
+    /* Replacement not yet committed: discard it and keep the old loader live. */
+    caml_remove_generational_global_root(&loader->deny);
+    caml_remove_generational_global_root(&loader->normalize);
+    caml_remove_generational_global_root(&loader->load);
+    caml_stat_free(loader);
+    qmljs_raise_string("qmljs test module loader install failpoint");
+  }
+
+  /* Phase 2: commit the replacement into QuickJS, then release the previous
+     loader. QuickJS points at a fully-live loader across the whole window. */
+  struct qmljs_module_loader *previous = state->module_loader;
   state->module_loader = loader;
   JS_SetModuleLoaderFunc2(rt, NULL, qmljs_load_module,
                           qmljs_check_import_attributes, loader);
   JS_SetModuleNormalizeFunc2(rt, qmljs_module_loader_normalize);
+  if (previous != NULL) {
+    caml_remove_generational_global_root(&previous->deny);
+    caml_remove_generational_global_root(&previous->normalize);
+    caml_remove_generational_global_root(&previous->load);
+    caml_stat_free(previous);
+  }
   CAMLreturn(Val_unit);
 }
 
