@@ -37,7 +37,7 @@ let promise ?(name = "Qmljs.Eio.promise") driver context fn =
     invalid_arg "QuickJS Eio driver is closed";
   let promise, resolve, reject = Qmljs_promise.create context in
   let runtime = Qmljs_types.context_runtime context in
-  Eio.Fiber.fork ~sw:driver.Qmljs_types.sw (fun () ->
+  Eio.Fiber.fork ~sw:driver.Qmljs_types.worker_switch (fun () ->
       match fn () with
       | result ->
           let on_cancel () =
@@ -47,9 +47,13 @@ let promise ?(name = "Qmljs.Eio.promise") driver context fn =
           enqueue_settlement ~on_cancel driver runtime (fun () ->
               resolve_or_reject context ~name ~resolve ~reject result)
       | exception (Eio.Cancel.Cancelled _ as exn) ->
+          (* The worker scope was cancelled (driver cancel/close). Reject the
+             promise with structured cancellation; the rejection runs even on
+             the cancelled path (on_cancel), but is dropped if the driver has
+             already closed and the context is gone. *)
           Eio.Cancel.protect (fun () ->
-              enqueue_settlement driver runtime (fun () ->
-                  reject_with_exn_noerr context reject name exn))
+              let do_reject () = reject_with_exn_noerr context reject name exn in
+              enqueue_settlement ~on_cancel:do_reject driver runtime do_reject)
       | exception exn ->
           enqueue_settlement driver runtime (fun () ->
               reject_with_exn_noerr context reject name exn));
@@ -60,10 +64,27 @@ let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
   Qmljs_runtime.with_ ?memory_limit ?max_stack_size ?promise_job_limit
     @@ fun runtime ->
   Qmljs_context.with_ runtime @@ fun context ->
+  (* A driver-owned scope hosts every Qmljs.Eio.promise worker. The host fiber
+     keeps a worker switch and its cancel context alive until the driver is
+     cancelled or closed, at which point all workers are cancelled together
+     rather than outliving the driver. *)
+  let setup_promise, setup_resolver = Eio.Promise.create () in
+  Eio.Fiber.fork ~sw (fun () ->
+      try
+        Eio.Cancel.sub (fun worker_cancel ->
+            Eio.Switch.run (fun worker_switch ->
+                Eio.Promise.resolve setup_resolver
+                  (worker_switch, worker_cancel);
+                Eio.Fiber.await_cancel ()))
+      with Eio.Cancel.Cancelled _ -> ());
+  let worker_switch, worker_cancel = Eio.Promise.await setup_promise in
   let condition = Eio.Condition.create () in
   let mutex = Eio.Mutex.create () in
   let driver =
     { Qmljs_types.sw
+    ; worker_switch
+    ; worker_cancel
+    ; worker_scope_cancelled = false
     ; condition
     ; mutex
     ; wakeup_generation = 0

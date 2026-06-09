@@ -25,6 +25,9 @@ and module_load_request =
 
 type driver =
   { sw : Eio.Switch.t
+  ; worker_switch : Eio.Switch.t
+  ; worker_cancel : Eio.Cancel.t
+  ; mutable worker_scope_cancelled : bool
   ; condition : Eio.Condition.t
   ; mutex : Eio.Mutex.t
   ; mutable wakeup_generation : int

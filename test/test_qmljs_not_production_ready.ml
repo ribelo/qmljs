@@ -955,6 +955,59 @@ let test_module_eval_awaits_eio_driver_promise env =
       check_int "module eval awaited eio driver promise" 42
         (Qmljs.Value.to_int (Qmljs.Module.default namespace)))
 
+(* A Qmljs.Eio.promise worker must be owned by the driver: cancelling the
+   driver cancels the worker before it runs its side effect, and the promise
+   settles as a structured cancellation rather than being left pending. *)
+let test_eio_promise_worker_cancelled_on_driver_cancel env =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+    (fun driver _runtime context ->
+      let ran = ref false in
+      let p =
+        Qmljs.Eio.promise driver context (fun () ->
+            for _ = 1 to 5 do
+              Eio.Fiber.yield ()
+            done;
+            ran := true;
+            Qmljs.Value.int context 1)
+      in
+      Qmljs.Eio.cancel driver;
+      for _ = 1 to 10 do
+        Eio.Fiber.yield ()
+      done;
+      ignore (Qmljs.Eio.drain_until_idle driver : int);
+      check_bool "worker cancelled before side effect" false !ran;
+      match Qmljs.Promise.state p with
+      | Qmljs.Promise.Rejected ->
+          let reason = Qmljs.Promise.result p in
+          check_bool "cancelled Eio promise rejects (non-empty reason)" true
+            (String.length (Qmljs.Value.to_string reason) > 0)
+      | Qmljs.Promise.Pending ->
+          fail "cancelled Eio promise left pending instead of rejected"
+      | Qmljs.Promise.Fulfilled ->
+          fail "cancelled Eio promise fulfilled instead of rejected"
+      | Qmljs.Promise.Not_a_promise -> fail "value is not a promise")
+
+(* A Qmljs.Eio.promise worker must not outlive with_runtime: when the body
+   exits, driver close cancels the worker before it resumes, so it never runs
+   after the context/runtime are torn down. *)
+let test_eio_promise_does_not_outlive_with_runtime env =
+  let ran_after_exit = ref false in
+  Eio.Switch.run @@ fun sw ->
+  (Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
+     (fun driver _runtime context ->
+       ignore
+         (Qmljs.Eio.promise driver context (fun () ->
+              Eio.Fiber.yield ();
+              Eio.Fiber.yield ();
+              ran_after_exit := true;
+              Qmljs.Value.int context 1)
+           : Qmljs.Value.t)));
+  for _ = 1 to 10 do
+    Eio.Fiber.yield ()
+  done;
+  check_bool "worker did not run after with_runtime closed" false !ran_after_exit
+
 let test_eio_queued_host_jobs_are_scoped env =
   let callback_ran = ref false in
   Eio.Switch.run @@ fun sw ->
@@ -1323,6 +1376,10 @@ let tests env =
   ; "Eio promise helper API", (fun () -> test_eio_promise_helper_api env)
   ; "module eval awaits eio driver promise"
   , (fun () -> test_module_eval_awaits_eio_driver_promise env)
+  ; "Eio promise worker cancelled on driver cancel"
+  , (fun () -> test_eio_promise_worker_cancelled_on_driver_cancel env)
+  ; "Eio promise does not outlive with_runtime"
+  , (fun () -> test_eio_promise_does_not_outlive_with_runtime env)
   ; "Eio queued host jobs are scoped"
   , (fun () -> test_eio_queued_host_jobs_are_scoped env)
   ; "async host callback closed context crash"

@@ -272,6 +272,18 @@ let clear_interrupt t =
 let interrupt_requested t =
   Qmljs_raw.runtime_interrupt_requested (Qmljs_types.runtime_raw t)
 
+(* Run [fn] with any pending interrupt request temporarily cleared, restoring it
+   afterward. Driver cancel sets a sticky interrupt to stop in-flight user JS;
+   the cancellation settlements that follow are host bookkeeping (resolving our
+   own promises) and must complete rather than being aborted by that interrupt.
+   Owner-domain only, so there is no concurrent JS execution to disturb. *)
+let with_interrupt_suppressed t fn =
+  let was_requested = interrupt_requested t in
+  if was_requested then clear_interrupt t;
+  Fun.protect
+    ~finally:(fun () -> if was_requested then request_interrupt t)
+    fn
+
 let drain_jobs t =
   let rec loop n =
     match t.Qmljs_types.promise_job_limit with
@@ -337,6 +349,19 @@ let await_driver_wakeup driver generation =
           driver.Qmljs_types.mutex
       done)
 
+let cancel_worker_scope driver =
+  (* Cancel the driver-owned scope that hosts Qmljs.Eio.promise workers, exactly
+     once. Cancelling cascades to every worker fiber so they observe
+     cancellation while the context is still alive, instead of running on past
+     driver cancel/close. *)
+  if not driver.Qmljs_types.worker_scope_cancelled then begin
+    driver.Qmljs_types.worker_scope_cancelled <- true;
+    try
+      Eio.Cancel.cancel driver.Qmljs_types.worker_cancel
+        (Failure "QuickJS Eio driver shut down")
+    with _ -> ()
+  end
+
 let close_driver driver =
   let changed =
     Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
@@ -348,7 +373,10 @@ let close_driver driver =
           true
         end)
   in
-  if changed then Eio.Condition.broadcast driver.Qmljs_types.condition
+  if changed then begin
+    cancel_worker_scope driver;
+    Eio.Condition.broadcast driver.Qmljs_types.condition
+  end
 
 let cancel_driver driver =
   let changed =
@@ -362,6 +390,7 @@ let cancel_driver driver =
         end)
   in
   if changed then begin
+    cancel_worker_scope driver;
     driver.Qmljs_types.cancel ();
     Eio.Condition.broadcast driver.Qmljs_types.condition
   end
@@ -379,7 +408,10 @@ let execute_host_job t =
                 driver.Qmljs_types.closed, driver.Qmljs_types.cancelled)
       in
       if drop then ()
-      else if cancel then Option.iter (fun cancel -> cancel ()) job.on_cancel
+      else if cancel then
+        Option.iter
+          (fun on_cancel -> with_interrupt_suppressed t on_cancel)
+          job.on_cancel
       else job.run ();
       signal_driver t;
       true
