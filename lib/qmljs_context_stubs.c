@@ -117,11 +117,18 @@ static JSValue qmljs_async_eval_completion_value(JSContext *ctx,
   return JS_GetPropertyStr(ctx, argv[0], "value");
 }
 
-static JSValue qmljs_unwrap_async_eval_result(JSContext *ctx, JSValue promise)
+static JSValue qmljs_unwrap_async_eval_result(JSContext *ctx,
+                                               JSValueConst then_fn,
+                                               JSValue promise)
 {
-  JSValue then = JS_GetPropertyStr(ctx, promise, "then");
-  if (JS_IsException(then)) {
+  /* Use the pristine Promise.prototype.then captured at context creation, not a
+     prototype-chain lookup, so the host-level async-eval result does not depend
+     on user-mutable Promise.prototype.then. */
+  if (!JS_IsFunction(ctx, then_fn)) {
     JS_FreeValue(ctx, promise);
+    JS_ThrowTypeError(
+      ctx, "async eval unwrap unavailable: Promise.prototype.then was not "
+           "captured for this context");
     return JS_EXCEPTION;
   }
 
@@ -129,14 +136,12 @@ static JSValue qmljs_unwrap_async_eval_result(JSContext *ctx, JSValue promise)
     JS_NewCFunction(ctx, qmljs_async_eval_completion_value,
                     "qmljs_async_eval_completion_value", 1);
   if (JS_IsException(unwrap)) {
-    JS_FreeValue(ctx, then);
     JS_FreeValue(ctx, promise);
     return JS_EXCEPTION;
   }
 
-  JSValue unwrapped = JS_Call(ctx, then, promise, 1, &unwrap);
+  JSValue unwrapped = JS_Call(ctx, then_fn, promise, 1, &unwrap);
   JS_FreeValue(ctx, unwrap);
-  JS_FreeValue(ctx, then);
   JS_FreeValue(ctx, promise);
   return unwrapped;
 }
@@ -154,7 +159,8 @@ CAMLprim value qmljs_context_eval(value context, value source, value filename, v
     qmljs_raise_exception(ctx);
   }
   if ((eval_flags & JS_EVAL_FLAG_ASYNC) != 0) {
-    result = qmljs_unwrap_async_eval_result(ctx, result);
+    result = qmljs_unwrap_async_eval_result(
+      ctx, qmljs_context_promise_then(context), result);
   }
   if (JS_IsException(result)) {
     qmljs_raise_exception(ctx);

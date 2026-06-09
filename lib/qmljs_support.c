@@ -57,6 +57,7 @@ struct qmljs_deferred_context {
   struct qmljs_runtime_state *state;
   JSContext *ctx;
   JSValue bigint_constructor;
+  JSValue promise_then;
   struct qmljs_deferred_context *next;
 };
 
@@ -161,6 +162,7 @@ struct qmljs_context_handle {
   struct qmljs_runtime_state *state;
   JSContext *ctx;
   JSValue bigint_constructor;
+  JSValue promise_then;
   atomic_int live;
   int linked;
   struct qmljs_context_handle *prev;
@@ -578,7 +580,8 @@ void qmljs_defer_prop_enum(struct qmljs_runtime_state *state,
 }
 
 static void qmljs_defer_context(struct qmljs_runtime_state *state,
-                              JSContext *ctx, JSValue bigint_constructor)
+                              JSContext *ctx, JSValue bigint_constructor,
+                              JSValue promise_then)
 {
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
       == 0) {
@@ -590,6 +593,7 @@ static void qmljs_defer_context(struct qmljs_runtime_state *state,
   node->state = state;
   node->ctx = ctx;
   node->bigint_constructor = bigint_constructor;
+  node->promise_then = promise_then;
   qmljs_state_ref(state);
   struct qmljs_deferred_context *head =
     atomic_load_explicit(&state->deferred_contexts, memory_order_acquire);
@@ -672,7 +676,7 @@ static void qmljs_release_atom_for_scope(struct qmljs_atom_handle *handle)
 
 static int qmljs_claim_context_for_scope_locked(
   struct qmljs_runtime_state *state, struct qmljs_context_handle *handle,
-  JSContext **ctx, JSValue *bigint_constructor)
+  JSContext **ctx, JSValue *bigint_constructor, JSValue *promise_then)
 {
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) == 0) {
     return 0;
@@ -680,19 +684,23 @@ static int qmljs_claim_context_for_scope_locked(
   qmljs_unlink_context_locked(state, handle);
   *ctx = handle->ctx;
   *bigint_constructor = handle->bigint_constructor;
+  *promise_then = handle->promise_then;
   handle->ctx = NULL;
   handle->bigint_constructor = JS_UNDEFINED;
+  handle->promise_then = JS_UNDEFINED;
   atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
   return 1;
 }
 
 static void qmljs_release_claimed_context(struct qmljs_runtime_state *state,
                                         JSContext *ctx,
-                                        JSValue bigint_constructor)
+                                        JSValue bigint_constructor,
+                                        JSValue promise_then)
 {
   if (atomic_load_explicit(&state->native_runtime_alive, memory_order_acquire)
         != 0 && ctx != NULL) {
     JS_FreeValue(ctx, bigint_constructor);
+    JS_FreeValue(ctx, promise_then);
     JS_FreeContext(ctx);
   }
 }
@@ -702,12 +710,13 @@ static void qmljs_release_context_for_scope(struct qmljs_context_handle *handle)
   struct qmljs_runtime_state *state = handle->state;
   JSContext *ctx = NULL;
   JSValue bigint_constructor = JS_UNDEFINED;
+  JSValue promise_then = JS_UNDEFINED;
   qmljs_lock_lists(state);
   int claimed = qmljs_claim_context_for_scope_locked(
-    state, handle, &ctx, &bigint_constructor);
+    state, handle, &ctx, &bigint_constructor, &promise_then);
   qmljs_unlock_lists(state);
   if (claimed) {
-    qmljs_release_claimed_context(state, ctx, bigint_constructor);
+    qmljs_release_claimed_context(state, ctx, bigint_constructor, promise_then);
   }
 }
 
@@ -813,20 +822,21 @@ static void qmljs_release_all_contexts_for_scope(struct qmljs_runtime_state *sta
   do {
     JSContext *ctx = NULL;
     JSValue bigint_constructor = JS_UNDEFINED;
+    JSValue promise_then = JS_UNDEFINED;
     qmljs_lock_lists(state);
     claimed = 0;
     for (struct qmljs_context_handle *handle = state->contexts; handle != NULL;
          handle = handle->next) {
       if (atomic_load_explicit(&handle->live, memory_order_acquire) != 0 &&
           qmljs_claim_context_for_scope_locked(
-            state, handle, &ctx, &bigint_constructor)) {
+            state, handle, &ctx, &bigint_constructor, &promise_then)) {
         claimed = 1;
         break;
       }
     }
     qmljs_unlock_lists(state);
     if (claimed) {
-      qmljs_release_claimed_context(state, ctx, bigint_constructor);
+      qmljs_release_claimed_context(state, ctx, bigint_constructor, promise_then);
     }
   } while (claimed);
 }
@@ -905,6 +915,7 @@ void qmljs_drain_deferred(struct qmljs_runtime_state *state)
     struct qmljs_deferred_context *next = contexts->next;
     if (runtime_alive && contexts->ctx != NULL) {
       JS_FreeValue(contexts->ctx, contexts->bigint_constructor);
+      JS_FreeValue(contexts->ctx, contexts->promise_then);
       JS_FreeContext(contexts->ctx);
     }
     atomic_fetch_sub_explicit(&state->open_contexts, 1, memory_order_relaxed);
@@ -1005,9 +1016,11 @@ static void qmljs_context_finalize(value v)
   struct qmljs_runtime_state *state = handle->state;
   if (atomic_exchange_explicit(&handle->live, 0, memory_order_acq_rel) != 0) {
     qmljs_unlink_context(state, handle);
-    qmljs_defer_context(state, handle->ctx, handle->bigint_constructor);
+    qmljs_defer_context(state, handle->ctx, handle->bigint_constructor,
+                        handle->promise_then);
     handle->ctx = NULL;
     handle->bigint_constructor = JS_UNDEFINED;
+    handle->promise_then = JS_UNDEFINED;
   }
   context->handle = NULL;
   qmljs_wait_lists_quiescent(state);
@@ -1132,6 +1145,41 @@ static JSValue qmljs_capture_bigint_constructor(JSContext *ctx)
   return constructor;
 }
 
+/* Capture the original Promise.prototype.then at context creation, before any
+   user code can run. Async-eval unwrapping uses this pristine reference so it
+   never depends on a later, possibly tampered, Promise.prototype.then. */
+static JSValue qmljs_capture_promise_then(JSContext *ctx)
+{
+  JSValue global = JS_GetGlobalObject(ctx);
+  if (JS_IsException(global)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return JS_UNDEFINED;
+  }
+  JSValue promise = JS_GetPropertyStr(ctx, global, "Promise");
+  JS_FreeValue(ctx, global);
+  if (JS_IsException(promise)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return JS_UNDEFINED;
+  }
+  JSValue prototype = JS_GetPropertyStr(ctx, promise, "prototype");
+  JS_FreeValue(ctx, promise);
+  if (JS_IsException(prototype)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return JS_UNDEFINED;
+  }
+  JSValue then = JS_GetPropertyStr(ctx, prototype, "then");
+  JS_FreeValue(ctx, prototype);
+  if (JS_IsException(then)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return JS_UNDEFINED;
+  }
+  if (!JS_IsFunction(ctx, then)) {
+    JS_FreeValue(ctx, then);
+    return JS_UNDEFINED;
+  }
+  return then;
+}
+
 value qmljs_alloc_context(value runtime, JSContext *ctx)
 {
   CAMLparam1(runtime);
@@ -1145,6 +1193,7 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   handle->state = state;
   handle->ctx = ctx;
   handle->bigint_constructor = qmljs_capture_bigint_constructor(ctx);
+  handle->promise_then = qmljs_capture_promise_then(ctx);
   atomic_init(&handle->live, 1);
   handle->linked = 0;
   handle->prev = NULL;
@@ -1820,6 +1869,16 @@ JSValueConst qmljs_context_bigint_constructor(value context)
     qmljs_raise_string("BigInt constructor is not available");
   }
   return handle->bigint_constructor;
+}
+
+JSValueConst qmljs_context_promise_then(value context)
+{
+  JSContext *ctx = qmljs_context(context);
+  struct qmljs_context_handle *handle = Qml_context_val(context)->handle;
+  if (!JS_IsFunction(ctx, handle->promise_then)) {
+    return JS_UNDEFINED;
+  }
+  return handle->promise_then;
 }
 
 struct qmljs_runtime_state *qmljs_context_state(value context)

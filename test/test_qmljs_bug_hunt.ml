@@ -221,6 +221,21 @@ let test_async_eval_unwraps_result () =
   let result = Qmljs.Promise.await promise in
   check_int "async eval completion value" 42 (Qmljs.Value.to_int result)
 
+(* Async-eval unwrapping must not depend on user-mutable Promise.prototype.then.
+   The host maps QuickJS's [{ value: ... }] async-eval wrapper to the completion
+   value via a pristine then captured at context creation, so tampering with
+   Promise.prototype.then cannot change what [eval ~async:true] returns. *)
+let test_async_eval_unwrap_ignores_tampered_then () =
+  with_context @@ fun _runtime context ->
+  ignore
+    (Qmljs.Context.eval context
+       "Promise.prototype.then = function () { return Promise.resolve({ value: \
+        999 }); };"
+      : Qmljs.Value.t);
+  let promise = Qmljs.Context.eval ~async:true context "40 + 2" in
+  let result = Qmljs.Promise.await promise in
+  check_int "async eval ignores tampered then" 42 (Qmljs.Value.to_int result)
+
 (* BUG 11 — as_int must reject (not silently wrap) BigInts outside the OCaml int
    range. [JS_ToInt64Ext] reduces modulo 2^64, so 2n**64n would wrap to 0; the
    decoder must fail loudly instead of returning [Ok 0]. *)
@@ -339,6 +354,8 @@ let tests =
   ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
   ; "class_finalizers_run_after_gc", test_class_finalizers_run_after_gc
   ; "async_eval_unwraps_result", test_async_eval_unwraps_result
+  ; "async_eval_unwrap_ignores_tampered_then",
+    test_async_eval_unwrap_ignores_tampered_then
   ; "as_int_rejects_out_of_range_bigint", test_as_int_rejects_out_of_range_bigint
   ; "own_keys_default_includes_all_keys", test_own_keys_default_includes_all_keys
   ; "entries_default_includes_all", test_entries_default_includes_all
