@@ -1584,19 +1584,18 @@ static int qmljs_stack_starts_with_repeating_cycle(
   if (stack == NULL || !stack->present) {
     return 0;
   }
-  const char *lines[12];
-  size_t lengths[12];
+  const char *lines[32];
+  size_t lengths[32];
   size_t count =
     qmljs_stack_first_lines(stack->data, stack->length, lines, lengths,
                            sizeof(lines) / sizeof(lines[0]));
+  if (count < 6) {
+    return 0;
+  }
 
-  for (size_t cycle = 1; cycle <= 4; cycle++) {
-    size_t required = cycle * 3;
-    if (count < required) {
-      continue;
-    }
+  for (size_t cycle = 1; cycle <= count / 2; cycle++) {
     int matches = 1;
-    for (size_t index = cycle; index < required; index++) {
+    for (size_t index = cycle; index < count; index++) {
       if (!qmljs_same_stack_line(lines[index], lengths[index],
                                  lines[index % cycle],
                                  lengths[index % cycle])) {

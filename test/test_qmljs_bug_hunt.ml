@@ -239,6 +239,25 @@ let test_mutual_recursion_stack_overflow () =
       check_bool "mutual recursion classified as stack overflow" true
         (Qmljs.Error.is_stack_overflow error)
 
+let test_five_function_recursion_stack_overflow_classified () =
+  with_context @@ fun _runtime context ->
+  match
+    Qmljs.Error.capture (fun () ->
+        Qmljs.Context.eval context
+          {|
+            function a(){ return b() + 1; }
+            function b(){ return c() + 1; }
+            function c(){ return d() + 1; }
+            function d(){ return e() + 1; }
+            function e(){ return a() + 1; }
+            a();
+          |})
+  with
+  | Ok _ -> fail "expected a stack overflow error"
+  | Error error ->
+      check_bool "five-function recursion classified as stack overflow" true
+        (Qmljs.Error.is_stack_overflow error)
+
 (* BUG 5 — native class finalizers must be flushed by the deterministic API.
 
    [Class.create ~finalize] documents that [finalize] runs when QuickJS releases
@@ -490,6 +509,8 @@ let tests =
   ; "native_subclass_instanceof", test_native_subclass_instanceof
   ; "stack_overflow_classified", test_stack_overflow_classified
   ; "mutual_recursion_stack_overflow", test_mutual_recursion_stack_overflow
+  ; "five_function_recursion_stack_overflow_classified",
+    test_five_function_recursion_stack_overflow_classified
   ; "class_finalizers_run_after_gc", test_class_finalizers_run_after_gc
   ; "async_eval_unwraps_result", test_async_eval_unwraps_result
   ; "async_eval_unwrap_ignores_tampered_then",
