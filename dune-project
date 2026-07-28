@@ -2,6 +2,8 @@
 
 (name qmljs)
 
+(license Unlicense)
+
 (generate_opam_files false)
 
 (package
