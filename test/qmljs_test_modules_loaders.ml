@@ -686,6 +686,86 @@ let test_module_loader_filesystem_api () =
       check_kind "unknown import attribute kind" Qmljs.Error.JavaScript
         (Qmljs.Error.kind error))
 
+let test_loader_normalization_survives_minor_gc () =
+  let control = Gc.get () in
+  Fun.protect ~finally:(fun () -> Gc.set control) (fun () ->
+    (* The import window below allocates about one nursery: the [Some] wrapper
+       is allocated before the base and specifier strings are copied, so a
+       minor collection can move the wrapper while the C loader still holds a
+       plain C alias of it. Gc.set clamps to the runtime minimum, and the
+       stress is only meaningful while the nursery stays small. *)
+    Gc.set { control with minor_heap_size = 512 };
+    let nursery_words = (Gc.get ()).minor_heap_size in
+    if nursery_words > 1024 then
+      fail
+        (Printf.sprintf
+           "GC-stressed import window needs a small nursery, runtime clamped \
+            minor_heap_size to %d words"
+           nursery_words);
+    Qmljs.Runtime.with_ @@ fun runtime ->
+    Qmljs.Context.with_ runtime @@ fun context ->
+    let expected_base = ref "" in
+    let expected_specifier = ref "" in
+    let normalizations = ref 0 in
+    let loader =
+      Qmljs.Module.Loader.callback
+        ~normalize:(fun ~base ~specifier ~attributes ->
+          (* Recycle more than a whole nursery before the first collection
+             sees this callback's arguments as roots: a collection inside the
+             C loader promotes its rooted slots, so an alias the C code still
+             holds points at nursery memory this churn overwrites. *)
+          let rec churn blocks =
+            if blocks <= 0 then ()
+            else begin
+              ignore (Sys.opaque_identity (String.make 232 'x'));
+              churn (blocks - 1)
+            end
+          in
+          churn ((nursery_words / 30) + 64);
+          Gc.minor ();
+          incr normalizations;
+          (match base with
+           | Some base -> check_string "GC-stressed import base" !expected_base base
+           | None -> fail "GC-stressed import lost its base");
+          check_string "GC-stressed import specifier" !expected_specifier specifier;
+          check_bool "GC-stressed import attributes" true
+            (List.mem ("type", "js") attributes);
+          Ok specifier)
+        ~load:(fun request ->
+          check_string "GC-stressed load specifier" !expected_specifier
+            request.Qmljs.Module.Loader.specifier;
+          Ok (Some "export default 42;"))
+    in
+    Qmljs.Runtime.set_module_loader runtime loader;
+    (* The sweep fills the nursery with 30-word minor-heap blocks before every
+       import so the [Some] wrapper and the copied import names cross the
+       minor heap limit inside the C loader path, covering every alignment. *)
+    let fill_nursery words =
+      let block = String.make 232 'x' in
+      let rec loop remaining acc =
+        if remaining <= 0 then acc else loop (remaining - 30) (block :: acc)
+      in
+      loop words []
+    in
+    for attempt = 0 to 1999 do
+      (* Names of roughly 250 words stay in the minor heap and keep the C
+         window wide; longer names are allocated directly in the major heap
+         and never take part in it. *)
+      expected_base := Printf.sprintf "%s-main-%d.js"
+        (String.make (1900 + attempt mod 100) 'b') attempt;
+      expected_specifier := Printf.sprintf "%s-dep-%d.js"
+        (String.make (1900 + (attempt * 17) mod 100) 's') attempt;
+      let source = Printf.sprintf
+        "import value from %S with { type: \"js\" }; export default value;"
+        !expected_specifier in
+      let fill = Sys.opaque_identity (fill_nursery (30 * (attempt mod 150))) in
+      let namespace = Qmljs.Module.eval ~filename:!expected_base context source in
+      ignore fill;
+      check_int "GC-stressed import result" 42
+        (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+    done;
+    check_int "GC-stressed normalize callback count" 2000 !normalizations)
+
 let tests =
   [ "native module API", test_native_module_api
   ; "loader request attributes are per import"
@@ -707,4 +787,5 @@ let tests =
   ; "filesystem loader rejects symlink swap race"
   , test_filesystem_loader_rejects_symlink_swap_race
   ; "module loader filesystem API", test_module_loader_filesystem_api
+  ; "loader normalization survives minor GC", test_loader_normalization_survives_minor_gc
   ]

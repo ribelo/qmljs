@@ -567,58 +567,49 @@ static char *qmljs_module_loader_normalize(JSContext *ctx,
   struct qmljs_module_loader *loader = opaque;
   CAMLparam0();
   CAMLlocalN(roots, 9);
-  value base;
-  value specifier;
-  value normalized;
-  value some;
-  value base_string;
-  value error;
-
+  /* A minor collection can move any block reachable only from a C local, so
+     only the registered [roots] slots may be read after an allocation point:
+     plain aliases of those slots go stale across caml_copy_string and
+     caml_callback. */
   if (module_base_name == NULL) {
     roots[0] = Val_int(0);
   } else {
     roots[3] = caml_alloc(1, 0);
-    some = roots[3];
-    Store_field(some, 0, Val_unit);
+    Store_field(roots[3], 0, Val_unit);
     roots[4] = caml_copy_string(module_base_name);
-    base_string = roots[4];
-    Store_field(some, 0, base_string);
-    roots[0] = some;
+    Store_field(roots[3], 0, roots[4]);
+    roots[0] = roots[3];
   }
-  base = roots[0];
   roots[1] = caml_copy_string(module_name);
-  specifier = roots[1];
   if (qmljs_import_attributes_to_ocaml(ctx, attributes, &roots[8]) < 0) {
     CAMLreturnT(char *, NULL);
   }
 
   struct qmljs_runtime_state *state = qmljs_module_loader_enter(loader);
-  value result =
-    caml_callback3_exn(loader->normalize, base, specifier, roots[8]);
+  roots[2] =
+    caml_callback3_exn(loader->normalize, roots[0], roots[1], roots[8]);
   qmljs_module_loader_leave(state);
-  if (Is_exception_result(result)) {
-    char *message = caml_format_exception(Extract_exception(result));
+  if (Is_exception_result(roots[2])) {
+    char *message = caml_format_exception(Extract_exception(roots[2]));
     (void)qmljs_throw_marked_error(ctx, message, "host_callback_defect", NULL);
     caml_stat_free(message);
     CAMLreturnT(char *, NULL);
   }
-  roots[2] = result;
 
-  if (Tag_val(result) == 1) {
-    error = Field(result, 0);
-    roots[5] = error;
-    (void)qmljs_throw_error_marker(ctx, error);
+  if (Tag_val(roots[2]) == 1) {
+    roots[5] = Field(roots[2], 0);
+    (void)qmljs_throw_error_marker(ctx, roots[5]);
     CAMLreturnT(char *, NULL);
   }
 
-  normalized = Field(result, 0);
-  size_t length = caml_string_length(normalized);
+  roots[6] = Field(roots[2], 0);
+  size_t length = caml_string_length(roots[6]);
   char *copy = js_malloc(ctx, length + 1);
   if (copy == NULL) {
     JS_ThrowOutOfMemory(ctx);
     CAMLreturnT(char *, NULL);
   }
-  memcpy(copy, String_val(normalized), length);
+  memcpy(copy, String_val(roots[6]), length);
   copy[length] = '\0';
   CAMLreturnT(char *, copy);
 }
@@ -732,6 +723,9 @@ static JSModuleDef *qmljs_compile_loaded_module(JSContext *ctx,
                                               int is_json)
 {
   if (!is_json) {
+    /* QuickJS parses the whole buffer before it resolves imports, and import
+       resolution is the only point where this call can reenter OCaml and move
+       [source]; the pointer is not read after it. */
     JSValue compiled = JS_Eval(ctx, source, source_length, module_name,
                                JS_EVAL_TYPE_MODULE |
                                  JS_EVAL_FLAG_COMPILE_ONLY);
