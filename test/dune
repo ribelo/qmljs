@@ -36,3 +36,7 @@
  (name test_qmljs_properties)
  (libraries qmljs eio_main qcheck qcheck-core))
 
+(test
+ (name test_qmljs_loader_acquisition)
+ (libraries qmljs unix))
+

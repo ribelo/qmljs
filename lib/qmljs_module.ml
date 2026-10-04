@@ -116,7 +116,9 @@ module Loader = struct
       (fun () -> really_input_string channel (in_channel_length channel))
 
   let read_checked_file root specifier path =
-    match Unix.openfile path [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 with
+    (* The checked regular path may have been replaced by a FIFO. Nonblocking
+       acquisition lets the existing checks reject it without waiting for a writer. *)
+    match Unix.openfile path [ Unix.O_RDONLY; Unix.O_CLOEXEC; Unix.O_NONBLOCK ] 0 with
     | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.ELOOP), _, _) ->
         None
     | fd ->
