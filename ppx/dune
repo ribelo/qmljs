@@ -2,6 +2,9 @@
  (name qmljs_ppx)
  (public_name qmljs_ppx)
  (kind ppx_rewriter)
+ (optional)
+ ; ppxlib cannot be installed on OxCaml 5.4 (requires ocaml < 5.3).
+ (enabled_if (< %{ocaml_version} 5.3))
  (libraries ppxlib)
  (preprocess
   (pps ppxlib.metaquot)))

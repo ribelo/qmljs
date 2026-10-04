@@ -1,5 +1,6 @@
 (library
  (name qmljs_ppx_interface)
+ (enabled_if (< %{ocaml_version} 5.3))
  (libraries qmljs)
  (preprocess
   (pps qmljs_ppx)))

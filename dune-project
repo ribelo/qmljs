@@ -9,8 +9,8 @@
 (package
  (name qmljs)
  (depends
-  (ocaml (= 5.2.0))
-  (ocaml-variants (= 5.2.0+ox))
+  (ocaml (= 5.4.0))
+  (ocaml-variants (= 5.4.0+ox))
   (dune (>= 3.21))
   eio
   (eio_main :with-test)
@@ -18,9 +18,10 @@
 
 (package
  (name qmljs_ppx)
+ (allow_empty)
  (depends
-  (ocaml (= 5.2.0))
-  (ocaml-variants (= 5.2.0+ox))
+  (ocaml (= 5.4.0))
+  (ocaml-variants (= 5.4.0+ox))
   (dune (>= 3.21))
   qmljs
   ppxlib))

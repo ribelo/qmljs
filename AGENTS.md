@@ -20,8 +20,8 @@ Core OCaml code lives in lib/. Keep modules split by binding responsibility:
   user-facing API.
 
 Tests live under test/. Allocation probes live under bench/. Design notes live
-under docs/. Generated build output belongs in _build/; local switches belong
-in _opam/.
+under docs/. Generated build output belongs in _build/. Development uses the
+existing shared opam switch; do not create a repository-local switch.
 
 Do not grow one giant binding file. Add a focused module when a new QuickJS area
 gets enough surface to justify it, and pair public API changes with .mli
@@ -50,11 +50,21 @@ OCaml top-level module should line up. Prefer qmljs -> Qmljs and qmljs_feature
 
 qmljs is OxCaml, not mainline OCaml. Keep the package pinned to:
 
-- ocaml (= 5.2.0)
-- ocaml-variants (= 5.2.0+ox)
+- ocaml (= 5.4.0)
+- ocaml-variants (= 5.4.0+ox)
 
-The default development shell must be OxCaml. Do not relax this to ocaml >= 5.2
-and do not introduce mainline-only APIs as the default path.
+The default and oxcaml development shells activate switch "5.4.0+ox" with
+OPAMROOT=$HOME/.cache/opam. qmljs-oxcaml-init only validates that shared switch
+and its existing dependencies; it does not create switches or install packages.
+Do not install, upgrade, or pin anything in the shared switch for this project.
+If a required package is missing, report it and stop. Keep the exact compiler
+pin; mainline OCaml is not supported.
+
+qmljs_ppx remains in the repository but its library, interface fixture, and test
+are excluded from the 5.4 build. It depends on ppxlib, whose OxCaml package guard
+requires ocaml < 5.3. Do not replace it with compiler-libs or weaken core tests.
+Exergy consumes qmljs (including its Eio, async host callback, and promise APIs),
+not qmljs_ppx.
 
 Use OxCaml features where they carry a real invariant or performance win:
 portability, allocation control, stack allocation, uniqueness, unboxed types,
@@ -230,12 +240,8 @@ section adds only what they do not already cover:
 
 ## Commit & Pull Request Guidelines
 
-Commit often. Use conventional-style subjects that describe the behavior or
-policy change.
-
-Always commit with:
-
-    git commit --no-gpg-sign
+Workers do not use git or commit changes. The lead owns commits. Handoffs
+list changed paths, exact check commands and exit codes, and remaining risks.
 
 Pull requests or handoffs should list the exact gates run and call out any known
 limitation that still violates these rules.

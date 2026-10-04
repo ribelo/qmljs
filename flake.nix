@@ -46,57 +46,30 @@
           ])
         );
 
+        # Validate the existing shared switch; never mutate it from this flake.
         oxcamlInit = pkgs.writeShellApplication {
           name = "qmljs-oxcaml-init";
-          runtimeInputs = [
-            pkgs.autoconf
-            pkgs.stdenv.cc
-            pkgs.which
-            pkgs.bzip2
-            pkgs.gnutar
-            pkgs.git
-            pkgs.gnumake
-            pkgs.m4
-            pkgs.opam
-            pkgs.patch
-            pkgs.pkg-config
-            pkgs.python3
-            quickjsNg.dev
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.bubblewrap
-            pkgs.gmp
-            pkgs.libev
-            pkgs.libffi
-            pkgs.openssl
-            pkgs.zlib
-          ];
+          runtimeInputs = [ pkgs.opam ];
           text = ''
             set -euo pipefail
+            export OPAMROOT="$HOME/.cache/opam"
 
-            export OPAMROOT="''${OPAMROOT:-$HOME/.cache/opam}"
-            export PKG_CONFIG_PATH="${nativePkgConfigPath}:''${PKG_CONFIG_PATH:-}"
-
-            if [ ! -f "$OPAMROOT/config" ]; then
-              opam init --bare --no-setup --yes
-            fi
-
-            # Use a separate repository name: an inherited ox repository may
-            # contain only newer compilers, and must not be changed globally.
-            opam repository add qmljs-ox \
-              git+https://github.com/oxcaml/opam-repository.git#f1bd228dda31430bf6271f0f9adb2e604c6957ca \
-              --dont-select --yes
-            if ! opam switch list --short | grep -qx '5.2.0+ox'; then
-              opam switch create 5.2.0+ox \
-                --packages=ocaml.5.2.0,ocaml-variants.5.2.0+ox,oxcaml-compiler.5.2.0minus40 \
-                --repos=qmljs-ox,default --no-switch --assume-depexts --yes
-            fi
-
-            if [ "$(opam list --switch=5.2.0+ox --installed --short --columns=version ocaml)" != 5.2.0 ] ||
-               [ "$(opam list --switch=5.2.0+ox --installed --short --columns=version ocaml-variants)" != 5.2.0+ox ]; then
-              echo "qmljs: switch 5.2.0+ox must contain ocaml.5.2.0 and ocaml-variants.5.2.0+ox" >&2
+            if [ ! -x "$OPAMROOT/5.4.0+ox/bin/ocamlc" ]; then
+              echo "qmljs: shared OxCaml switch 5.4.0+ox is missing or incomplete in $OPAMROOT" >&2
               exit 1
             fi
-            opam install . --switch=5.2.0+ox --deps-only --with-test --assume-depexts --yes
+            if [ "$(opam exec --switch=5.4.0+ox -- ocamlc -version)" != 5.4.0+ox ] ||
+               [ "$(opam list --switch=5.4.0+ox --installed --short --columns=version ocaml)" != 5.4.0 ] ||
+               [ "$(opam list --switch=5.4.0+ox --installed --short --columns=version ocaml-variants)" != 5.4.0+ox ]; then
+              echo "qmljs: expected ocaml.5.4.0, ocaml-variants.5.4.0+ox and compiler 5.4.0+ox" >&2
+              exit 1
+            fi
+            for package in dune eio eio_main qcheck; do
+              if [ "$(opam list --switch=5.4.0+ox --installed --short --columns=name "$package")" != "$package" ]; then
+                echo "qmljs: missing package $package in shared switch 5.4.0+ox; no packages were installed" >&2
+                exit 1
+              fi
+            done
           '';
         };
         oxcamlShell = pkgs.mkShell {
@@ -108,26 +81,15 @@
           ];
 
           shellHook = ''
-            export OPAMROOT="''${OPAMROOT:-$HOME/.cache/opam}"
+            export OPAMROOT="$HOME/.cache/opam"
             export PKG_CONFIG_PATH="${nativePkgConfigPath}:''${PKG_CONFIG_PATH:-}"
-
-            if [ ! -x "$OPAMROOT/5.2.0+ox/bin/ocamlc" ]; then
-              echo "qmljs: mandatory OxCaml switch 5.2.0+ox is missing or incomplete in $OPAMROOT" >&2
-              echo "Run 'nix run .' from the project root to install the pinned toolchain and test dependencies." >&2
-              exit 1
-            fi
-            if ! qmljs_opam_env=$(opam env --switch=5.2.0+ox --set-switch); then
-              echo "qmljs: cannot activate mandatory OxCaml switch 5.2.0+ox" >&2
+            qmljs-oxcaml-init || exit $?
+            if ! qmljs_opam_env=$(opam env --switch=5.4.0+ox --set-switch); then
+              echo "qmljs: cannot activate mandatory OxCaml switch 5.4.0+ox" >&2
               exit 1
             fi
             eval "$qmljs_opam_env"
             unset qmljs_opam_env
-            if [ "$(ocamlc -version)" != 5.2.0+ox ] ||
-               [ "$(opam list --installed --short --columns=version ocaml)" != 5.2.0 ] ||
-               [ "$(opam list --installed --short --columns=version ocaml-variants)" != 5.2.0+ox ]; then
-              echo "qmljs: expected ocaml.5.2.0, ocaml-variants.5.2.0+ox and compiler 5.2.0+ox; refusing an inherited compiler" >&2
-              exit 1
-            fi
           '';
         };
 

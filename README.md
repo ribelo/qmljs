@@ -18,7 +18,7 @@ Constraints:
 
 | Constraint | Detail |
 | --- | --- |
-| Compiler | OxCaml `5.2.0+ox` only (`ocaml = 5.2.0`, `ocaml-variants = 5.2.0+ox`) |
+| Compiler | OxCaml `5.4.0+ox` only (`ocaml = 5.4.0`, `ocaml-variants = 5.4.0+ox`) |
 | Runtime model | One QuickJS runtime per owner domain; values stay on that domain |
 | Async | Eio for host work; one explicit job driver per runtime |
 | Native dep | `quickjs-ng` via pkg-config (`-lqjs`) |
@@ -33,30 +33,35 @@ not opam-published and the opam metadata is incomplete on purpose.
 | Source | https://github.com/ribelo/qmljs |
 | opam | Not published. `dune-project` sets `(generate_opam_files false)`. Hand-written `qmljs.opam` / `qmljs_ppx.opam` list depends and build only — no synopsis, description, homepage, license, or bug-reports |
 | License | Unlicense (see `LICENSE`) |
-| Packages | `qmljs` (library + C stubs), `qmljs_ppx` (ppx_rewriter, depends on `ppxlib`) |
+| Packages | `qmljs` (library + C stubs + Eio integration); `qmljs_ppx` source is retained but excluded on 5.4 |
 | Runtime deps | `eio`, `unix`, system `quickjs-ng` |
 | Test deps | `eio_main`, `qcheck` / `qcheck-core` |
 
 ## Quick start
 
-Requires an OxCaml `5.2.0+ox` switch and `quickjs-ng` development headers.
+Requires the existing shared OxCaml switch `5.4.0+ox` in
+`OPAMROOT=$HOME/.cache/opam`, with `dune`, `eio` (1.6), `eio_main`, and `qcheck`
+already installed. The Nix shell provides the patched `quickjs-ng` headers and
+library. Both the default and `oxcaml` shells activate this exact switch.
 
 ```bash
-# Nix shell (pins pkg-config + quickjs-ng.dev; uses OPAMROOT ~/.cache/opam)
+# Activate the shared switch and native dependencies
 nix develop .#oxcaml
 
-# First-time OxCaml switch + deps (from the flake helper)
+# Validate the existing switch; this helper does not install or change anything
 qmljs-oxcaml-init
 
-# Build / test
+# Build / test (core library and Eio integration; PPX excluded)
 nix develop .#oxcaml -c dune build
 nix develop .#oxcaml -c dune runtest
+nix develop .#oxcaml -c dune build bench/alloc.exe
 ```
 
-Without Nix: create switch `5.2.0+ox` from the OxCaml opam repository, install
-`quickjs-ng` for your OS, then `opam install . --deps-only --with-test`.
-
-Mainline OCaml is not supported. Do not relax the `= 5.2.0+ox` pin.
+Without Nix, activate the same shared switch with
+`eval "$(OPAMROOT=$HOME/.cache/opam opam env --switch=5.4.0+ox --set-switch)"`
+and provide patched `quickjs-ng` development headers and library for your OS.
+Do not install, upgrade, or pin packages in the shared switch; report any
+missing dependency instead. Mainline OCaml is not supported.
 
 ### Minimal eval
 
@@ -139,7 +144,15 @@ let () =
 
 ### PPX (`qmljs_ppx`)
 
-Depend on both packages and preprocess with `(pps qmljs_ppx)`:
+**Unavailable on 5.4.0+ox.** The rewriter, interface fixture, and PPX tests
+remain in the repository but are excluded from `dune build` and `dune runtest`.
+`ppxlib` cannot be installed because the `oxcaml-ppxlib` guard requires
+`ocaml < 5.3`. Exergy uses only the core `qmljs` library, including Eio
+integration, deferred async host callbacks, and promises; it does not need the
+PPX. No compiler-libs port is provided.
+
+The retained PPX API (not built or verified on 5.4) uses both packages and
+`(pps qmljs_ppx)`:
 
 ```ocaml
 type profile =
@@ -273,7 +286,7 @@ Raw FFI (`Qmljs_raw`, `*_stubs.c`) is not part of the user-facing API.
 
 | Choice | Why |
 | --- | --- |
-| OxCaml, not mainline OCaml | Ownership/modes and allocation control matter at the FFI boundary; pin is exact (`5.2.0+ox`) |
+| OxCaml, not mainline OCaml | Ownership/modes and allocation control matter at the FFI boundary; pin is exact (`5.4.0+ox`) |
 | Single-owner runtime + domain checks | QuickJS is not multi-domain safe; enforce it at every entry point |
 | Scoped `with_` brackets | Deterministic teardown on success, JS failure, OCaml exception, and Eio cancellation |
 | Structured errors built at the boundary | Preserve JS cause chains, OCaml frames, and policy metadata while live values still exist |
@@ -310,8 +323,8 @@ Rejected or deferred:
   Full bytecode loading is not exposed. The filesystem loader opens a checked
   file non-blocking, so a path swapped to a FIFO before the read is rejected
   instead of hanging.
-- PPX v1 type coverage is listed above; open/polymorphic/GADT forms are out of
-  scope for the current rewriter.
+- The PPX is excluded on 5.4.0+ox because ppxlib is unavailable. Its retained
+  v1 type coverage is listed above; open/polymorphic/GADT forms are out of scope.
 - `docs/quickjs-ng-binding.md` still says "Classes … are not exposed yet"; the
   public `Qmljs.Class` API and tests exist. Prefer the `.mli` over that sentence
   until the design note is updated.
@@ -343,12 +356,12 @@ Layout:
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Switch/compiler errors on 5.x mainline | Not OxCaml | Use `5.2.0+ox` via the flake or OxCaml opam repo |
+| Switch/compiler errors on 5.x mainline | Not OxCaml | Use `5.4.0+ox` via the flake or OxCaml opam repo |
 | Link failures on `-lqjs` | Missing quickjs-ng | Install `quickjs-ng` dev package; enter `nix develop .#oxcaml` |
 | `Wrong_domain` / closed-handle errors | Handle used off owner domain or after `with_` | Keep all QuickJS work on the creating domain inside the bracket |
 | Host callback cannot yield / blocks the runtime | Sync callback used for Eio or blocking work | Switch to `Function.make_async` / `set_global_async` and drive jobs |
 | Timeout path rejects host callbacks | Deadline armed during `eval_with_timeout` | Do blocking work in async host functions outside the timed eval |
-| PPX unknown | Only `qmljs` depended | Add `qmljs_ppx` and `(preprocess (pps qmljs_ppx))` |
+| PPX unavailable on 5.4.0+ox | `ppxlib` requires `ocaml < 5.3` | Use the core APIs; the PPX is intentionally excluded |
 | Policy violation on import | Loader `deny` or attribute/base conflict | Inspect `Error.denied_module_specifier_exn` and loader policy |
 
 ## Further reading
