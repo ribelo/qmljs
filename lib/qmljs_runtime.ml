@@ -103,6 +103,10 @@ let register_domain_cleanup =
   fun () -> Domain.DLS.get cleanup_key
 
 let create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit () =
+  Option.iter
+    (fun limit ->
+      if limit < 0 then invalid_arg "Promise job limit must be non-negative")
+    promise_job_limit;
   let domain = register_domain_cleanup () in
   let raw = Qmljs_raw.runtime_create () in
   Option.iter (Qmljs_raw.runtime_set_memory_limit raw) memory_limit;
@@ -286,10 +290,12 @@ let with_interrupt_suppressed t fn =
 
 let drain_jobs t =
   let rec loop n =
-    match t.Qmljs_types.promise_job_limit with
-    | Some limit when n >= limit ->
-        Qmljs_error.raise_resource_limit "QuickJS promise job limit exceeded"
-    | _ -> if execute_pending_job t then loop (n + 1) else n
+    if not (is_job_pending t) then n
+    else
+      match t.Qmljs_types.promise_job_limit with
+      | Some limit when n >= limit ->
+          Qmljs_error.raise_resource_limit "QuickJS promise job limit exceeded"
+      | _ -> if execute_pending_job t then loop (n + 1) else n
   in
   loop 0
 
@@ -315,7 +321,9 @@ let attach_driver t driver =
   | None -> t.Qmljs_types.driver <- Some driver
 
 let detach_driver t driver =
-  if t.Qmljs_types.driver == Some driver then t.Qmljs_types.driver <- None
+  match t.Qmljs_types.driver with
+  | Some attached when attached == driver -> t.Qmljs_types.driver <- None
+  | _ -> ()
 
 (* [wakeup_generation] is the condition predicate. Waiters snapshot it before
    checking promise state; signalers advance it under [mutex] before broadcast. *)

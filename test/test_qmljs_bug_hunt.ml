@@ -496,8 +496,111 @@ let test_has_atom_checks_own_property_not_prototype () =
   check_bool "has_atom must not see prototype property" false
     (Qmljs.Object.has_atom obj ~key:inherited_atom)
 
+(* A drain budget counts executed QuickJS jobs, not the final empty probe.
+   Excess work must stay queued for a later drain, including at budget zero. *)
+let test_drain_budget drain ~limit ~queued =
+  Qmljs.Runtime.with_ ~promise_job_limit:limit @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  ignore (Qmljs.Context.eval context
+    (Printf.sprintf
+       "globalThis.executed = 0; for (let i = 0; i < %d; i++) Promise.resolve().then(() => { executed++; });"
+       queued) : Qmljs.Value.t);
+  let outcome = Qmljs.Error.capture (fun () -> drain runtime) in
+  let executed () = Qmljs.Value.to_int (Qmljs.Context.eval context "executed") in
+  check_int "no execution beyond budget" (min queued limit) (executed ());
+  if queued <= limit then (
+    match outcome with
+    | Ok jobs -> check_int "successful drain count" queued jobs
+    | Error error -> fail ("within-budget drain failed: " ^ Qmljs.Error.message error))
+  else (
+    (match outcome with
+     | Error error ->
+         (match Qmljs.Error.kind error with
+          | Qmljs.Error.Resource_limit -> ()
+          | _ -> fail "excess jobs must raise Resource_limit")
+     | Ok _ -> fail "excess jobs were accepted");
+    check_bool "excess jobs remain queued" true (Qmljs.Runtime.is_job_pending runtime);
+    for _ = limit + 1 to queued do
+      check_bool "remaining job can execute" true (Qmljs.Runtime.execute_pending_job runtime)
+    done;
+    check_int "remaining work retained" queued (executed ());
+    check_bool "queue now empty" false (Qmljs.Runtime.is_job_pending runtime))
+
+(* A driver may schedule only contexts from its own runtime. *)
+let test_eio_promise_rejects_foreign_context ~clock () =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs.Eio.with_runtime ~sw ~clock @@ fun driver _runtime _context ->
+  Qmljs.Runtime.with_ @@ fun other_runtime ->
+  Qmljs.Context.with_ other_runtime @@ fun other_context ->
+  match Qmljs.Eio.promise driver other_context (fun () -> Qmljs.Value.int other_context 1) with
+  | _ -> fail "Eio.promise accepted a context belonging to another runtime"
+  | exception Invalid_argument _ -> ()
+
+(* Worker finalizers must finish while their QuickJS context is alive. *)
+let test_eio_scope_joins_workers_before_close ~clock () =
+  Eio.Switch.run @@ fun sw ->
+  let started, start = Eio.Promise.create () in
+  let cleaned = ref false in
+  let context_alive = ref false in
+  Qmljs.Eio.with_runtime ~sw ~clock (fun driver _runtime context ->
+    ignore (Qmljs.Eio.promise driver context (fun () ->
+      Fun.protect
+        ~finally:(fun () -> Eio.Cancel.protect (fun () ->
+          Eio.Fiber.yield ();
+          context_alive := (match Qmljs.Error.capture (fun () ->
+            Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1")) with
+            | Ok 2 -> true | _ -> false);
+          cleaned := true))
+        (fun () -> Eio.Promise.resolve start (); Eio.Fiber.await_cancel ())) : Qmljs.Value.t);
+    ignore (Qmljs.Eio.drain_until_idle driver : int);
+    Eio.Promise.await started);
+  check_bool "worker cleanup completed before with_runtime returns" true !cleaned;
+  check_bool "worker cleanup retains live context" true !context_alive
+
+let test_negative_promise_job_limit () =
+  match Qmljs.Runtime.with_ ~promise_job_limit:(-1) (fun _ -> ()) with
+  | () -> fail "negative promise job limit was accepted"
+  | exception Invalid_argument _ -> ()
+
+(* Private contract: detaching compares the driver, not fresh option boxes. *)
+let test_driver_detach_identity ~clock () =
+  Eio.Switch.run @@ fun sw ->
+  Qmljs__Qmljs_eio.with_runtime ~sw ~clock @@ fun driver runtime _context ->
+  Qmljs__Qmljs_eio.with_runtime ~sw ~clock @@ fun other _runtime _context ->
+  Qmljs__Qmljs_runtime.detach_driver runtime other;
+  (match runtime.Qmljs__Qmljs_types.driver with
+   | Some attached when attached == driver -> ()
+   | _ -> fail "detaching another driver changed ownership");
+  Qmljs__Qmljs_runtime.detach_driver runtime driver;
+  (match runtime.Qmljs__Qmljs_types.driver with
+   | None -> ()
+   | Some _ -> fail "detaching the attached driver left it attached")
+
+(* The supplied switch outlives the caller's independently cancelled scope. *)
+let test_eio_startup_cancellation_releases_scope ~clock () =
+  let entered = ref false in
+  match Eio.Time.with_timeout clock 1.0 (fun () ->
+    Eio.Switch.run (fun sw ->
+      match Eio.Cancel.sub (fun caller ->
+        Eio.Fiber.fork ~sw (fun () -> Eio.Cancel.cancel caller Exit);
+        Qmljs.Eio.with_runtime ~sw ~clock (fun _ _ _ ->
+          Eio.Fiber.check ();
+          entered := true)) with
+      | () -> fail "startup unexpectedly escaped cancellation"
+      | exception Eio.Cancel.Cancelled _ -> ());
+    Ok ()) with
+  | Ok () -> check_bool "cancelled before body" false !entered
+  | Error `Timeout -> fail "startup cancellation stranded a worker scope on the supplied switch"
+
 let tests =
-  [ "int_safe_range_roundtrips", test_int_safe_range_roundtrips
+  [ "runtime_empty_zero_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:0 ~queued:0)
+  ; "runtime_exact_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:2 ~queued:2)
+  ; "runtime_excess_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:2 ~queued:3)
+  ; "async_empty_zero_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:0 ~queued:0)
+  ; "async_exact_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:2 ~queued:2)
+  ; "async_zero_budget_preserves_work", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:0 ~queued:1)
+  ; "async_excess_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:2 ~queued:3)
+  ; "int_safe_range_roundtrips", test_int_safe_range_roundtrips
   ; "as_int_accepts_safe_integer_numbers_above_int32",
     test_as_int_accepts_safe_integer_numbers_above_int32
   ; "to_int_rejects_out_of_range_numbers_without_wrap",
@@ -530,7 +633,14 @@ let tests =
   ]
 
 let () =
-  Eio_main.run @@ fun _env ->
+  Eio_main.run @@ fun env ->
+  let tests = tests @
+    [ "negative_promise_job_limit", test_negative_promise_job_limit
+    ; "driver_detach_identity", test_driver_detach_identity ~clock:(Eio.Stdenv.clock env)
+    ; "eio_startup_cancellation_releases_scope", test_eio_startup_cancellation_releases_scope ~clock:(Eio.Stdenv.clock env)
+    ; "eio_promise_rejects_foreign_context", test_eio_promise_rejects_foreign_context ~clock:(Eio.Stdenv.clock env)
+    ; "eio_scope_joins_workers_before_close", test_eio_scope_joins_workers_before_close ~clock:(Eio.Stdenv.clock env)
+    ] in
   let failures = ref [] in
   List.iter
     (fun (name, test) ->

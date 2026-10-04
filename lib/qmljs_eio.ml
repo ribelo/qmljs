@@ -33,8 +33,11 @@ let enqueue_settlement ?on_cancel driver runtime job =
 let promise ?(name = "Qmljs.Eio.promise") driver context fn =
   if Qmljs_runtime.driver_closed driver then
     invalid_arg "QuickJS Eio driver is closed";
-  let promise, resolve, reject = Qmljs_promise.create context in
   let runtime = Qmljs_types.context_runtime context in
+  (match runtime.Qmljs_types.driver with
+   | Some attached when attached == driver -> ()
+   | _ -> invalid_arg "QuickJS context does not belong to this Eio driver");
+  let promise, resolve, reject = Qmljs_promise.create context in
   let reject_cancelled () =
     reject_with_exn_noerr context reject name
       (Eio.Cancel.Cancelled (Failure "Eio driver cancelled"))
@@ -70,14 +73,18 @@ let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
      cancelled or closed, at which point all workers are cancelled together
      rather than outliving the driver. *)
   let setup_promise, setup_resolver = Eio.Promise.create () in
+  let workers_done, finish_workers = Eio.Promise.create () in
   Eio.Fiber.fork ~sw (fun () ->
-      try
-        Eio.Cancel.sub (fun worker_cancel ->
-            Eio.Switch.run (fun worker_switch ->
-                Eio.Promise.resolve setup_resolver
-                  (worker_switch, worker_cancel);
-                Eio.Fiber.await_cancel ()))
-      with Eio.Cancel.Cancelled _ -> ());
+      Fun.protect
+        ~finally:(fun () -> Eio.Promise.resolve finish_workers ())
+        (fun () ->
+          try
+            Eio.Cancel.sub (fun worker_cancel ->
+                Eio.Switch.run (fun worker_switch ->
+                    Eio.Promise.resolve setup_resolver
+                      (worker_switch, worker_cancel);
+                    Eio.Fiber.await_cancel ()))
+          with Eio.Cancel.Cancelled _ -> ()));
   let worker_switch, worker_cancel = Eio.Promise.await setup_promise in
   let condition = Eio.Condition.create () in
   let mutex = Eio.Mutex.create () in
@@ -97,8 +104,10 @@ let with_runtime ~sw ~clock:_ ?memory_limit ?max_stack_size
   in
   Qmljs_runtime.attach_driver runtime driver;
   Fun.protect
-    ~finally:(fun () ->
+    ~finally:(fun () -> Eio.Cancel.protect (fun () ->
       Qmljs_runtime.close_driver driver;
-      Qmljs_runtime.detach_driver runtime driver;
-      ())
+      (* Cancellation requests shutdown; joining keeps worker cleanup inside the
+         context bracket, including when the calling fiber is cancelled. *)
+      Eio.Promise.await workers_done;
+      Qmljs_runtime.detach_driver runtime driver))
     (fun () -> f driver runtime context)
