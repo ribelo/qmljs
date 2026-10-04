@@ -1386,29 +1386,76 @@ CAMLprim value qmljs_runtime_request_interrupt(value runtime)
   return Val_unit;
 }
 
-CAMLprim value qmljs_runtime_set_interrupt_timeout(value runtime, value seconds)
+/* Native nanosecond deadlines are int64 values: a timeout whose delta is NaN,
+   infinite, or >= 2^63 ns cannot be represented and must be rejected instead
+   of being converted out of range. */
+#define QMLJS_INTERRUPT_DEADLINE_MAX 9223372036854775807LL
+
+/* Arm the runtime interrupt deadline and return the deadline that was armed
+   before it as an opaque token (0 when none was armed), together with whether
+   the effective deadline is this bracket's own new deadline. A nested arm
+   keeps the earlier of the two deadlines, so an inner bracket can neither
+   extend nor drop an outer budget; qmljs_runtime_restore_interrupt_deadline
+   puts the previous deadline back. Only the bracket that owns the effective
+   deadline may clear the interrupt request it caused: an inner bracket that
+   merely inherited an earlier outer deadline leaves the request pending so the
+   outer bracket still reports its own timeout. */
+CAMLprim value qmljs_runtime_arm_interrupt_timeout(value runtime,
+                                                   value seconds)
 {
   CAMLparam2(runtime, seconds);
+  CAMLlocal1(armed);
   struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   (void)qmljs_runtime(runtime);
   double timeout = Double_val(seconds);
-  if (timeout < 0.0) {
-    qmljs_raise_string("timeout must be non-negative");
+  if (!(timeout >= 0.0)) {
+    caml_invalid_argument("timeout must be a finite non-negative number");
   }
-  long long delta = (long long)(timeout * 1000000000.0);
-  long long deadline = qmljs_monotonic_time_ns() + delta;
+  double nanoseconds = timeout * 1000000000.0;
+  if (!(nanoseconds < 9223372036854775808.0)) { /* 2^63: LLONG_MAX + 1 */
+    caml_invalid_argument("timeout must be representable in nanoseconds");
+  }
+  long long delta = (long long)nanoseconds;
+  long long now = qmljs_monotonic_time_ns();
+  long long deadline = now + delta;
+  if (now > QMLJS_INTERRUPT_DEADLINE_MAX - delta) {
+    deadline = QMLJS_INTERRUPT_DEADLINE_MAX;
+  }
+  long long previous =
+    atomic_load_explicit(&state->interrupt_deadline_ns, memory_order_relaxed);
+  int owns_deadline = previous <= 0 || deadline <= previous;
+  if (previous > 0 && previous < deadline) {
+    deadline = previous;
+  }
   atomic_store_explicit(&state->interrupt_deadline_ns, deadline,
+                        memory_order_relaxed);
+  armed = caml_alloc_tuple(2);
+  Store_field(armed, 0, caml_copy_int64(previous));
+  Store_field(armed, 1, Val_bool(owns_deadline));
+  CAMLreturn(armed);
+}
+
+/* Restore the deadline captured by qmljs_runtime_arm_interrupt_timeout; 0
+   disarms the deadline. */
+CAMLprim value qmljs_runtime_restore_interrupt_deadline(value runtime,
+                                                       value token)
+{
+  CAMLparam2(runtime, token);
+  struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
+  (void)qmljs_runtime(runtime);
+  atomic_store_explicit(&state->interrupt_deadline_ns, Int64_val(token),
                         memory_order_relaxed);
   CAMLreturn(Val_unit);
 }
 
-CAMLprim value qmljs_runtime_clear_interrupt_timeout(value runtime)
+/* Clear the interrupt request without touching the armed deadline, so a nested
+   bracket can restore the interrupt state it found. */
+CAMLprim value qmljs_runtime_clear_interrupt_request(value runtime)
 {
   CAMLparam1(runtime);
   struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
   (void)qmljs_runtime(runtime);
-  atomic_store_explicit(&state->interrupt_deadline_ns, 0,
-                        memory_order_relaxed);
+  atomic_store_explicit(&state->interrupt_requested, 0, memory_order_relaxed);
   CAMLreturn(Val_unit);
 }
 

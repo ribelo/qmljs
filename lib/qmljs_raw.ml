@@ -65,11 +65,14 @@ external runtime_execute_pending_job : runtime -> bool
 external runtime_request_interrupt : runtime -> unit = "qmljs_runtime_request_interrupt"
 [@@noalloc]
 
-external runtime_set_interrupt_timeout : runtime -> float -> unit
-  = "qmljs_runtime_set_interrupt_timeout"
+external runtime_arm_interrupt_timeout : runtime -> float -> int64 * bool
+  = "qmljs_runtime_arm_interrupt_timeout"
 
-external runtime_clear_interrupt_timeout : runtime -> unit
-  = "qmljs_runtime_clear_interrupt_timeout"
+external runtime_restore_interrupt_deadline : runtime -> int64 -> unit
+  = "qmljs_runtime_restore_interrupt_deadline"
+
+external runtime_clear_interrupt_request : runtime -> unit
+  = "qmljs_runtime_clear_interrupt_request"
 
 external runtime_clear_interrupt : runtime -> unit = "qmljs_runtime_clear_interrupt"
 

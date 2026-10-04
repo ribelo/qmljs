@@ -88,26 +88,54 @@ let eval ?(filename = "<eval>") ?(strict = false) ?(async = false)
   ; raw = Qmljs_raw.context_eval (Qmljs_types.context_raw t) source filename flags
   }
 
-let with_interrupt_timeout ~timeout runtime f =
+(* Native deadline tokens are int64 nanosecond values, so a timeout whose
+   nanosecond delta cannot be represented (NaN, infinity, or >= 2^63 ns) is
+   rejected instead of being converted out of range. *)
+let max_timeout_ns = 9_223_372_036_854_775_808.0
+
+let validate_timeout timeout =
+  if Float.is_nan timeout then invalid_arg "timeout must not be NaN";
+  if not (Float.is_finite timeout) then invalid_arg "timeout must be finite";
   if timeout < 0. then invalid_arg "timeout must be non-negative";
-  let timeout_error = "JavaScript execution timed out" in
-  Qmljs_runtime.clear_interrupt runtime;
-  Qmljs_raw.runtime_set_interrupt_timeout
-    (Qmljs_types.runtime_raw runtime)
-    timeout;
-  let clear_timeout_state () =
-    Qmljs_raw.runtime_clear_interrupt_timeout
-      (Qmljs_types.runtime_raw runtime);
-    Qmljs_runtime.clear_interrupt runtime
+  if not (timeout *. 1e9 < max_timeout_ns) then
+    invalid_arg "timeout must be representable in nanoseconds"
+
+(* Arm the runtime deadline for the duration of [f], then restore the deadline
+   and the interrupt request that were in place before the bracket. A nested
+   bracket keeps the earlier of the two deadlines, so an inner evaluation can
+   neither extend nor drop an outer budget. Only the bracket that owns the
+   effective deadline clears the interrupt request it caused: an inner
+   evaluation that merely inherited an earlier outer deadline leaves the
+   request pending, so the outer bracket still reports its own timeout. An
+   interrupt requested before the bracket belongs to its caller and is restored
+   rather than cleared. *)
+let with_interrupt_timeout ~timeout runtime f =
+  validate_timeout timeout;
+  let raw = Qmljs_types.runtime_raw runtime in
+  let previous_interrupt = Qmljs_runtime.interrupt_requested runtime in
+  let previous_deadline, owns_deadline =
+    Qmljs_raw.runtime_arm_interrupt_timeout raw timeout
+  in
+  let restore () =
+    Qmljs_raw.runtime_restore_interrupt_deadline raw previous_deadline;
+    if previous_interrupt then Qmljs_runtime.request_interrupt runtime
+    else if owns_deadline then Qmljs_raw.runtime_clear_interrupt_request raw
   in
   let cleanup_noerr cleanup =
     try cleanup () with
     | _ -> ()
   in
+  let timeout_error = "JavaScript execution timed out" in
   match f () with
   | result ->
-      let interrupted = Qmljs_runtime.interrupt_requested runtime in
-      clear_timeout_state ();
+      (* A request pending at entry belongs to the caller: untimed eval would
+         also run the script and leave the request pending, so the bracket does
+         not report a timeout it did not cause. *)
+      let interrupted =
+        (not previous_interrupt)
+        && Qmljs_runtime.interrupt_requested runtime
+      in
+      restore ();
       if interrupted then begin
         Qmljs_runtime.reclaim_pending_jobs runtime;
         Qmljs_error.raise_timeout timeout_error
@@ -116,11 +144,13 @@ let with_interrupt_timeout ~timeout runtime f =
   | exception exn ->
       let backtrace = Printexc.get_raw_backtrace () in
       let interrupted =
-        match Qmljs_runtime.interrupt_requested runtime with
-        | interrupted -> interrupted
-        | exception _ -> false
+        (not previous_interrupt)
+        &&
+        (match Qmljs_runtime.interrupt_requested runtime with
+         | interrupted -> interrupted
+         | exception _ -> false)
       in
-      cleanup_noerr clear_timeout_state;
+      cleanup_noerr restore;
       (* Reclaim any promise jobs a hostile script queued so the runtime can
          recover memory after an interrupt or out-of-memory failure. *)
       cleanup_noerr (fun () -> Qmljs_runtime.reclaim_pending_jobs runtime);
