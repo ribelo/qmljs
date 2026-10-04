@@ -299,6 +299,259 @@ let test_typed_array_index_over_uint32_rejected () =
     (fun () -> Qmljs.Typed_array.Int16Array.set view oversized_index 7)
     (assert_oversized_index "typed array set over UINT32_MAX")
 
+(* A typed array that tracks a resizable ArrayBuffer must report live geometry
+   after ArrayBuffer.prototype.resize(). QuickJS 0.14 freezes the length of
+   such a view when it is created, so JS_GetUint8Array/JS_GetTypedArrayBuffer
+   keep reporting that frozen length: it under-reports after growth and
+   over-reports after shrinkage, and over-reporting reads or writes past the
+   live backing allocation. *)
+
+let with_resizable_buffer context ~byte_length ~max_byte_length =
+  let buffer =
+    Qmljs.Context.eval context
+      (Printf.sprintf "new ArrayBuffer(%d, { maxByteLength: %d })" byte_length
+         max_byte_length)
+  in
+  Qmljs.Context.set_global context ~name:"binaryResizableBuffer"
+    (Qmljs.Value.object_ buffer);
+  buffer
+
+let resize_resizable_buffer context byte_length =
+  ignore
+    (Qmljs.Context.eval context
+       (Printf.sprintf "binaryResizableBuffer.resize(%d)" byte_length)
+      : Qmljs.Value.t)
+
+let sentinel_bytes count base =
+  Bytes.init count (fun index -> Char.chr (base + index))
+
+let check_typed_array_error label message error =
+  check_kind (label ^ " kind") Qmljs.Error.JavaScript (Qmljs.Error.kind error);
+  check_string (label ^ " message") message (Qmljs.Error.message error)
+
+let test_uint8_view_over_resizable_array_buffer () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer =
+    with_resizable_buffer context ~byte_length:16 ~max_byte_length:1024
+  in
+  let view = Qmljs.Typed_array.Uint8Array.of_array_buffer buffer in
+  for index = 0 to 15 do
+    Qmljs.Typed_array.Uint8Array.set view index (0x10 + index)
+  done;
+  check_int "tracking view length before resize" 16
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_bytes "tracking view bytes before resize" (sentinel_bytes 16 0x10)
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy view);
+  resize_resizable_buffer context 4;
+  check_int "tracking view length after shrink" 4
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_int "tracking view byte length after shrink" 4
+    (Qmljs.Typed_array.Uint8Array.byte_length view);
+  check_int "tracking view byte offset after shrink" 0
+    (Qmljs.Typed_array.Uint8Array.byte_offset view);
+  (* Bytes past the shrunk allocation must not be reachable. *)
+  check_bytes "tracking view bytes after shrink" (sentinel_bytes 4 0x10)
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy view);
+  expect_structured_error "tracking view read past shrunk buffer"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.get view 10 : int))
+    (check_typed_array_error "tracking view read past shrunk buffer"
+       "typed array index out of bounds");
+  expect_structured_error "tracking view write past shrunk buffer"
+    (fun () -> Qmljs.Typed_array.Uint8Array.set view 10 7)
+    (check_typed_array_error "tracking view write past shrunk buffer"
+       "typed array index out of bounds");
+  resize_resizable_buffer context 12;
+  check_int "tracking view length after grow" 12
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_int "tracking view grown byte is zero" 0
+    (Qmljs.Typed_array.Uint8Array.get view 4);
+  check_bytes "tracking view bytes after grow"
+    (Bytes.cat (sentinel_bytes 4 0x10) (Bytes.make 8 '\000'))
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy view);
+  (* Growth past the length the view was created with: a length-tracking view
+     follows its buffer, a fixed-length view never does. *)
+  resize_resizable_buffer context 24;
+  check_int "tracking view length after growth past creation length" 24
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_int "tracking view byte length after growth past creation length" 24
+    (Qmljs.Typed_array.Uint8Array.byte_length view);
+  check_int "tracking view grown byte past creation length" 0
+    (Qmljs.Typed_array.Uint8Array.get view 20);
+  Qmljs.Typed_array.Uint8Array.set view 20 0x7F;
+  check_int "tracking view written byte past creation length" 0x7F
+    (Qmljs.Typed_array.Uint8Array.get view 20)
+
+let test_uint8_view_with_byte_offset_over_resizable_array_buffer () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer =
+    with_resizable_buffer context ~byte_length:16 ~max_byte_length:64
+  in
+  let view =
+    Qmljs.Typed_array.Uint8Array.of_array_buffer ~byte_offset:4 buffer
+  in
+  check_int "offset tracking view length before resize" 12
+    (Qmljs.Typed_array.Uint8Array.length view);
+  Qmljs.Typed_array.Uint8Array.set view 0 0xAB;
+  resize_resizable_buffer context 8;
+  check_int "offset tracking view length after shrink" 4
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_int "offset tracking view byte offset after shrink" 4
+    (Qmljs.Typed_array.Uint8Array.byte_offset view);
+  check_int "offset tracking view first byte" 0xAB
+    (Qmljs.Typed_array.Uint8Array.get view 0);
+  check_bytes "offset tracking view bytes after shrink"
+    (Bytes.of_string "\171\000\000\000")
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy view);
+  expect_structured_error "offset tracking view read past shrunk buffer"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.get view 4 : int))
+    (check_typed_array_error "offset tracking view read past shrunk buffer"
+       "typed array index out of bounds");
+  (* The buffer no longer reaches the view's byte offset: JS treats the view as
+     out of bounds and throws from its copy methods. *)
+  resize_resizable_buffer context 2;
+  expect_structured_error "offset tracking view length when offset exceeds buffer"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.length view : int))
+    (check_typed_array_error "offset tracking view length when offset exceeds buffer"
+       "ArrayBuffer is detached or resized");
+  expect_structured_error "offset tracking view copy when offset exceeds buffer"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.to_bytes_copy view : bytes))
+    (check_typed_array_error "offset tracking view copy when offset exceeds buffer"
+       "ArrayBuffer is detached or resized")
+
+let test_fixed_uint8_view_does_not_follow_resizable_buffer_growth () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer =
+    with_resizable_buffer context ~byte_length:8 ~max_byte_length:64
+  in
+  let view =
+    Qmljs.Typed_array.Uint8Array.of_array_buffer ~byte_offset:2 ~length:4 buffer
+  in
+  check_int "fixed view length before grow" 4
+    (Qmljs.Typed_array.Uint8Array.length view);
+  resize_resizable_buffer context 32;
+  (* Only a length-tracking view follows the buffer; a fixed-length view keeps
+     reporting its own range and must never expose the buffer's new bytes. *)
+  check_int "fixed view length after grow" 4
+    (Qmljs.Typed_array.Uint8Array.length view);
+  check_int "fixed view byte length after grow" 4
+    (Qmljs.Typed_array.Uint8Array.byte_length view);
+  check_int "fixed view byte offset after grow" 2
+    (Qmljs.Typed_array.Uint8Array.byte_offset view);
+  check_bytes "fixed view bytes after grow" (Bytes.make 4 '\000')
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy view);
+  expect_structured_error "fixed view read past its own length after grow"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.get view 4 : int))
+    (check_typed_array_error "fixed view read past its own length after grow"
+       "typed array index out of bounds")
+
+let test_uint8_view_out_of_bounds_fails_loudly () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer =
+    with_resizable_buffer context ~byte_length:16 ~max_byte_length:1024
+  in
+  let view =
+    Qmljs.Typed_array.Uint8Array.of_array_buffer ~byte_offset:4 ~length:8 buffer
+  in
+  Qmljs.Typed_array.Uint8Array.set view 0 0x5A;
+  check_int "fixed view length before shrink" 8
+    (Qmljs.Typed_array.Uint8Array.length view);
+  resize_resizable_buffer context 4;
+  (* JS reports 0 for the geometry of an out-of-bounds view, reads its elements
+     as undefined and throws "ArrayBuffer is detached or resized" from its copy
+     methods. This binding has no undefined result and must not report an empty
+     view, so every operation on it fails loudly with that error. *)
+  let out_of_bounds label fn =
+    expect_structured_error label fn
+      (check_typed_array_error label "ArrayBuffer is detached or resized")
+  in
+  out_of_bounds "out-of-bounds view length"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.length view : int));
+  out_of_bounds "out-of-bounds view byte length"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.byte_length view : int));
+  out_of_bounds "out-of-bounds view byte offset"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.byte_offset view : int));
+  out_of_bounds "out-of-bounds view read"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.get view 0 : int));
+  out_of_bounds "out-of-bounds view write"
+    (fun () -> Qmljs.Typed_array.Uint8Array.set view 0 1);
+  out_of_bounds "out-of-bounds view copy"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.to_bytes_copy view : bytes));
+  (* A detached backing buffer is the same state. *)
+  let detached_buffer = Qmljs.Context.eval context "new ArrayBuffer(8)" in
+  let detached_view =
+    Qmljs.Typed_array.Uint8Array.of_array_buffer detached_buffer
+  in
+  Qmljs.Array_buffer.detach detached_buffer;
+  out_of_bounds "detached view length"
+    (fun () -> ignore (Qmljs.Typed_array.Uint8Array.length detached_view : int));
+  out_of_bounds "detached view copy"
+    (fun () ->
+      ignore (Qmljs.Typed_array.Uint8Array.to_bytes_copy detached_view : bytes));
+  (* ArrayBuffer.prototype.transfer() detaches the source buffer as well. *)
+  let transferred_buffer = Qmljs.Context.eval context "new ArrayBuffer(8)" in
+  Qmljs.Context.set_global context ~name:"binaryTransferredBuffer"
+    (Qmljs.Value.object_ transferred_buffer);
+  let transferred_view =
+    Qmljs.Typed_array.Uint8Array.of_array_buffer transferred_buffer
+  in
+  ignore
+    (Qmljs.Context.eval context "binaryTransferredBuffer.transfer()"
+      : Qmljs.Value.t);
+  out_of_bounds "transferred view length"
+    (fun () ->
+      ignore (Qmljs.Typed_array.Uint8Array.length transferred_view : int));
+  out_of_bounds "transferred view copy"
+    (fun () ->
+      ignore
+        (Qmljs.Typed_array.Uint8Array.to_bytes_copy transferred_view : bytes));
+  (* A live empty view is not an out-of-bounds view, and the failures above
+     must not poison later work. *)
+  let empty = Qmljs.Typed_array.Uint8Array.of_bytes_copy context Bytes.empty in
+  check_int "live empty view length" 0
+    (Qmljs.Typed_array.Uint8Array.length empty);
+  check_bytes "live empty view bytes" Bytes.empty
+    (Qmljs.Typed_array.Uint8Array.to_bytes_copy empty);
+  check_int "eval after failed copies" 2
+    (Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+
+let test_typed_array_view_over_resizable_array_buffer () =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let buffer =
+    with_resizable_buffer context ~byte_length:8 ~max_byte_length:1024
+  in
+  let view = Qmljs.Typed_array.Int16Array.of_array_buffer buffer in
+  Qmljs.Typed_array.Int16Array.set view 0 1234;
+  check_int "int16 tracking view length before resize" 4
+    (Qmljs.Typed_array.Int16Array.length view);
+  resize_resizable_buffer context 4;
+  check_int "int16 tracking view length after shrink" 2
+    (Qmljs.Typed_array.Int16Array.length view);
+  check_int "int16 tracking view byte length after shrink" 4
+    (Qmljs.Typed_array.Int16Array.byte_length view);
+  check_int "int16 tracking view first element" 1234
+    (Qmljs.Typed_array.Int16Array.get view 0);
+  expect_structured_error "int16 tracking view read past shrunk buffer"
+    (fun () -> ignore (Qmljs.Typed_array.Int16Array.get view 2 : int))
+    (check_typed_array_error "int16 tracking view read past shrunk buffer"
+       "typed array index out of bounds");
+  expect_structured_error "int16 tracking view write past shrunk buffer"
+    (fun () -> Qmljs.Typed_array.Int16Array.set view 2 7)
+    (check_typed_array_error "int16 tracking view write past shrunk buffer"
+       "typed array index out of bounds");
+  resize_resizable_buffer context 12;
+  check_int "int16 tracking view length after grow" 6
+    (Qmljs.Typed_array.Int16Array.length view);
+  check_int "int16 tracking view grown element is zero" 0
+    (Qmljs.Typed_array.Int16Array.get view 4);
+  Qmljs.Typed_array.Int16Array.set view 5 99;
+  check_int "int16 tracking view written element" 99
+    (Qmljs.Typed_array.Int16Array.get view 5)
+
 let test_array_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -353,6 +606,16 @@ let tests =
   ; "typed array family API", test_typed_array_family_api
   ; "typed array index over UINT32_MAX is rejected"
   , test_typed_array_index_over_uint32_rejected
+  ; ( "uint8 view over resizable array buffer",
+      test_uint8_view_over_resizable_array_buffer )
+  ; ( "uint8 view with byte offset over resizable array buffer",
+      test_uint8_view_with_byte_offset_over_resizable_array_buffer )
+  ; ( "fixed uint8 view does not follow resizable buffer growth",
+      test_fixed_uint8_view_does_not_follow_resizable_buffer_growth )
+  ; ( "uint8 view out of bounds fails loudly",
+      test_uint8_view_out_of_bounds_fails_loudly )
+  ; ( "typed array view over resizable array buffer",
+      test_typed_array_view_over_resizable_array_buffer )
   ; "array API", test_array_api
   ; "bigint readback API", test_bigint_readback_api
   ]

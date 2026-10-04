@@ -1358,29 +1358,85 @@ CAMLprim value qmljs_typed_array_of_array_buffer(value context, value input_type
   CAMLreturn(qmljs_alloc_value(context, result));
 }
 
+/* Live byte length of a typed array.
+
+   QuickJS 0.14 freezes ta->length when a view tracks a resizable ArrayBuffer
+   (js_array_buffer_update_typed_arrays refreshes it for DataView only), so
+   after ArrayBuffer.prototype.resize() JS_GetUint8Array and
+   JS_GetTypedArrayBuffer keep reporting the byte length the view was created
+   with: they over-report after shrinkage, describing bytes past the end of
+   the live allocation, and under-report after growth.
+
+   [reported_byte_length] is exact for a fixed-length view, and the backing
+   buffer's live byte length bounds both kinds, so one element read past the
+   reported byte length tells them apart: a canonical numeric index outside a
+   typed array's range reads as undefined, an element inside it reads as a
+   value. QuickJS answers canonical numeric indices itself and does not walk
+   the prototype, so unlike the view's JS-visible length this bound cannot be
+   forged by an own property or a tampered prototype.
+
+   Returns 0 and the live length, or -1 when the engine cannot describe the
+   live buffer. Raises nothing and clears the exception of a failed element
+   read, so the caller still owns [buffer] when it reports the failure. */
+static int qmljs_typed_array_live_byte_length(JSContext *ctx,
+                                            JSValueConst value,
+                                            JSValueConst buffer,
+                                            size_t byte_offset,
+                                            size_t reported_byte_length,
+                                            size_t bytes_per_element,
+                                            size_t *live_byte_length)
+{
+  size_t buffer_length = 0;
+  uint8_t *buffer_data = JS_GetArrayBuffer(ctx, &buffer_length, buffer);
+  if (buffer_data == NULL && buffer_length > 0) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return -1;
+  }
+  if (byte_offset >= buffer_length) {
+    *live_byte_length = 0;
+    return 0;
+  }
+  size_t available = (buffer_length - byte_offset) / bytes_per_element;
+  size_t reported = reported_byte_length / bytes_per_element;
+  if (reported >= available) {
+    *live_byte_length = available * bytes_per_element;
+    return 0;
+  }
+  if (reported > (size_t)UINT32_MAX) {
+    /* The discriminator index is outside the element range this binding
+       supports as a property. The frozen length is always inside the live
+       buffer, the live one may be larger, so keep the safe one. */
+    *live_byte_length = reported_byte_length;
+    return 0;
+  }
+  JSValue element = JS_GetPropertyUint32(ctx, value, (uint32_t)reported);
+  if (JS_IsException(element)) {
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    return -1;
+  }
+  int tracks_buffer = !JS_IsUndefined(element);
+  JS_FreeValue(ctx, element);
+  *live_byte_length = (tracks_buffer ? available : reported) * bytes_per_element;
+  return 0;
+}
+
+/* Data pointer of a Uint8Array and its live byte length. Returns NULL with
+   *length 0 for a live empty view. A detached or out-of-bounds view raises:
+   it has no addressable bytes, JS throws "ArrayBuffer is detached or resized"
+   from the operations that validate the view, and an empty byte string is
+   indistinguishable from a live empty view. */
 static uint8_t *qmljs_uint8_array_data(JSContext *ctx, JSValueConst value,
                                      size_t *length)
 {
+  *length = 0;
   if (JS_GetTypedArrayType(value) != JS_TYPED_ARRAY_UINT8) {
     qmljs_raise_string("value is not a Uint8Array");
   }
-  uint8_t *data = JS_GetUint8Array(ctx, length, value);
-  if (data == NULL && *length > 0) {
-    qmljs_raise_exception(ctx);
-  }
-  return data;
-}
-
-static JSValue qmljs_uint8_array_buffer(JSContext *ctx, JSValueConst value,
-                                      size_t *byte_offset,
-                                      size_t *byte_length)
-{
-  if (JS_GetTypedArrayType(value) != JS_TYPED_ARRAY_UINT8) {
-    qmljs_raise_string("value is not a Uint8Array");
-  }
+  size_t byte_offset = 0;
+  size_t reported_byte_length = 0;
   size_t bytes_per_element = 0;
   JSValue buffer =
-    JS_GetTypedArrayBuffer(ctx, value, byte_offset, byte_length,
+    JS_GetTypedArrayBuffer(ctx, value, &byte_offset, &reported_byte_length,
                            &bytes_per_element);
   if (JS_IsException(buffer)) {
     qmljs_raise_exception(ctx);
@@ -1389,7 +1445,29 @@ static JSValue qmljs_uint8_array_buffer(JSContext *ctx, JSValueConst value,
     JS_FreeValue(ctx, buffer);
     qmljs_raise_string("Uint8Array has an unexpected element size");
   }
-  return buffer;
+  size_t byte_length = 0;
+  if (qmljs_typed_array_live_byte_length(ctx, value, buffer, byte_offset,
+                                       reported_byte_length, bytes_per_element,
+                                       &byte_length) < 0) {
+    JS_FreeValue(ctx, buffer);
+    qmljs_raise_string("typed array live byte length is unavailable");
+  }
+  if (byte_length == 0) {
+    JS_FreeValue(ctx, buffer);
+    return NULL;
+  }
+  size_t buffer_length = 0;
+  uint8_t *data = JS_GetArrayBuffer(ctx, &buffer_length, buffer);
+  JS_FreeValue(ctx, buffer);
+  if (data == NULL) {
+    qmljs_raise_exception(ctx);
+  }
+  if (byte_offset > buffer_length ||
+      byte_length > buffer_length - byte_offset) {
+    qmljs_raise_string("Uint8Array byte range is outside its live backing buffer");
+  }
+  *length = byte_length;
+  return data + byte_offset;
 }
 
 static JSValue qmljs_typed_array_buffer_checked(JSContext *ctx, JSValueConst value,
@@ -1409,6 +1487,16 @@ static JSValue qmljs_typed_array_buffer_checked(JSContext *ctx, JSValueConst val
     JS_FreeValue(ctx, buffer);
     qmljs_raise_string("typed array has an invalid element size");
   }
+  /* JS_GetTypedArrayBuffer reports the frozen length of a view that tracks a
+     resizable ArrayBuffer; report the live one instead. */
+  size_t live_byte_length = 0;
+  if (qmljs_typed_array_live_byte_length(ctx, value, buffer, *byte_offset,
+                                       *byte_length, *bytes_per_element,
+                                       &live_byte_length) < 0) {
+    JS_FreeValue(ctx, buffer);
+    qmljs_raise_string("typed array live byte length is unavailable");
+  }
+  *byte_length = live_byte_length;
   return buffer;
 }
 
@@ -1671,9 +1759,11 @@ CAMLprim value qmljs_typed_array_uint8_byte_offset(value context, value wrapped)
   qmljs_ensure_same_context(context, wrapped);
   size_t byte_offset = 0;
   size_t byte_length = 0;
+  size_t bytes_per_element = 0;
   JSValue buffer =
-    qmljs_uint8_array_buffer(ctx, qmljs_js_value(wrapped), &byte_offset,
-                           &byte_length);
+    qmljs_typed_array_buffer_checked(ctx, qmljs_js_value(wrapped),
+                                   JS_TYPED_ARRAY_UINT8, &byte_offset,
+                                   &byte_length, &bytes_per_element);
   JS_FreeValue(ctx, buffer);
   if (byte_offset > (size_t)Max_long) {
     qmljs_raise_string("Uint8Array byte offset is outside the OCaml int range");
@@ -1689,9 +1779,11 @@ CAMLprim value qmljs_typed_array_uint8_byte_length(value context, value wrapped)
   qmljs_ensure_same_context(context, wrapped);
   size_t byte_offset = 0;
   size_t byte_length = 0;
+  size_t bytes_per_element = 0;
   JSValue buffer =
-    qmljs_uint8_array_buffer(ctx, qmljs_js_value(wrapped), &byte_offset,
-                           &byte_length);
+    qmljs_typed_array_buffer_checked(ctx, qmljs_js_value(wrapped),
+                                   JS_TYPED_ARRAY_UINT8, &byte_offset,
+                                   &byte_length, &bytes_per_element);
   JS_FreeValue(ctx, buffer);
   if (byte_length > (size_t)Max_long) {
     qmljs_raise_string("Uint8Array byte length is outside the OCaml int range");
@@ -1707,9 +1799,11 @@ CAMLprim value qmljs_typed_array_uint8_buffer(value context, value wrapped)
   qmljs_ensure_same_context(context, wrapped);
   size_t byte_offset = 0;
   size_t byte_length = 0;
+  size_t bytes_per_element = 0;
   JSValue buffer =
-    qmljs_uint8_array_buffer(ctx, qmljs_js_value(wrapped), &byte_offset,
-                           &byte_length);
+    qmljs_typed_array_buffer_checked(ctx, qmljs_js_value(wrapped),
+                                   JS_TYPED_ARRAY_UINT8, &byte_offset,
+                                   &byte_length, &bytes_per_element);
   CAMLreturn(qmljs_alloc_value(context, buffer));
 }
 
@@ -1763,7 +1857,9 @@ CAMLprim value qmljs_typed_array_uint8_to_bytes_copy(value context, value wrappe
     qmljs_raise_string("Uint8Array length is outside the OCaml bytes range");
   }
   result = caml_alloc_string(length);
-  memcpy(Bytes_val(result), data, length);
+  if (length > 0) {
+    memcpy(Bytes_val(result), data, length);
+  }
   CAMLreturn(result);
 }
 
