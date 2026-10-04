@@ -2,8 +2,8 @@ type t = Qmljs_types.value
 
 let object_like value =
   match Qmljs_value.kind value with
-  | Object | Array | Function -> true
-  | _ -> false
+  | Object | Array | Function | Promise | Typed_array -> true
+  | Undefined | Null | Bool | Int | Float | String | Symbol | Bigint -> false
 
 let protocol_error message =
   Error (Qmljs_error.Structured.of_conversion ("iterator protocol: " ^ message))

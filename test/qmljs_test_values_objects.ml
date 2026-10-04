@@ -538,6 +538,51 @@ let test_proxy_api () =
     (Qmljs.Value.to_int (Qmljs.Context.eval context "proxy.answer"));
   ignore (runtime : Qmljs.Runtime.t)
 
+let check_branded_iterator_results label make_result expected =
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  let iterable =
+    Qmljs.Context.eval context
+      (Printf.sprintf
+         {|({
+           [Symbol.iterator]() {
+             let index = 0;
+             return {
+               next() {
+                 const result = %s;
+                 result.done = index >= %d;
+                 result.value = 42;
+                 index++;
+                 return result;
+               }
+             };
+           }
+         })|}
+         make_result (List.length expected))
+  in
+  Qmljs.Context.set_global context ~name:"branded_iterable" iterable;
+  check_string (label ^ " JS for-of")
+    (if expected = [] then "[]" else "[42]")
+    (Qmljs.Value.to_string
+       (Qmljs.Context.eval context
+          {|(() => {
+            const values = [];
+            for (const value of branded_iterable) values.push(value);
+            return JSON.stringify(values);
+          })()|}));
+  match Qmljs.Iterable.to_list iterable with
+  | Ok values ->
+      check_bool (label ^ " collected values") true
+        (List.map Qmljs.Value.to_int values = expected)
+  | Error error -> fail (label ^ ": " ^ Qmljs.Error.message error)
+
+let test_iterable_promise_result_api () =
+  check_branded_iterator_results "completed Promise result" "Promise.resolve()" [];
+  check_branded_iterator_results "yielding Promise result" "Promise.resolve()" [ 42 ]
+
+let test_iterable_typed_array_result_api () =
+  check_branded_iterator_results "typed-array result" "new Uint8Array(0)" [ 42 ]
+
 let tests =
   [ "value type inspection API", test_value_type_inspection_api
   ; "value equality API", test_value_equality_api
@@ -552,4 +597,6 @@ let tests =
   , test_descriptor_preserves_undefined_data_value
   ; "object own-key iteration API", test_object_own_key_iteration_api
   ; "proxy API", test_proxy_api
+  ; "iterable Promise result API", test_iterable_promise_result_api
+  ; "iterable typed-array result API", test_iterable_typed_array_result_api
   ]
