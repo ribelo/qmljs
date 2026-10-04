@@ -766,6 +766,99 @@ let test_loader_normalization_survives_minor_gc () =
     done;
     check_int "GC-stressed normalize callback count" 2000 !normalizations)
 
+(* A fresh name that lands in the minor heap: [words] counts the whole block,
+   and the trailing digits keep the normalized specifier unique per attempt,
+   because QuickJS caches a loaded module by name and would otherwise return it
+   without calling the normalize hook again. *)
+let young_name ~words ~prefix ~attempt =
+  let length = (8 * words) - 8 in
+  let bytes = Bytes.make length 'n' in
+  let tail = Printf.sprintf "%s-%d.js" prefix attempt in
+  Bytes.blit_string tail 0 bytes (length - String.length tail)
+    (String.length tail);
+  Bytes.unsafe_to_string bytes
+
+(* A 1900-byte name must not be echoed whole when the regression fires: the
+   length and the tail identify a name copied from recycled nursery memory. *)
+let check_gc_name label expected actual =
+  if not (String.equal expected actual) then
+    fail
+      (Printf.sprintf "%s: expected %d bytes, got %d bytes, tail %S" label
+         (String.length expected) (String.length actual)
+         (let keep = 24 in
+          if String.length actual <= keep then actual
+          else String.sub actual (String.length actual - keep) keep))
+
+let test_dynamic_import_survives_minor_gc () =
+  let control = Gc.get () in
+  Fun.protect ~finally:(fun () -> Gc.set control) (fun () ->
+    (* qmljs_module_dynamic_import hands String_val(base) and
+       String_val(specifier) to JS_LoadModule, and QuickJS forwards both
+       borrowed pointers to the normalize hook. That hook allocates the [Some]
+       wrapper and the first name before it copies the second, so a minor
+       collection inside the window recycles the nursery memory the caller's
+       pointers still aim at. Gc.set clamps to the runtime minimum, and the
+       stress is only meaningful while the nursery stays small. *)
+    Gc.set { control with minor_heap_size = 512 };
+    let nursery_words = (Gc.get ()).minor_heap_size in
+    if nursery_words > 1024 then
+      fail
+        (Printf.sprintf
+           "GC-stressed dynamic import window needs a small nursery, runtime \
+            clamped minor_heap_size to %d words"
+           nursery_words);
+    Qmljs.Runtime.with_ @@ fun runtime ->
+    Qmljs.Context.with_ runtime @@ fun context ->
+    let expected_base = ref "" in
+    let expected_specifier = ref "" in
+    let normalizations = ref 0 in
+    let loader =
+      Qmljs.Module.Loader.callback
+        ~normalize:(fun ~base ~specifier ~attributes:_ ->
+          incr normalizations;
+          (match base with
+           | Some base ->
+               check_gc_name "GC-stressed dynamic import base" !expected_base
+                 base
+           | None -> fail "GC-stressed dynamic import lost its base");
+          check_gc_name "GC-stressed dynamic import specifier"
+            !expected_specifier specifier;
+          Ok specifier)
+        ~load:(fun request ->
+          check_gc_name "GC-stressed dynamic import load specifier"
+            !expected_specifier request.Qmljs.Module.Loader.specifier;
+          Ok (Some "export default 42;"))
+    in
+    Qmljs.Runtime.set_module_loader runtime loader;
+    (* Two 238-word names fill one 512-word nursery together with the sized
+       junk, so the first [caml_copy_string] in the normalize hook has to
+       collect while the caller's pointers still aim at the names' nursery
+       addresses. The junk sweep moves the names across every alignment. *)
+    let name_words = 238 in
+    let junk = ref "" in
+    for attempt = 0 to 1999 do
+      Gc.minor ();
+      junk := Sys.opaque_identity (String.make (8 * (attempt mod 48)) 'j');
+      expected_base := young_name ~words:name_words ~prefix:"base" ~attempt;
+      expected_specifier := young_name ~words:name_words ~prefix:"dep" ~attempt;
+      let namespace =
+        match
+          Qmljs.Promise.await_result
+            (Qmljs.Module.dynamic_import ~base:!expected_base context
+               !expected_specifier)
+        with
+        | Ok namespace -> namespace
+        | Error error ->
+            fail
+              ("GC-stressed dynamic import rejected: "
+              ^ Qmljs.Error.message error)
+      in
+      check_int "GC-stressed dynamic import result" 42
+        (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+    done;
+    ignore (String.length !junk);
+    check_int "GC-stressed dynamic import normalize count" 2000 !normalizations)
+
 let tests =
   [ "native module API", test_native_module_api
   ; "loader request attributes are per import"
@@ -788,4 +881,5 @@ let tests =
   , test_filesystem_loader_rejects_symlink_swap_race
   ; "module loader filesystem API", test_module_loader_filesystem_api
   ; "loader normalization survives minor GC", test_loader_normalization_survives_minor_gc
+  ; "dynamic import survives minor GC", test_dynamic_import_survives_minor_gc
   ]

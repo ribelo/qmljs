@@ -254,7 +254,35 @@ CAMLprim value qmljs_module_dynamic_import(value context, value base,
   CAMLparam3(context, base, specifier);
   JSContext *ctx = qmljs_context(context);
   qmljs_update_stack_top(ctx);
-  JSValue promise = JS_LoadModule(ctx, String_val(base), String_val(specifier));
+  /* JS_LoadModule forwards both names to the runtime normalize hook, which
+     runs OCaml code: a minor collection there moves the caller's strings, so
+     the [String_val] pointers must not reach QuickJS. Pin C copies for the
+     whole load instead. NUL would make that copy silently truncate, so it is
+     rejected rather than loading a different module. */
+  size_t base_length = caml_string_length(base);
+  size_t specifier_length = caml_string_length(specifier);
+  if (memchr(String_val(base), '\0', base_length) != NULL) {
+    caml_invalid_argument("dynamic import base name cannot contain NUL bytes");
+  }
+  if (memchr(String_val(specifier), '\0', specifier_length) != NULL) {
+    caml_invalid_argument("dynamic import specifier cannot contain NUL bytes");
+  }
+
+  char *base_copy = js_malloc(ctx, base_length + 1);
+  char *specifier_copy = js_malloc(ctx, specifier_length + 1);
+  if (base_copy == NULL || specifier_copy == NULL) {
+    js_free(ctx, base_copy);
+    js_free(ctx, specifier_copy);
+    qmljs_raise_exception(ctx);
+  }
+  memcpy(base_copy, String_val(base), base_length);
+  base_copy[base_length] = '\0';
+  memcpy(specifier_copy, String_val(specifier), specifier_length);
+  specifier_copy[specifier_length] = '\0';
+
+  JSValue promise = JS_LoadModule(ctx, base_copy, specifier_copy);
+  js_free(ctx, base_copy);
+  js_free(ctx, specifier_copy);
   if (JS_IsException(promise)) {
     qmljs_raise_exception(ctx);
   }
