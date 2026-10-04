@@ -1185,10 +1185,34 @@ CAMLprim value qmljs_prepare_wrapper_trampoline(value unit)
   CAMLreturn(block);
 }
 
+/* caml_named_value() locks the named-value table and walks a hash chain on
+   every call, and this lookup runs on every wrapper allocation. The trampoline
+   is registered once at module init; its named-value node is heap-allocated
+   once, never moved, and kept in the GC roots, so the returned address is
+   stable and can be cached. A NULL result means "not registered yet" and is
+   never cached: callers must keep seeing the sentinel and roll back. */
+static _Atomic(const value *) qmljs_prepare_wrapper_registration;
+
+static const value *qmljs_prepare_wrapper_registered(void)
+{
+  const value *trampoline =
+    atomic_load_explicit(&qmljs_prepare_wrapper_registration,
+                         memory_order_acquire);
+  if (trampoline != NULL) {
+    return trampoline;
+  }
+  trampoline = caml_named_value("qmljs.prepare_wrapper");
+  if (trampoline != NULL) {
+    atomic_store_explicit(&qmljs_prepare_wrapper_registration, trampoline,
+                          memory_order_release);
+  }
+  return trampoline;
+}
+
 static value qmljs_prepare_wrapper(const struct qmljs_wrapper_allocator *allocator,
                                    void **handle)
 {
-  const value *trampoline = caml_named_value("qmljs.prepare_wrapper");
+  const value *trampoline = qmljs_prepare_wrapper_registered();
   *handle = NULL;
   if (trampoline == NULL) {
     /* Non-wrapper sentinel: caller rolls back before reporting registration. */
