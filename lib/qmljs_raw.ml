@@ -255,10 +255,6 @@ external symbol_well_known : context -> string -> value = "qmljs_symbol_well_kno
 external typed_array_uint8_of_bytes_copy : context -> bytes -> value
   = "qmljs_typed_array_uint8_of_bytes_copy"
 
-external typed_array_uint8_of_array_buffer :
-  context -> value -> int -> int option -> value
-  = "qmljs_typed_array_uint8_of_array_buffer"
-
 external typed_array_of_array_buffer : context -> int -> value -> int -> int option -> value
   = "qmljs_typed_array_of_array_buffer"
 
@@ -290,24 +286,6 @@ external typed_array_get_bigint : context -> int -> value -> int -> value
 
 external typed_array_set_bigint : context -> int -> value -> int -> value -> unit
   = "qmljs_typed_array_set_bigint"
-
-external typed_array_uint8_length : context -> value -> int
-  = "qmljs_typed_array_uint8_length"
-
-external typed_array_uint8_byte_offset : context -> value -> int
-  = "qmljs_typed_array_uint8_byte_offset"
-
-external typed_array_uint8_byte_length : context -> value -> int
-  = "qmljs_typed_array_uint8_byte_length"
-
-external typed_array_uint8_buffer : context -> value -> value
-  = "qmljs_typed_array_uint8_buffer"
-
-external typed_array_uint8_get : context -> value -> int -> int
-  = "qmljs_typed_array_uint8_get"
-
-external typed_array_uint8_set : context -> value -> int -> int -> unit
-  = "qmljs_typed_array_uint8_set"
 
 external typed_array_uint8_to_bytes_copy : context -> value -> bytes
   = "qmljs_typed_array_uint8_to_bytes_copy"
