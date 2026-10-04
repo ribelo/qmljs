@@ -15,14 +15,25 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
+        # quickjs-ng 0.14.0 frees a JSContext that it already linked into
+        # rt->gc_obj_list when JS_NewContextRaw() cannot allocate class_proto,
+        # leaving a dangling node for the next JS_RunGC()/JS_FreeRuntime().
+        # Upstream fix quickjs-ng/quickjs@8e14a39 is not in any release yet, so
+        # patch the pinned source and use this derivation everywhere below.
+        quickjsNg = pkgs.quickjs-ng.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [
+            ./nix/patches/quickjs-ng-newcontextraw-gc-unlink.patch
+          ];
+        });
+
         # quickjs-ng installs CMake metadata, but no pkg-config file.
         quickjsPkgConfig = pkgs.writeTextDir "lib/pkgconfig/quickjs.pc" ''
           Name: quickjs
           Description: QuickJS-ng JavaScript engine
-          Version: ${pkgs.quickjs-ng.version}
-          Libs: -L${pkgs.lib.getLib pkgs.quickjs-ng}/lib -lqjs
+          Version: ${quickjsNg.version}
+          Libs: -L${pkgs.lib.getLib quickjsNg}/lib -lqjs
           Libs.private: -ldl -lm -lpthread
-          Cflags: -I${pkgs.lib.getDev pkgs.quickjs-ng}/include -DUSING_QJS_SHARED
+          Cflags: -I${pkgs.lib.getDev quickjsNg}/include -DUSING_QJS_SHARED
         '';
         nativePkgConfigPath = pkgs.lib.makeSearchPath "lib/pkgconfig" (
           [ quickjsPkgConfig ]
@@ -50,7 +61,7 @@
             pkgs.patch
             pkgs.pkg-config
             pkgs.python3
-            pkgs.quickjs-ng.dev
+            quickjsNg.dev
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.bubblewrap
             pkgs.gmp
@@ -93,7 +104,7 @@
             oxcamlInit
             pkgs.opam
             pkgs.pkg-config
-            pkgs.quickjs-ng.dev
+            quickjsNg.dev
           ];
 
           shellHook = ''

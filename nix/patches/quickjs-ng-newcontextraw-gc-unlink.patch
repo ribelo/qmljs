@@ -1,0 +1,23 @@
+Fix JS_NewContextRaw() leaving a freed context on rt->gc_obj_list.
+
+JS_NewContextRaw() links the new context into the runtime's GC object list
+before allocating ctx->class_proto. When that allocation fails, the context
+is freed but never unlinked, so the freed context stays in rt->gc_obj_list
+and a later add_gc_object(), JS_RunGC() or JS_FreeRuntime() dereferences it.
+
+Upstream fix: quickjs-ng/quickjs@8e14a39fc5a043f44cf86394ea2b07151aed3670
+("Fix use-after-free when JS_NewContext runs out of memory",
+https://github.com/quickjs-ng/quickjs/issues/1181). It is not part of any
+release as of v0.17.0. This is the quickjs.c hunk of that commit; upstream
+also adds an api-test.c regression case.
+
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -2472,6 +2472,7 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
+     ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
+                                     rt->class_count);
+     if (!ctx->class_proto) {
++        remove_gc_object(&ctx->header);
+         js_free_rt(rt, ctx);
+         return NULL;
+     }
