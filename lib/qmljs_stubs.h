@@ -92,6 +92,8 @@ struct qmljs_atom {
 #define Qml_value_val(v) ((struct qmljs_value *)Data_custom_val(v))
 #define Qml_atom_val(v) ((struct qmljs_atom *)Data_custom_val(v))
 
+/* Consumes the incoming native resource on success AND on allocation failure.
+   Callers must already be on its owner domain; attachment is non-allocating. */
 value qmljs_alloc_runtime(JSRuntime *rt, struct qmljs_runtime_state *state);
 value qmljs_alloc_context(value runtime, JSContext *ctx);
 value qmljs_alloc_value(value context, JSValue js_value);
@@ -103,6 +105,8 @@ void qmljs_defer_prop_enum(struct qmljs_runtime_state *state,
 value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom);
 
 void qmljs_raise_string(const char *message);
+void qmljs_raise_out_of_memory(void);
+void qmljs_free_context_and_raise_intrinsic_oom(JSContext *ctx);
 void qmljs_raise_exception(JSContext *ctx);
 void qmljs_raise_value_exception(JSContext *ctx, JSValueConst exception);
 value qmljs_structured_of_exception_value(JSContext *ctx, JSValueConst exception);
@@ -113,6 +117,13 @@ enum {
   QMLJS_WRAPPER_FAILPOINT_VALUE = 2,
   QMLJS_WRAPPER_FAILPOINT_ATOM = 3,
   QMLJS_WRAPPER_FAILPOINT_PROMISE = 4,
+  QMLJS_WRAPPER_FAILPOINT_RUNTIME_CUSTOM = 5,
+  QMLJS_WRAPPER_FAILPOINT_CONTEXT_CUSTOM = 6,
+  QMLJS_WRAPPER_FAILPOINT_CONTEXT_HANDLE = 7,
+  QMLJS_WRAPPER_FAILPOINT_VALUE_CUSTOM = 8,
+  QMLJS_WRAPPER_FAILPOINT_VALUE_HANDLE = 9,
+  QMLJS_WRAPPER_FAILPOINT_ATOM_CUSTOM = 10,
+  QMLJS_WRAPPER_FAILPOINT_ATOM_HANDLE = 11,
 };
 
 JSRuntime *qmljs_runtime(value runtime);

@@ -37,6 +37,70 @@ let force_native_finalizers () =
     test_drain_deferred_runtimes ()
   done
 
+external test_set_wrapper_failpoint : int -> unit
+  = "qmljs_test_set_wrapper_failpoint"
+
+let test_acquired_resources_survive_allocator_failure () =
+  force_native_finalizers ();
+  let before_wrappers = Qmljs.Diagnostics.snapshot () in
+  (* These sites are immediately before custom-block/handle allocation, before
+     native ownership is registered. Native heap counts detect leaks that the
+     wrapper counters alone cannot see. A selector isolates each red in its
+     own process: a leaked raw context cannot safely close its runtime. *)
+  let test_site site =
+    force_native_finalizers ();
+    if site = 5 then (
+      let before = Qmljs.Diagnostics.snapshot () in
+      Fun.protect ~finally:(fun () -> test_set_wrapper_failpoint 0) (fun () ->
+        test_set_wrapper_failpoint site;
+        (try
+           ignore (Qmljs.Runtime.create () : Qmljs.Runtime.t);
+           fail "runtime custom allocator: expected Out_of_memory"
+         with Stdlib.Out_of_memory -> ()));
+      force_native_finalizers ();
+      let after = Qmljs.Diagnostics.snapshot () in
+      check_int "runtime custom allocator native runtime leak"
+        (Qmljs.Diagnostics.native_runtimes before)
+        (Qmljs.Diagnostics.native_runtimes after))
+    else (
+      let runtime = Qmljs.Runtime.create () in
+      let context = Qmljs.Context.create runtime in
+      Qmljs.Runtime.run_gc runtime;
+      let before = Qmljs.Runtime.memory_usage runtime in
+      Fun.protect ~finally:(fun () -> test_set_wrapper_failpoint 0) (fun () ->
+        test_set_wrapper_failpoint site;
+        (try
+           (match site with
+            | 6 | 7 -> ignore (Qmljs.Context.create runtime : Qmljs.Context.t)
+            | 8 | 9 ->
+                ignore (Qmljs.Value.string context "allocator-resource" : Qmljs.Value.t)
+            | 10 | 11 ->
+                ignore (Qmljs.Atom.of_string context "allocator-resource" : Qmljs.Atom.t)
+            | _ -> fail "unknown allocator test site");
+           fail "native acquisition: expected Out_of_memory"
+         with Stdlib.Out_of_memory -> ()));
+      force_native_finalizers ();
+      Qmljs.Runtime.run_gc runtime;
+      let after = Qmljs.Runtime.memory_usage runtime in
+      let label kind = Printf.sprintf "allocator site %d %s leak" site kind in
+      check_int64 (label "native allocations") before.malloc_count after.malloc_count;
+      check_int64 (label "objects") before.obj_count after.obj_count;
+      check_int64 (label "strings") before.str_count after.str_count;
+      check_int64 (label "atoms") before.atom_count after.atom_count;
+      let result = Qmljs.Context.eval context "21 * 2" in
+      check_int (label "recovery") 42 (Qmljs.Value.to_int result);
+      check_bool "context closes after allocator failure" true
+        (test_context_close context);
+      check_bool "runtime closes after allocator failure" true
+        (test_runtime_close runtime))
+  in
+  (match Sys.getenv_opt "QMLJS_OWNERSHIP_FAILPOINT_SITE" with
+  | Some site -> test_site (int_of_string site)
+  | None -> List.iter test_site [ 5; 6; 7; 8; 9; 10; 11 ]);
+  force_native_finalizers ();
+  Qmljs.Diagnostics.assert_no_leaks ~before:before_wrappers
+    ~after:(Qmljs.Diagnostics.snapshot ())
+
 let test_lifetime_gc_stress_has_no_quickjs_leaks () =
   let before = Qmljs.Diagnostics.snapshot () in
   for i = 1 to 10_000 do
@@ -407,6 +471,78 @@ let test_array_of_values_wrong_context_does_not_leak_partial_array () =
   check_int64 "Array.of_array memory-used count" before.memory_used_count
     after.memory_used_count
 
+let test_context_intrinsic_oom_preserves_native_exception () =
+  (* Find a real heap budget that admits a base-only context. At the first
+     4 KiB step that succeeds, TypedArrays needs more room than remains. This
+     exercises JS_AddIntrinsic failure, rather than JS_NewContextRaw failure. *)
+  let create ~intrinsics memory_limit =
+    Qmljs.Runtime.with_ ~memory_limit (fun runtime ->
+      ignore (Qmljs.Context.create_raw ~intrinsics runtime : Qmljs.Context.t))
+  in
+  let rec find_base_budget bytes =
+    if bytes > 128 * 1024 then fail "could not find base context memory budget";
+    match Qmljs.Error.capture (fun () -> create ~intrinsics:[] bytes) with
+    | Ok () -> bytes
+    | Error error when Qmljs.Error.is_out_of_memory error ->
+        find_base_budget (bytes + 4 * 1024)
+    | Error error -> Qmljs.Error.raise error
+  in
+  let memory_limit = find_base_budget (16 * 1024) in
+  expect_error "Context.create_raw intrinsic OOM"
+    (fun () -> create ~intrinsics:[ Qmljs.Context.Typed_arrays ] memory_limit)
+    (fun error ->
+      check_bool "intrinsic OOM kind" true
+        (Qmljs.Error.kind error = Qmljs.Error.Out_of_memory))
+
+let test_context_creation_oom_is_structured () =
+  let check_creation label create =
+    expect_error label
+      (fun () ->
+        Qmljs.Runtime.with_ ~memory_limit:1 (fun runtime ->
+          ignore (create runtime : Qmljs.Context.t)))
+      (fun error ->
+        check_bool (label ^ " kind") true
+          (Qmljs.Error.kind error = Qmljs.Error.Out_of_memory))
+  in
+  check_creation "Context.create_raw memory limit" (fun runtime ->
+    Qmljs.Context.create_raw runtime);
+  check_creation "Context.create memory limit" Qmljs.Context.create
+
+let test_ocaml_exceptions_are_not_javascript_errors () =
+  let message = "host failure: closed, timed out, out of memory" in
+  let check_host label fn =
+    expect_error label fn (fun error ->
+      check_bool (label ^ " kind") true
+        (Qmljs.Error.kind error = Qmljs.Error.Host_callback_defect);
+      check_string (label ^ " message") (Printexc.to_string (Failure message))
+        (Qmljs.Error.message error))
+  in
+  check_host "Error.capture OCaml failure" (fun () -> fail message);
+  check_host "Runtime.with_ OCaml body failure" (fun () ->
+    Qmljs.Runtime.with_ (fun _runtime -> fail message));
+  check_host "Context.with_ OCaml body failure" (fun () ->
+    Qmljs.Runtime.with_ (fun runtime ->
+      Qmljs.Context.with_ runtime (fun _context -> fail message)));
+  (* Explicit legacy binding errors retain their fallback classification. Their
+     text is not used to classify arbitrary exceptions from OCaml code. *)
+  expect_error "explicit legacy Qmljs.Error"
+    (fun () -> raise (Qmljs.Error "legacy JS error"))
+    (fun error ->
+      check_bool "legacy kind" true
+        (Qmljs.Error.kind error = Qmljs.Error.JavaScript);
+      check_string "legacy message" "legacy JS error" (Qmljs.Error.message error));
+  Qmljs.Runtime.with_ @@ fun runtime ->
+  Qmljs.Context.with_ runtime @@ fun context ->
+  expect_error "real JavaScript exception"
+    (fun () -> Qmljs.Context.eval context "throw new Error('closed, timed out, out of memory')")
+    (fun error ->
+      check_bool "JavaScript kind" true
+        (Qmljs.Error.kind error = Qmljs.Error.JavaScript));
+  Qmljs.Function.set_global context ~name:"host_failure" ~arity:0
+    (fun _args -> fail message);
+  check_host "real OCaml callback exception" (fun () ->
+    Qmljs.Context.eval context "host_failure()")
+
 let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
@@ -597,6 +733,10 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
 
 let () =
   Eio_main.run @@ fun env ->
+  test_acquired_resources_survive_allocator_failure ();
+  test_context_intrinsic_oom_preserves_native_exception ();
+  test_ocaml_exceptions_are_not_javascript_errors ();
+  test_context_creation_oom_is_structured ();
   test_lifetime_gc_stress_has_no_quickjs_leaks ();
   test_close_races_gc_finalizers_without_uaf ();
   test_gc_finalizers_do_not_call_quickjs_reentrantly ();

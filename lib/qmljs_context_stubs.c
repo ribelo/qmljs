@@ -1,73 +1,49 @@
 #include "qmljs_stubs.h"
 
-#include <stdio.h>
-
 CAMLprim value qmljs_context_create(value runtime)
 {
   CAMLparam1(runtime);
   JSContext *ctx = JS_NewContext(qmljs_runtime(runtime));
   if (ctx == NULL) {
-    qmljs_raise_string("could not allocate QuickJS context");
+    qmljs_raise_out_of_memory();
   }
   CAMLreturn(qmljs_alloc_context(runtime, ctx));
 }
 
-static int qmljs_add_intrinsic(JSContext *ctx, int tag, const char **name)
+static int qmljs_add_intrinsic(JSContext *ctx, int tag)
 {
   switch (tag) {
   case 0:
-    *name = "Date";
     return JS_AddIntrinsicDate(ctx);
   case 1:
-    *name = "Eval";
     return JS_AddIntrinsicEval(ctx);
   case 2:
-    *name = "RegExpCompiler";
     JS_AddIntrinsicRegExpCompiler(ctx);
     return 0;
   case 3:
-    *name = "RegExp";
     return JS_AddIntrinsicRegExp(ctx);
   case 4:
-    *name = "JSON";
     return JS_AddIntrinsicJSON(ctx);
   case 5:
-    *name = "Proxy";
     return JS_AddIntrinsicProxy(ctx);
   case 6:
-    *name = "MapSet";
     return JS_AddIntrinsicMapSet(ctx);
   case 7:
-    *name = "TypedArrays";
     return JS_AddIntrinsicTypedArrays(ctx);
   case 8:
-    *name = "Promise";
     return JS_AddIntrinsicPromise(ctx);
   case 9:
-    *name = "BigInt";
     return JS_AddIntrinsicBigInt(ctx);
   case 10:
-    *name = "WeakRef";
     return JS_AddIntrinsicWeakRef(ctx);
   case 11:
-    *name = "Performance";
     return JS_AddPerformance(ctx);
   case 12:
-    *name = "DOMException";
     return JS_AddIntrinsicDOMException(ctx);
   default:
-    *name = "unknown";
-    return -1;
+    JS_FreeContext(ctx);
+    caml_invalid_argument("unknown QuickJS intrinsic");
   }
-}
-
-static void qmljs_free_context_and_raise_intrinsic(JSContext *ctx,
-                                                 const char *name)
-{
-  char message[128];
-  snprintf(message, sizeof(message), "could not add QuickJS %s intrinsic", name);
-  JS_FreeContext(ctx);
-  qmljs_raise_string(message);
 }
 
 CAMLprim value qmljs_context_create_raw(value runtime, value intrinsics)
@@ -75,18 +51,17 @@ CAMLprim value qmljs_context_create_raw(value runtime, value intrinsics)
   CAMLparam2(runtime, intrinsics);
   JSContext *ctx = JS_NewContextRaw(qmljs_runtime(runtime));
   if (ctx == NULL) {
-    qmljs_raise_string("could not allocate raw QuickJS context");
+    qmljs_raise_out_of_memory();
   }
   if (JS_AddIntrinsicBaseObjects(ctx) < 0) {
-    qmljs_free_context_and_raise_intrinsic(ctx, "base objects");
+    qmljs_free_context_and_raise_intrinsic_oom(ctx);
   }
 
   mlsize_t length = Wosize_val(intrinsics);
   for (mlsize_t i = 0; i < length; i++) {
-    const char *name = NULL;
-    int result = qmljs_add_intrinsic(ctx, Int_val(Field(intrinsics, i)), &name);
+    int result = qmljs_add_intrinsic(ctx, Int_val(Field(intrinsics, i)));
     if (result < 0) {
-      qmljs_free_context_and_raise_intrinsic(ctx, name);
+      qmljs_free_context_and_raise_intrinsic_oom(ctx);
     }
   }
 

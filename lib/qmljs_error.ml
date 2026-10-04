@@ -50,7 +50,15 @@ exception Stack_overflow
 exception Resource_limit of string
 exception Timeout of string
 
-let () = Callback.Safe.register_exception "qmljs.error" (Error "")
+type allocated_wrapper
+
+external prepare_wrapper : unit -> allocated_wrapper @@ portable
+  = "qmljs_prepare_wrapper_trampoline"
+
+let () =
+  Callback.Safe.register_exception "qmljs.error" (Error "");
+  Callback.Safe.register_exception "qmljs.out_of_memory" Out_of_memory;
+  Callback.Safe.register "qmljs.prepare_wrapper" prepare_wrapper
 
 let raise_policy_violation specifier = raise (Policy_violation specifier)
 let raise_out_of_memory () = raise Out_of_memory
@@ -241,7 +249,9 @@ module Structured = struct
     | Host_error (message, metadata) ->
         make ~kind:Host_callback_defect_kind ~metadata message
     | Error message -> of_legacy_error message
-    | exn -> of_legacy_error (Printexc.to_string exn)
+    | exn ->
+        make ~name:"OCamlException" ~kind:Host_callback_defect_kind
+          (Printexc.to_string exn)
 
   let capture fn =
     try Stdlib.Result.Ok (fn ()) with

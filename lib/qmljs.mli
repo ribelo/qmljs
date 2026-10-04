@@ -277,6 +277,10 @@ module Error : sig
     | Closed_handle
     | Wrong_domain
 
+  (** Capture boundary failures as structured data. Arbitrary OCaml exceptions
+      are [Host_callback_defect], not [JavaScript]. Explicit legacy
+      [Qmljs.Error] string exceptions retain their legacy classification; native
+      QuickJS failures use structured errors instead. *)
   val capture : (unit -> 'a) -> ('a, t) result
   val host : message:string -> metadata:(string * string) list -> exn
   val conversion : string -> t

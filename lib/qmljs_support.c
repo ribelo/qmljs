@@ -1110,6 +1110,122 @@ static struct custom_operations qmljs_atom_ops = {
   custom_fixed_length_default
 };
 
+/* Allocation is the only raising part of ownership transfer. The callback
+   frame holds native-free handles only: OCaml parents remain CAMLparam-rooted
+   in the outer alloc_* frame, never copied into thread-local storage. */
+struct qmljs_wrapper_allocator {
+  struct custom_operations *ops;
+  size_t wrapper_size;
+  size_t handle_size;
+  atomic_int *counter;
+  int custom_failpoint;
+  int handle_failpoint;
+  int lifecycle_failpoint;
+};
+
+static const struct qmljs_wrapper_allocator qmljs_runtime_allocator = {
+  &qmljs_runtime_ops, sizeof(struct qmljs_runtime), 0,
+  &qmljs_live_runtime_wrappers, QMLJS_WRAPPER_FAILPOINT_RUNTIME_CUSTOM, 0, 0
+};
+static const struct qmljs_wrapper_allocator qmljs_context_allocator = {
+  &qmljs_context_ops, sizeof(struct qmljs_context), sizeof(struct qmljs_context_handle),
+  &qmljs_live_context_wrappers, QMLJS_WRAPPER_FAILPOINT_CONTEXT_CUSTOM,
+  QMLJS_WRAPPER_FAILPOINT_CONTEXT_HANDLE, QMLJS_WRAPPER_FAILPOINT_CONTEXT
+};
+static const struct qmljs_wrapper_allocator qmljs_value_allocator = {
+  &qmljs_value_ops, sizeof(struct qmljs_value), sizeof(struct qmljs_value_handle),
+  &qmljs_live_value_wrappers, QMLJS_WRAPPER_FAILPOINT_VALUE_CUSTOM,
+  QMLJS_WRAPPER_FAILPOINT_VALUE_HANDLE, QMLJS_WRAPPER_FAILPOINT_VALUE
+};
+static const struct qmljs_wrapper_allocator qmljs_atom_allocator = {
+  &qmljs_atom_ops, sizeof(struct qmljs_atom), sizeof(struct qmljs_atom_handle),
+  NULL, QMLJS_WRAPPER_FAILPOINT_ATOM_CUSTOM,
+  QMLJS_WRAPPER_FAILPOINT_ATOM_HANDLE, QMLJS_WRAPPER_FAILPOINT_ATOM
+};
+
+struct qmljs_wrapper_allocation_frame {
+  const struct qmljs_wrapper_allocator *allocator;
+  void *handle;
+};
+static _Thread_local struct qmljs_wrapper_allocation_frame *qmljs_current_wrapper_allocation;
+
+CAMLprim value qmljs_prepare_wrapper_trampoline(value unit)
+{
+  CAMLparam1(unit);
+  CAMLlocal1(block);
+  struct qmljs_wrapper_allocation_frame *frame = qmljs_current_wrapper_allocation;
+  if (frame == NULL) {
+    caml_failwith("qmljs wrapper allocation frame is missing");
+  }
+  const struct qmljs_wrapper_allocator *allocator = frame->allocator;
+  if (qmljs_test_take_wrapper_failpoint(allocator->custom_failpoint)) {
+    caml_raise_out_of_memory();
+  }
+  block = caml_alloc_custom(allocator->ops, allocator->wrapper_size, 0, 1);
+  /* Every wrapper has one pointer payload and a NULL-safe finalizer. */
+  memset(Data_custom_val(block), 0, allocator->wrapper_size);
+  if (allocator->counter != NULL) {
+    atomic_fetch_add_explicit(allocator->counter, 1, memory_order_relaxed);
+  }
+  if (allocator->handle_size != 0) {
+    if (qmljs_test_take_wrapper_failpoint(allocator->handle_failpoint)) {
+      caml_raise_out_of_memory();
+    }
+    frame->handle = caml_stat_alloc_noexc(allocator->handle_size);
+    if (frame->handle == NULL) {
+      caml_raise_out_of_memory();
+    }
+  }
+  /* Retained private lifecycle hooks now exercise the same rollback path;
+     none owns native resources or adds an alternate production cleanup path. */
+  if (allocator->lifecycle_failpoint != 0
+      && qmljs_test_take_wrapper_failpoint(allocator->lifecycle_failpoint)) {
+    qmljs_raise_string("qmljs test wrapper allocation failpoint");
+  }
+  CAMLreturn(block);
+}
+
+static value qmljs_prepare_wrapper(const struct qmljs_wrapper_allocator *allocator,
+                                   void **handle)
+{
+  const value *trampoline = caml_named_value("qmljs.prepare_wrapper");
+  *handle = NULL;
+  if (trampoline == NULL) {
+    /* Non-wrapper sentinel: caller rolls back before reporting registration. */
+    return Val_unit;
+  }
+  struct qmljs_wrapper_allocation_frame frame = { allocator, NULL };
+  struct qmljs_wrapper_allocation_frame *previous = qmljs_current_wrapper_allocation;
+  qmljs_current_wrapper_allocation = &frame;
+  value result = caml_callback_exn(*trampoline, Val_unit);
+  qmljs_current_wrapper_allocation = previous;
+  *handle = frame.handle;
+  return result;
+}
+
+static int qmljs_wrapper_allocation_failed(value *result, void *handle)
+{
+  if (*result != Val_unit && !Is_exception_result(*result)) {
+    return 0;
+  }
+  /* Root the actual exception before native rollback can run a finalizer. */
+  if (Is_exception_result(*result)) {
+    *result = Extract_exception(*result);
+  }
+  if (handle != NULL) {
+    caml_stat_free(handle);
+  }
+  return 1;
+}
+
+static void qmljs_reraise_wrapper_allocation(value exception)
+{
+  if (exception == Val_unit) {
+    caml_failwith("qmljs wrapper allocation trampoline is not registered");
+  }
+  caml_raise(exception);
+}
+
 value qmljs_alloc_runtime(JSRuntime *rt, struct qmljs_runtime_state *state)
 {
   CAMLparam0();
@@ -1117,9 +1233,14 @@ value qmljs_alloc_runtime(JSRuntime *rt, struct qmljs_runtime_state *state)
   /* state->refs was initialized to 1 for this wrapper at creation. */
   state->rt = rt;
   atomic_fetch_add_explicit(&qmljs_live_native_runtimes, 1, memory_order_relaxed);
-  block = caml_alloc_custom(&qmljs_runtime_ops, sizeof(struct qmljs_runtime), 0, 1);
+  void *prepared_handle;
+  block = qmljs_prepare_wrapper(&qmljs_runtime_allocator, &prepared_handle);
+  if (qmljs_wrapper_allocation_failed(&block, prepared_handle)) {
+    qmljs_runtime_free_native(state);
+    qmljs_state_unref(state);
+    qmljs_reraise_wrapper_allocation(block);
+  }
   Qml_runtime_val(block)->state = state;
-  atomic_fetch_add_explicit(&qmljs_live_runtime_wrappers, 1, memory_order_relaxed);
   CAMLreturn(block);
 }
 
@@ -1186,11 +1307,13 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   CAMLparam1(runtime);
   CAMLlocal1(block);
   struct qmljs_runtime_state *state = Qml_runtime_val(runtime)->state;
-  block = caml_alloc_custom(&qmljs_context_ops, sizeof(struct qmljs_context), 0, 1);
-  Qml_context_val(block)->handle = NULL;
-  atomic_fetch_add_explicit(&qmljs_live_context_wrappers, 1, memory_order_relaxed);
-  struct qmljs_context_handle *handle =
-    caml_stat_alloc(sizeof(struct qmljs_context_handle));
+  void *prepared_handle;
+  block = qmljs_prepare_wrapper(&qmljs_context_allocator, &prepared_handle);
+  if (qmljs_wrapper_allocation_failed(&block, prepared_handle)) {
+    JS_FreeContext(ctx);
+    qmljs_reraise_wrapper_allocation(block);
+  }
+  struct qmljs_context_handle *handle = prepared_handle;
   handle->state = state;
   handle->ctx = ctx;
   handle->bigint_constructor = qmljs_capture_bigint_constructor(ctx);
@@ -1202,13 +1325,7 @@ value qmljs_alloc_context(value runtime, JSContext *ctx)
   qmljs_state_ref(state);
   atomic_fetch_add_explicit(&state->open_contexts, 1, memory_order_relaxed);
   qmljs_link_context(state, handle);
-  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_CONTEXT)) {
-    qmljs_release_context_for_scope(handle);
-    qmljs_wait_lists_quiescent(state);
-    caml_stat_free(handle);
-    qmljs_state_unref(state);
-    qmljs_raise_string("qmljs test wrapper allocation failpoint");
-  }
+
   Qml_context_val(block)->handle = handle;
   CAMLreturn(block);
 }
@@ -1219,11 +1336,13 @@ value qmljs_alloc_value(value context, JSValue js_value)
   CAMLlocal1(block);
   struct qmljs_context_handle *context_handle = Qml_context_val(context)->handle;
   struct qmljs_runtime_state *state = context_handle->state;
-  block = caml_alloc_custom(&qmljs_value_ops, sizeof(struct qmljs_value), 0, 1);
-  Qml_value_val(block)->handle = NULL;
-  atomic_fetch_add_explicit(&qmljs_live_value_wrappers, 1, memory_order_relaxed);
-  struct qmljs_value_handle *handle =
-    caml_stat_alloc(sizeof(struct qmljs_value_handle));
+  void *prepared_handle;
+  block = qmljs_prepare_wrapper(&qmljs_value_allocator, &prepared_handle);
+  if (qmljs_wrapper_allocation_failed(&block, prepared_handle)) {
+    JS_FreeValue(context_handle->ctx, js_value);
+    qmljs_reraise_wrapper_allocation(block);
+  }
+  struct qmljs_value_handle *handle = prepared_handle;
   handle->state = state;
   handle->context = context_handle;
   handle->value = js_value;
@@ -1234,13 +1353,7 @@ value qmljs_alloc_value(value context, JSValue js_value)
   qmljs_state_ref(state);
   atomic_fetch_add_explicit(&state->live_values, 1, memory_order_relaxed);
   qmljs_link_value(state, handle);
-  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_VALUE)) {
-    qmljs_release_value_for_scope(handle);
-    qmljs_wait_lists_quiescent(state);
-    caml_stat_free(handle);
-    qmljs_state_unref(state);
-    qmljs_raise_string("qmljs test wrapper allocation failpoint");
-  }
+
   Qml_value_val(block)->handle = handle;
   CAMLreturn(block);
 }
@@ -1258,10 +1371,13 @@ value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)
 {
   CAMLparam0();
   CAMLlocal1(block);
-  block = caml_alloc_custom(&qmljs_atom_ops, sizeof(struct qmljs_atom), 0, 1);
-  Qml_atom_val(block)->handle = NULL;
-  struct qmljs_atom_handle *handle =
-    caml_stat_alloc(sizeof(struct qmljs_atom_handle));
+  void *prepared_handle;
+  block = qmljs_prepare_wrapper(&qmljs_atom_allocator, &prepared_handle);
+  if (qmljs_wrapper_allocation_failed(&block, prepared_handle)) {
+    JS_FreeAtomRT(state->rt, atom);
+    qmljs_reraise_wrapper_allocation(block);
+  }
+  struct qmljs_atom_handle *handle = prepared_handle;
   handle->state = state;
   handle->atom = atom;
   atomic_init(&handle->live, 1);
@@ -1271,13 +1387,7 @@ value qmljs_alloc_atom(struct qmljs_runtime_state *state, JSAtom atom)
   qmljs_state_ref(state);
   atomic_fetch_add_explicit(&state->live_atoms, 1, memory_order_relaxed);
   qmljs_link_atom(state, handle);
-  if (qmljs_test_take_wrapper_failpoint(QMLJS_WRAPPER_FAILPOINT_ATOM)) {
-    qmljs_release_atom_for_scope(handle);
-    qmljs_wait_lists_quiescent(state);
-    caml_stat_free(handle);
-    qmljs_state_unref(state);
-    qmljs_raise_string("qmljs test wrapper allocation failpoint");
-  }
+
   Qml_atom_val(block)->handle = handle;
   CAMLreturn(block);
 }
@@ -1346,6 +1456,15 @@ void qmljs_raise_string(const char *message)
   arg = caml_copy_string(message);
   caml_raise_with_arg(*exception, arg);
   CAMLreturn0;
+}
+
+void qmljs_raise_out_of_memory(void)
+{
+  const value *exn = caml_named_value("qmljs.out_of_memory");
+  if (exn == NULL) {
+    caml_failwith("qmljs out-of-memory exception is not registered");
+  }
+  caml_raise_constant(*exn);
 }
 
 static void qmljs_clear_pending_exception(JSContext *ctx)
@@ -1724,7 +1843,7 @@ static value qmljs_metadata_array(JSContext *ctx, JSValueConst js_metadata)
 
 static value qmljs_build_structured_exception(JSContext *ctx,
                                             JSValueConst js_exception,
-                                            int depth,
+                                            int depth, int native_kind,
                                             const value *make_structured)
 {
   CAMLparam0();
@@ -1747,20 +1866,20 @@ static value qmljs_build_structured_exception(JSContext *ctx,
   struct qmljs_extracted_string ocaml_frame = { 0 };
   struct qmljs_extracted_string kind_marker = { 0 };
   struct qmljs_extracted_string denied_specifier = { 0 };
-  int kind = 0;
+  int kind = native_kind;
   int trusted_marker = 0;
   int trusted_engine_error = 0;
   int trusted_uncatchable_error = 0;
   struct qmljs_runtime_state *state = qmljs_state_of_context(ctx);
 
-  if (JS_IsNull(js_exception) && state != NULL &&
+  if (kind == 0 && JS_IsNull(js_exception) && state != NULL &&
       (atomic_load_explicit(&state->interrupt_requested,
                             memory_order_acquire) != 0 ||
        qmljs_interrupt_deadline_elapsed(state))) {
     kind = 6;
     fallback_literal = qmljs_literal_string("interrupted");
     fallback_message = &fallback_literal;
-  } else if (JS_IsNull(js_exception) &&
+  } else if (kind == 0 && JS_IsNull(js_exception) &&
              (JS_IsUncatchableError(js_exception) ||
               qmljs_memory_limit_exhausted(state))) {
     kind = 1;
@@ -1802,7 +1921,7 @@ static value qmljs_build_structured_exception(JSContext *ctx,
       }
       cause = Val_int(0);
     } else {
-      nested = qmljs_build_structured_exception(ctx, js_cause, depth + 1,
+      nested = qmljs_build_structured_exception(ctx, js_cause, depth + 1, 0,
                                               make_structured);
       cause = qmljs_some(nested);
     }
@@ -1877,7 +1996,7 @@ static void qmljs_raise_structured_value(JSContext *ctx, JSValueConst js_excepti
     qmljs_raise_string("JavaScript exception");
   }
 
-  structured = qmljs_build_structured_exception(ctx, js_exception, 0,
+  structured = qmljs_build_structured_exception(ctx, js_exception, 0, 0,
                                               make_structured);
 
   value result = caml_callback_exn(*raise_structured, structured);
@@ -1902,7 +2021,7 @@ value qmljs_structured_of_exception_value(JSContext *ctx, JSValueConst exception
     qmljs_raise_string("JavaScript exception");
   }
 
-  structured = qmljs_build_structured_exception(ctx, exception, 0, make_structured);
+  structured = qmljs_build_structured_exception(ctx, exception, 0, 0, make_structured);
   CAMLreturn(structured);
 }
 
@@ -1925,7 +2044,7 @@ void qmljs_raise_exception(JSContext *ctx)
     qmljs_raise_string("JavaScript exception");
   }
 
-  structured = qmljs_build_structured_exception(ctx, js_exception, 0,
+  structured = qmljs_build_structured_exception(ctx, js_exception, 0, 0,
                                               make_structured);
   JS_FreeValue(ctx, js_exception);
 
@@ -1935,6 +2054,32 @@ void qmljs_raise_exception(JSContext *ctx)
   }
 
   qmljs_raise_string("JavaScript exception callback returned unexpectedly");
+  CAMLreturn0;
+}
+
+void qmljs_free_context_and_raise_intrinsic_oom(JSContext *ctx)
+{
+  CAMLparam0();
+  CAMLlocal1(structured);
+  const value *make_structured = caml_named_value("qmljs.make_structured");
+  const value *raise_structured = caml_named_value("qmljs.raise_structured");
+  JSValue exception = JS_GetException(ctx);
+  if (make_structured == NULL || raise_structured == NULL) {
+    JS_FreeValue(ctx, exception);
+    JS_FreeContext(ctx);
+    qmljs_raise_out_of_memory();
+  }
+  /* JS_AddIntrinsic* reports allocation failure. Preserve its actual fields
+     while the context is live; the operation, not its text, supplies the kind. */
+  structured = qmljs_build_structured_exception(ctx, exception, 0, 1,
+                                              make_structured);
+  JS_FreeValue(ctx, exception);
+  JS_FreeContext(ctx);
+  value result = caml_callback_exn(*raise_structured, structured);
+  if (Is_exception_result(result)) {
+    caml_raise(Extract_exception(result));
+  }
+  caml_failwith("qmljs structured exception callback returned unexpectedly");
   CAMLreturn0;
 }
 
