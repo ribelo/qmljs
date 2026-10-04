@@ -225,6 +225,14 @@ Raw FFI (`Qmljs_raw`, `*_stubs.c`) is not part of the user-facing API.
 - While `eval_with_timeout` has a deadline armed, synchronous host callbacks are
   rejected before entry with a structured resource-limit error. Use async host
   functions for work that may block.
+- Invalid timeouts (`NaN`, infinite, negative, or not representable as int64
+  nanoseconds) raise `Invalid_argument` before the evaluation starts. A nested
+  timed evaluation keeps the earliest deadline and restores the outer one, and a
+  `Runtime.request_interrupt` pending at entry stays pending, exactly as for
+  untimed eval.
+- Module loader callbacks (`normalize` / `load`) and native module init are not
+  preempted by an armed deadline: host work inside them runs to completion and
+  the deadline is only observed once control returns to QuickJS.
 - Timeouts keep QuickJS on the owner domain (native monotonic deadline in the
   interrupt handler). Workers may only flip the interrupt atomic.
 
@@ -271,7 +279,7 @@ Raw FFI (`Qmljs_raw`, `*_stubs.c`) is not part of the user-facing API.
 | Structured errors built at the boundary | Preserve JS cause chains, OCaml frames, and policy metadata while live values still exist |
 | One explicit async driver | Avoid competing job pumps and lost wakeups between await, drain, and host jobs |
 | Separate `qmljs_ppx` package | Codecs/registration without making `ppxlib` a core runtime dependency |
-| No silent fakes | Tests and production share the same contracts; red tests must not be greened with stubs |
+| No silent fakes | Tests exercise the same contracts the library exposes; red tests must not be greened with stubs |
 
 Rejected or deferred:
 
@@ -284,9 +292,24 @@ Rejected or deferred:
 
 - OxCaml-only; no mainline OCaml CI path.
 - Not published to the public opam repository; install from source.
+- Timed evaluation preempts JavaScript bytecode only. Host work inside module
+  loader callbacks (`normalize` / `load`) and native module init runs to
+  completion; the deadline is checked again only when JavaScript resumes, so a
+  timeout can be observed late, or not at all if the remaining JS finishes
+  first.
+- The Nix shell builds against quickjs-ng 0.14.0 with the upstream fix
+  quickjs-ng/quickjs@8e14a39 applied (`JS_NewContextRaw` OOM use-after-free,
+  unreleased as of v0.17.0; see `nix/patches/`). Builds against an unpatched
+  system quickjs-ng are exposed to that crash under memory pressure.
+- Typed array views over resizable `ArrayBuffer`s report live geometry after
+  `resize()`. A detached or out-of-bounds view raises the engine `TypeError`
+  from every qmljs accessor, `length`, `byte_length`, and `byte_offset`
+  included; JS reports `0` from those getters, so the binding is stricter.
 - Module loader covers in-memory ES modules, filesystem loader with escape
   checks, policy denial, `type: "js"`, and `type: "json"` import attributes.
-  Full bytecode loading is not exposed.
+  Full bytecode loading is not exposed. The filesystem loader opens a checked
+  file non-blocking, so a path swapped to a FIFO before the read is rejected
+  instead of hanging.
 - PPX v1 type coverage is listed above; open/polymorphic/GADT forms are out of
   scope for the current rewriter.
 - `docs/quickjs-ng-binding.md` still says "Classes … are not exposed yet"; the
@@ -311,7 +334,7 @@ Layout:
 | --- | --- |
 | `lib/` | Public library `qmljs` + C stubs |
 | `ppx/` | `qmljs_ppx` rewriter |
-| `test/` | Contract, readiness, PPX, property, and bug-hunt suites |
+| `test/` | Contract, readiness, not-production-ready, PPX, property, bug-hunt, and loader-acquisition suites |
 | `bench/` | Allocation probes |
 | `docs/` | Binding and PPX design notes |
 | `AGENTS.md` | Ownership, error, async, and package-boundary policy |

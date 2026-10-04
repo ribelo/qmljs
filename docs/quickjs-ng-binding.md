@@ -54,6 +54,9 @@ perform Eio effects because they are called through a C frame.
 runtime owner domain. `eval_with_timeout` installs a native monotonic deadline
 read by QuickJS's interrupt handler; it never moves the runtime, context, or
 value graph to another domain. This interrupts JavaScript bytecode execution.
+Host work inside module loader callbacks (`normalize` / `load`) and native
+module init is not preempted: it runs to completion, and the deadline is only
+observed once control returns to QuickJS.
 While a deadline is armed, synchronous host callbacks are rejected before entry
 with a structured resource-limit error. Use `Qmljs.Function.make_async` or
 `Qmljs.Function.set_global_async` for Eio work or callbacks that may block.
