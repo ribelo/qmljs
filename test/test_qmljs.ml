@@ -26,6 +26,16 @@ let expect_structured_error label fn assert_error =
   | Ok _ -> fail (label ^ ": expected structured error")
   | Error error -> assert_error error
 
+(* Runs [f] on the Async scheduler and returns its value, re-raising the
+   original exception so structured qmljs errors keep their classification. *)
+let run_async f =
+  match
+    Async.Thread_safe.block_on_async (fun () ->
+      Async.Monitor.try_with ~extract_exn:true f)
+  with
+  | Ok (Ok value) -> value
+  | Ok (Error exn) | Error exn -> raise exn
+
 let with_context fn =
   let runtime = Qmljs.Runtime.create () in
   let context = Qmljs.Context.create runtime in
@@ -124,7 +134,7 @@ let test_promise_jobs () =
     Qmljs.Context.eval context "Promise.resolve(41).then(x => x + 1)"
   in
   check_bool "is promise" true (Qmljs.Promise.is promise);
-  let jobs = Qmljs.Async.drain_jobs ~yield_every:1 runtime in
+  let jobs = run_async (fun () -> Qmljs.Async.drain_jobs ~yield_every:1 runtime) in
   if jobs <= 0 then fail "expected at least one QuickJS job";
   check_int "promise result" 42
     (Qmljs.Value.to_int (Qmljs.Promise.result promise))
@@ -134,14 +144,14 @@ let test_await_promise () =
   let promise =
     Qmljs.Context.eval context "Promise.resolve('ok').then(x => x + '!')"
   in
-  let result = Qmljs.Promise.await ~yield_every:1 promise in
+  let result = run_async (fun () -> Qmljs.Promise.await ~yield_every:1 promise) in
   check_string "await result" "ok!" (Qmljs.Value.to_string result)
 
 let test_rejected_promise () =
   with_context @@ fun _runtime context ->
   let promise = Qmljs.Context.eval context "Promise.reject(new Error('bad'))" in
   expect_structured_error "expected rejected promise"
-    (fun () -> Qmljs.Promise.await ~yield_every:1 promise)
+    (fun () -> run_async (fun () -> Qmljs.Promise.await ~yield_every:1 promise))
     (fun error ->
       if not (String.contains (Qmljs.Error.message error) 'b') then
         fail "missing rejection reason")
@@ -167,43 +177,69 @@ let test_async_host_function () =
   with_context @@ fun _runtime context ->
   Qmljs.Function.set_global_async context ~name:"later_add1" ~arity:1
     (fun args ->
-      Eio.Fiber.yield ();
-      Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1));
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+        Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1)));
   let promise = Qmljs.Context.eval context "later_add1(40).then(x => x + 1)" in
-  let result = Qmljs.Promise.await ~yield_every:1 promise in
+  let result = run_async (fun () -> Qmljs.Promise.await ~yield_every:1 promise) in
   check_int "async host function result" 42 (Qmljs.Value.to_int result)
 
 let test_async_host_function_error () =
   with_context @@ fun _runtime context ->
   Qmljs.Function.set_global_async context ~name:"later_fail" ~arity:0
     (fun _args ->
-      Eio.Fiber.yield ();
-      raise (Failure "async host boom"));
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+        raise (Failure "async host boom")));
   let promise = Qmljs.Context.eval context "later_fail()" in
   expect_structured_error "expected async host rejection"
-    (fun () -> Qmljs.Promise.await ~yield_every:1 promise)
+    (fun () -> run_async (fun () -> Qmljs.Promise.await ~yield_every:1 promise))
     (fun error ->
       if not (String.contains (Qmljs.Error.message error) 'b') then
         fail "missing async host error")
 
+(* Async cannot cancel a Deferred, so a caller abandons a pending await by
+   racing it. The abandoned await must stay harmless: it sleeps on the driver
+   instead of spinning, and once the runtime closes it ends with a closed-handle
+   failure inside the caller's monitor instead of escaping to the top-level
+   monitor. Everything runs inside one scheduler run so the abandoned await
+   never touches QuickJS from another thread. *)
 let test_cancel_pending_await () =
-  with_context @@ fun _runtime context ->
-  let promise = Qmljs.Context.eval context "new Promise(() => {})" in
-  let result =
-    Eio.Fiber.first
-      (fun () ->
-        ignore (Qmljs.Promise.await ~yield_every:1 promise : Qmljs.value);
-        Resolved)
-      (fun () ->
-        Eio.Fiber.yield ();
-        Cancelled)
+  let abandoned = ref None in
+  let race =
+    run_async @@ fun () ->
+    let race =
+      Qmljs.Async.with_runtime @@ fun _driver _runtime context ->
+      let promise = Qmljs.Context.eval context "new Promise(() => {})" in
+      let await =
+        Async.Monitor.try_with ~extract_exn:true (fun () ->
+          Qmljs.Promise.await ~yield_every:1 promise)
+      in
+      Async.upon await (fun outcome -> abandoned := Some outcome);
+      Async.Deferred.any
+        [ Async.Deferred.map await ~f:(fun (_ : (Qmljs.value, exn) result) ->
+            Resolved)
+        ; Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+            Cancelled)
+        ]
+    in
+    let rec wait_abandoned () =
+      match !abandoned with
+      | Some _ -> Async.Deferred.unit
+      | None -> Async.Deferred.bind (Async.Scheduler.yield ()) ~f:wait_abandoned
+    in
+    Async.Deferred.bind race ~f:(fun race ->
+      Async.Deferred.map (wait_abandoned ()) ~f:(fun () -> race))
   in
-  match result with
-  | Cancelled -> ()
-  | Resolved -> fail "pending promise resolved unexpectedly"
+  (match race with
+   | Cancelled -> ()
+   | Resolved -> fail "pending promise resolved unexpectedly");
+  match !abandoned with
+  | Some (Error (Qmljs.Error _)) -> ()
+  | Some (Error exn) ->
+      fail ("abandoned await ended with " ^ Printexc.to_string exn)
+  | Some (Ok _) -> fail "abandoned await resolved"
+  | None -> fail "abandoned await never ended"
 
 let () =
-  Eio_main.run @@ fun _env ->
   test_eval ();
   test_runtime_interrupt_flag ();
   test_eval_timeout ();

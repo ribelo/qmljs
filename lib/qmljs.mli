@@ -145,16 +145,23 @@ module Context : sig
     string ->
     value
 
-  val eval_module : ?filename:string -> t -> string -> value
+  (** Module evaluation drives top-level await to a terminal state before it
+      returns the default export, so it advances QuickJS and host jobs through
+      the runtime's Async driver. It fails with [Resource_limit] when the module
+      stays pending and no driver can make progress. *)
+  val eval_module : ?filename:string -> t -> string -> value Async_kernel.Deferred.t
 
+  (** [timeout] (seconds) bounds both QuickJS execution, through the native
+      monotonic deadline, and the time a top-level await stays suspended on
+      Async work. Either expiry fails with a structured [Timeout]. *)
   val eval_module_with_timeout :
     timeout:float ->
     ?filename:string ->
     t ->
     string ->
-    value
+    value Async_kernel.Deferred.t
 
-  val eval_module_file : t -> string -> value
+  val eval_module_file : t -> string -> value Async_kernel.Deferred.t
 
   val global : t -> value
   val set_global : t -> name:string -> value -> unit
@@ -306,28 +313,6 @@ module Diagnostics : sig
   val snapshot : unit -> snapshot
   val native_runtimes : snapshot -> int
   val assert_no_leaks : before:snapshot -> after:snapshot -> unit
-end
-
-module Eio : sig
-  type driver
-
-  val with_runtime :
-    sw:Eio.Switch.t ->
-    clock:_ Eio.Time.clock ->
-    ?memory_limit:int ->
-    ?max_stack_size:int ->
-    ?promise_job_limit:int ->
-    (driver -> Runtime.t -> Context.t -> 'a) ->
-    'a
-
-  val cancel : driver -> unit
-  val drain_until_idle : driver -> int
-  val promise :
-    ?name:string ->
-    driver ->
-    Context.t ->
-    (unit -> value) ->
-    value
 end
 
 module Atom : sig
@@ -628,8 +613,10 @@ module Module : sig
 
   val declare_native : Context.t -> name:string -> Native.t -> unit
   val dynamic_import : ?base:string -> Context.t -> string -> value
-  val eval_with_meta : ?filename:string -> Context.t -> string -> evaluated
-  val eval : ?filename:string -> Context.t -> string -> namespace
+  val eval_with_meta :
+    ?filename:string -> Context.t -> string -> evaluated Async_kernel.Deferred.t
+
+  val eval : ?filename:string -> Context.t -> string -> namespace Async_kernel.Deferred.t
   val default : namespace -> value
   val get : namespace -> name:string -> value option
   val keys : namespace -> string list
@@ -657,11 +644,18 @@ module Function : sig
     (call -> value) ->
     value
 
+  (** [make_async] returns a JS function that answers each call with a
+      promise. The callback starts from the runtime's host queue as an Async
+      worker; its result fulfils the promise and an exception rejects it with a
+      structured [Host_callback_defect]. When a {!Async} driver is attached the
+      worker is joined before the driver's context closes, and a driver cancelled
+      before the worker starts rejects the promise with a cancellation defect
+      without running the callback. *)
   val make_async :
     Context.t ->
     name:string ->
     arity:int ->
-    (value array -> value) ->
+    (value array -> value Async_kernel.Deferred.t) ->
     value
 
   val set_global :
@@ -682,7 +676,7 @@ module Function : sig
     Context.t ->
     name:string ->
     arity:int ->
-    (value array -> value) ->
+    (value array -> value Async_kernel.Deferred.t) ->
     unit
 
   val call : ?this_:value -> value -> value array -> value
@@ -750,15 +744,64 @@ module Promise : sig
   val state : value -> state
   val result : value -> value
   val create : Context.t -> value * value * value
+  (** Drains QuickJS and host jobs until the promise settles. While it is
+      pending it sleeps on the runtime's driver wakeup, or yields once per Async
+      cycle when no driver is attached. *)
   val await_result :
     ?yield_every:int ->
     value ->
-    (value, Error.t) result
+    (value, Error.t) result Async_kernel.Deferred.t
 
-  val await_exn : ?yield_every:int -> value -> value
-  val await : ?yield_every:int -> value -> value
+  val await_exn : ?yield_every:int -> value -> value Async_kernel.Deferred.t
+  val await : ?yield_every:int -> value -> value Async_kernel.Deferred.t
 end
 
+(** The one driver of a runtime: it advances QuickJS promise jobs and qmljs host
+    jobs, and owns the Async workers started for host promises. Runtimes,
+    contexts, values and drivers stay on the thread that runs the Async
+    scheduler; {!Runtime.request_interrupt} is the only cross-domain call. *)
 module Async : sig
-  val drain_jobs : ?yield_every:int -> Runtime.t -> int
+  type driver
+
+  (** [with_runtime f] creates a runtime, a context and their driver, and runs
+      [f]. When [f] settles, the driver closes ({!cancelled} becomes determined
+      and queued host work is dropped), every running worker is awaited while
+      the context is still usable, and only then are the context and the runtime
+      closed. Async cannot stop a running
+      Deferred, so a worker that ignores {!cancelled} delays teardown until it
+      finishes. When [f] and cleanup both fail, [f]'s failure is raised with the
+      cleanup failure attached as suppressed structure. *)
+  val with_runtime :
+    ?memory_limit:int ->
+    ?max_stack_size:int ->
+    ?promise_job_limit:int ->
+    (driver -> Runtime.t -> Context.t -> 'a Async_kernel.Deferred.t) ->
+    'a Async_kernel.Deferred.t
+
+  (** Cancels the driver: in-flight JS is interrupted, {!cancelled} becomes
+      determined, host work not yet started rejects with a structured
+      cancellation defect, and running workers' results are replaced by that
+      rejection. Idempotent; no effect once the driver is closed. *)
+  val cancel : driver -> unit
+
+  (** Determined once the driver is cancelled or closed. Workers wait on it to
+      stop cooperatively. *)
+  val cancelled : driver -> unit Async_kernel.Deferred.t
+
+  val drain_until_idle : driver -> int Async_kernel.Deferred.t
+
+  (** [promise driver context work] returns a pending JS promise at once and
+      runs [work] as a worker of [driver]. Raises [Invalid_argument] when the
+      driver is closed or [context] belongs to another runtime. *)
+  val promise :
+    ?name:string ->
+    driver ->
+    Context.t ->
+    (unit -> value Async_kernel.Deferred.t) ->
+    value
+
+  (** Runs host jobs and QuickJS jobs until none is left, yielding to the Async
+      scheduler every [yield_every] jobs (default 64, must be positive). Fails
+      with [Resource_limit] past the runtime's promise job limit. *)
+  val drain_jobs : ?yield_every:int -> Runtime.t -> int Async_kernel.Deferred.t
 end

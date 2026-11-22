@@ -5,4 +5,4 @@ let tests =
   @ Qmljs_test_binary_numbers.tests
   @ Qmljs_test_modules_loaders.tests
 
-let () = Eio_main.run @@ fun _env -> Qmljs_test_common.run tests
+let () = Qmljs_test_common.run tests

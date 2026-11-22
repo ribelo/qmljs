@@ -35,6 +35,27 @@ let expect_invalid_arg label fn =
         (Printf.sprintf "%s: expected Invalid_argument, got %s" label
            (Printexc.to_string exn))
 
+(* Runs [f] on the Async scheduler and returns its value, re-raising the
+   original exception so structured qmljs errors keep their classification. *)
+let run_async f =
+  match
+    Async.Thread_safe.block_on_async (fun () ->
+      Async.Monitor.try_with ~extract_exn:true f)
+  with
+  | Ok (Ok value) -> value
+  | Ok (Error exn) | Error exn -> raise exn
+
+(* Blocking forms of the Async module and promise APIs for specs written in
+   direct style. *)
+let module_eval_sync ?filename context source =
+  run_async (fun () -> Qmljs.Module.eval ?filename context source)
+
+let module_eval_with_meta_sync ?filename context source =
+  run_async (fun () -> Qmljs.Module.eval_with_meta ?filename context source)
+
+let await_result_sync ?yield_every promise =
+  run_async (fun () -> Qmljs.Promise.await_result ?yield_every promise)
+
 let run tests =
   let failures = ref [] in
   List.iter

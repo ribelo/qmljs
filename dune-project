@@ -12,9 +12,11 @@
   (ocaml (= 5.4.0))
   (ocaml-variants (= 5.4.0+ox))
   (dune (>= 3.21))
-  eio
-  (eio_main :with-test)
-  (qcheck :with-test)))
+  async_kernel
+  core
+  (async :with-test)
+  (base :with-test)
+  (base_quickcheck :with-test)))
 
 (package
  (name qmljs_ppx)

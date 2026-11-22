@@ -3,6 +3,16 @@
 
 let fail message = raise (Failure message)
 
+(* Runs [f] on the Async scheduler and returns its value, re-raising the
+   original exception so structured qmljs errors keep their classification. *)
+let run_async f =
+  match
+    Async.Thread_safe.block_on_async (fun () ->
+      Async.Monitor.try_with ~extract_exn:true f)
+  with
+  | Ok (Ok value) -> value
+  | Ok (Error exn) | Error exn -> raise exn
+
 let check_int label expected actual =
   if actual <> expected then
     fail (Printf.sprintf "%s: expected %d, got %d" label expected actual)
@@ -295,8 +305,9 @@ let test_rejected_module_eval_leaks () =
     expect_error "rejected module evaluation"
       (fun () ->
         ignore
-          (Qmljs.Context.eval_module ~filename:"rejected-module-leak.mjs"
-             context source
+          (run_async (fun () ->
+             Qmljs.Context.eval_module ~filename:"rejected-module-leak.mjs"
+               context source)
            : Qmljs.value))
       (fun error ->
         check_string "rejected module message" "module boom"
@@ -331,18 +342,21 @@ let test_rejected_module_eval_frees_eval_result () =
   let eval_all () =
     expect_rejection "Context.eval_module rejected TLA" (fun context ->
       ignore
-        (Qmljs.Context.eval_module ~filename:"rejected-tla-context.mjs"
-           context source
+        (run_async (fun () ->
+           Qmljs.Context.eval_module ~filename:"rejected-tla-context.mjs"
+             context source)
          : Qmljs.value));
     expect_rejection "Module.eval rejected TLA" (fun context ->
       let namespace =
-        Qmljs.Module.eval ~filename:"rejected-tla-module.mjs" context source
+        run_async (fun () ->
+          Qmljs.Module.eval ~filename:"rejected-tla-module.mjs" context source)
       in
       ignore (Qmljs.Module.default namespace : Qmljs.value));
     expect_rejection "Module.eval_with_meta rejected TLA" (fun context ->
       let evaluated =
-        Qmljs.Module.eval_with_meta ~filename:"rejected-tla-meta.mjs"
-          context source
+        run_async (fun () ->
+          Qmljs.Module.eval_with_meta ~filename:"rejected-tla-meta.mjs"
+            context source)
       in
       ignore (Qmljs.Module.default evaluated.namespace : Qmljs.value))
   in
@@ -570,73 +584,85 @@ let test_cross_boundary_exceptions_preserve_cause_stack_and_reusability () =
   let value = Qmljs.Context.eval context "21 * 2" in
   check_int "runtime reusable after exception" 42 (Qmljs.Value.to_int value)
 
-let test_eio_many_runtimes_cancel_cleanly_without_races env =
-  Eio.Switch.run @@ fun sw ->
-  let results = Eio.Stream.create 128 in
-  for i = 1 to 128 do
-    Eio.Fiber.fork ~sw (fun () ->
-        Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-          (fun _driver _runtime context ->
-            Qmljs.Function.set_global_async context ~name:"later" ~arity:1
-              (fun args ->
-                Eio.Fiber.yield ();
-                Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + i));
-            let promise =
-              Qmljs.Context.eval context "later(1).then(x => x + 1)"
-            in
-            Eio.Stream.add results
-              (Qmljs.Value.to_int (Qmljs.Promise.await promise))))
-  done;
-  let total = ref 0 in
-  for _ = 1 to 128 do
-    total := !total + Eio.Stream.take results
-  done;
+(* Many runtimes, each with its own driver, run concurrently on the one Async
+   scheduler; every scope completes its async host work and tears down. *)
+let test_many_runtimes_cancel_cleanly_without_races () =
+  let results =
+    run_async (fun () ->
+      Async.Deferred.List.init ~how:`Parallel 128 ~f:(fun index ->
+        let i = index + 1 in
+        Qmljs.Async.with_runtime (fun _driver _runtime context ->
+          Qmljs.Function.set_global_async context ~name:"later" ~arity:1
+            (fun args ->
+              Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + i)));
+          let promise = Qmljs.Context.eval context "later(1).then(x => x + 1)" in
+          Async.Deferred.map (Qmljs.Promise.await promise) ~f:Qmljs.Value.to_int)))
+  in
+  let total = List.fold_left ( + ) 0 results in
   let expected = (128 * 129 / 2) + (128 * 2) in
-  check_int "all async runtimes completed" expected !total
+  check_int "all async runtimes completed" expected total
 
-let test_await_result_no_lost_wakeup_with_driver env =
-  Eio.Switch.run @@ fun sw ->
-  let clock = Eio.Stdenv.clock env in
-  Qmljs.Eio.with_runtime ~sw ~clock (fun driver _runtime context ->
-      try
-        Eio.Time.with_timeout_exn clock 5.0 (fun () ->
-            for i = 1 to 1_000 do
-              let promise =
-                Qmljs.Eio.promise driver context (fun () ->
-                    Eio.Fiber.yield ();
-                    Eio.Fiber.yield ();
-                    Qmljs.Value.int context i)
-              in
-              if i mod 3 = 0 then Eio.Fiber.yield ();
-              match Qmljs.Promise.await_result ~yield_every:1 promise with
+(* Each await snapshots the driver wakeup before it inspects the promise, so a
+   settlement that lands in between is never lost; a lost wakeup would hang
+   until the timeout. The bound only detects a hang: every drain runs a full
+   major GC, so 1000 awaits legitimately take several seconds. *)
+let test_await_result_no_lost_wakeup_with_driver () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver _runtime context ->
+  let awaits =
+    let rec loop i =
+      if i > 1_000 then Async.Deferred.unit
+      else begin
+        let promise =
+          Qmljs.Async.promise driver context (fun () ->
+            Async.Deferred.bind (Async.Scheduler.yield ()) ~f:(fun () ->
+              Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                Qmljs.Value.int context i)))
+        in
+        let before_await =
+          if i mod 3 = 0 then Async.Scheduler.yield () else Async.Deferred.unit
+        in
+        Async.Deferred.bind before_await ~f:(fun () ->
+          Async.Deferred.bind
+            (Qmljs.Promise.await_result ~yield_every:1 promise)
+            ~f:(function
               | Ok value ->
-                  check_int "Eio promise result after await" i
-                    (Qmljs.Value.to_int value)
+                  check_int "Async promise result after await" i
+                    (Qmljs.Value.to_int value);
+                  loop (i + 1)
               | Error error ->
-                  fail ("Eio promise rejected: " ^ Qmljs.Error.message error)
-            done)
-      with
-      | Eio.Time.Timeout ->
-          fail "await_result timed out after a driver wakeup")
+                  fail ("Async promise rejected: " ^ Qmljs.Error.message error)))
+      end
+    in
+    loop 1
+  in
+  Async.Deferred.map
+    (Async.Clock.with_timeout (Core.Time_float.Span.of_sec 60.0) awaits)
+    ~f:(function
+      | `Result () -> ()
+      | `Timeout -> fail "await_result timed out after a driver wakeup")
 
-let test_promise_default_export_awaits_with_driver env =
-  Eio.Switch.run @@ fun sw ->
-  let clock = Eio.Stdenv.clock env in
-  Qmljs.Eio.with_runtime ~sw ~clock (fun _driver _runtime context ->
-      try
-        Eio.Time.with_timeout_exn clock 5.0 (fun () ->
-            let namespace =
-              Qmljs.Module.eval context
-                "export default (async () => { return 7; })();"
-            in
-            let value = Qmljs.Module.default namespace in
-            check_bool "promise default export" true (Qmljs.Promise.is value);
+let test_promise_default_export_awaits_with_driver () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun _driver _runtime context ->
+  let check =
+    Async.Deferred.bind
+      (Qmljs.Module.eval context
+         "export default (async () => { return 7; })();")
+      ~f:(fun namespace ->
+        let value = Qmljs.Module.default namespace in
+        check_bool "promise default export" true (Qmljs.Promise.is value);
+        Async.Deferred.map (Qmljs.Promise.await ~yield_every:1 value)
+          ~f:(fun value ->
             check_int "awaited promise default export" 7
-              (Qmljs.Value.to_int
-                 (Qmljs.Promise.await ~yield_every:1 value)))
-      with
-      | Eio.Time.Timeout ->
-          fail "promise default export await timed out")
+              (Qmljs.Value.to_int value)))
+  in
+  Async.Deferred.map
+    (Async.Clock.with_timeout (Core.Time_float.Span.of_sec 5.0) check)
+    ~f:(function
+      | `Result () -> ()
+      | `Timeout -> fail "promise default export await timed out")
 
 let test_complete_value_surface_roundtrips_js_semantics () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -679,16 +705,18 @@ let test_module_loader_policy_and_import_attributes_are_enforced () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   let value =
-    Qmljs.Context.eval_module_with_timeout
-      ~timeout:0.5 context
-      {|
-        import { answer } from "math" with { type: "js" };
-        export default answer;
-      |}
+    run_async (fun () ->
+      Qmljs.Context.eval_module_with_timeout
+        ~timeout:0.5 context
+        {|
+          import { answer } from "math" with { type: "js" };
+          export default answer;
+        |})
   in
   check_int "module default" 42 (Qmljs.Module.default_export_to_int value);
   expect_error "denied module"
-    (fun () -> Qmljs.Context.eval_module context {| import "fs"; |})
+    (fun () ->
+      run_async (fun () -> Qmljs.Context.eval_module context {| import "fs"; |}))
     (fun error ->
       check_bool "policy violation" true
         (Qmljs.Error.is_policy_violation error);
@@ -725,14 +753,13 @@ let test_resource_limits_reject_hostile_scripts_and_recover () =
              });
            |}
           : Qmljs.value);
-      ignore (Qmljs.Async.drain_jobs runtime : int))
+      ignore (run_async (fun () -> Qmljs.Async.drain_jobs runtime) : int))
     (fun error ->
       check_bool "job limit kind" true (Qmljs.Error.is_resource_limit error));
   let value = Qmljs.Context.eval context "6 * 7" in
   check_int "runtime recovers after limits" 42 (Qmljs.Value.to_int value)
 
 let () =
-  Eio_main.run @@ fun env ->
   test_acquired_resources_survive_allocator_failure ();
   test_context_intrinsic_oom_preserves_native_exception ();
   test_ocaml_exceptions_are_not_javascript_errors ();
@@ -750,9 +777,9 @@ let () =
   test_wrong_context_call_arguments_do_not_leak_native_argv ();
   test_array_of_values_wrong_context_does_not_leak_partial_array ();
   test_cross_boundary_exceptions_preserve_cause_stack_and_reusability ();
-  test_eio_many_runtimes_cancel_cleanly_without_races env;
-  test_await_result_no_lost_wakeup_with_driver env;
-  test_promise_default_export_awaits_with_driver env;
+  test_many_runtimes_cancel_cleanly_without_races ();
+  test_await_result_no_lost_wakeup_with_driver ();
+  test_promise_default_export_awaits_with_driver ();
   test_complete_value_surface_roundtrips_js_semantics ();
   test_module_loader_policy_and_import_attributes_are_enforced ();
   test_resource_limits_reject_hostile_scripts_and_recover ()

@@ -51,7 +51,7 @@ let test_context_eval_options_api () =
     Qmljs.Context.eval ~async:true context
       "globalThis.tlaResult = await Promise.resolve(42)"
   in
-  (match Qmljs.Promise.await_result top_level_await with
+  (match run_async (fun () -> Qmljs.Promise.await_result top_level_await) with
    | Ok _value ->
        check_int "top-level await side effect" 42
          (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.tlaResult"))
@@ -65,7 +65,8 @@ let test_context_eval_options_api () =
     (Qmljs.Value.to_int (Qmljs.Context.eval_file context path));
   with_temp_file "export default 42;" @@ fun path ->
   check_int "eval_module_file result" 42
-    (Qmljs.Value.to_int (Qmljs.Context.eval_module_file context path))
+    (Qmljs.Value.to_int
+       (run_async (fun () -> Qmljs.Context.eval_module_file context path)))
 
 let test_context_raw_intrinsics_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -76,7 +77,8 @@ let test_context_raw_intrinsics_api () =
   in
   let eval_module_or_fail label context source =
     match
-      Qmljs.Error.capture (fun () -> Qmljs.Context.eval_module context source)
+      Qmljs.Error.capture (fun () ->
+        run_async (fun () -> Qmljs.Context.eval_module context source))
     with
     | Ok value -> value
     | Error error -> fail (label ^ ": " ^ Qmljs.Error.message error)
@@ -114,7 +116,7 @@ let test_context_raw_intrinsics_api () =
     eval_or_fail "raw Promise expression" context
       "Promise.resolve(40).then((value) => value + 2)"
   in
-  (match Qmljs.Promise.await_result promise with
+  (match run_async (fun () -> Qmljs.Promise.await_result promise) with
    | Ok value -> check_int "raw Promise intrinsic" 42 (Qmljs.Value.to_int value)
    | Error error ->
        fail ("raw Promise intrinsic rejected: " ^ Qmljs.Error.message error));
@@ -184,8 +186,8 @@ let test_nested_timeout_keeps_earliest_deadline () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   expect_structured_error "outer timeout during nested loader eval"
-    (fun () -> Qmljs.Context.eval_module_with_timeout ~timeout:0.05 context
-      "import value from 'nested.js'; export default value;")
+    (fun () -> run_async (fun () -> Qmljs.Context.eval_module_with_timeout ~timeout:0.05 context
+      "import value from 'nested.js'; export default value;"))
     (fun error -> check_kind "outer timeout kind" Qmljs.Error.Timeout
        (Qmljs.Error.kind error));
   check_bool "nested loader callback actually entered" true !entered;
@@ -211,8 +213,8 @@ let test_nested_timeout_restores_outer_deadline () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   expect_structured_error "outer timeout after successful nested loader eval"
-    (fun () -> Qmljs.Context.eval_module_with_timeout ~timeout:0.05 context
-      "import value from 'nested.js'; export default value;")
+    (fun () -> run_async (fun () -> Qmljs.Context.eval_module_with_timeout ~timeout:0.05 context
+      "import value from 'nested.js'; export default value;"))
     (fun error -> check_kind "restored outer timeout kind" Qmljs.Error.Timeout
        (Qmljs.Error.kind error));
   check_bool "successful nested loader callback actually entered" true !entered;
@@ -251,8 +253,8 @@ let test_nested_inner_timeout_keeps_outer_budget () =
   Qmljs.Runtime.set_module_loader runtime loader;
   check_int "outer eval survives a caught inner timeout" 42
     (Qmljs.Module.default_export_to_int
-       (Qmljs.Context.eval_module_with_timeout ~timeout:1. context
-          "import value from 'nested.js'; export default value;"));
+       (run_async (fun () -> Qmljs.Context.eval_module_with_timeout ~timeout:1. context
+          "import value from 'nested.js'; export default value;")));
   check_bool "inner loader callback actually entered" true !entered;
   check_inner_kind "inner eval times out on its own budget" !inner_kind;
   check_bool "inner timeout leaves no interrupt request" false
@@ -334,7 +336,7 @@ let test_await_result_rejects_non_promise () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
   let value = Qmljs.Context.eval context "42" in
-  match Qmljs.Promise.await_result value with
+  match run_async (fun () -> Qmljs.Promise.await_result value) with
   | Error error ->
       check_kind "non-promise await kind" Qmljs.Error.JavaScript
         (Qmljs.Error.kind error)
@@ -373,7 +375,7 @@ let test_promise_tracking_api () =
   let promise =
     Qmljs.Context.eval context "Promise.resolve(40).then((value) => value + 2)"
   in
-  ignore (Qmljs.Promise.await promise : Qmljs.value);
+  ignore (run_async (fun () -> Qmljs.Promise.await promise) : Qmljs.value);
   let hooks = Qmljs.Runtime.take_promise_hooks runtime in
   check_bool "promise init hook tracked" true
     (List.exists

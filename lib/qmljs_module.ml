@@ -325,11 +325,13 @@ let eval_with_meta ?(filename = "<module>") context source =
       source
       filename
   in
-  Qmljs_promise.drive_module_evaluation
-    { Qmljs_types.context; raw = eval_result };
-  { namespace = { Qmljs_types.context; raw = namespace }
-  ; import_meta = { Qmljs_types.context; raw = import_meta }
-  }
+  Async_kernel.Deferred.map
+    (Qmljs_promise.drive_module_evaluation
+       { Qmljs_types.context; raw = eval_result })
+    ~f:(fun () ->
+      { namespace = { Qmljs_types.context; raw = namespace }
+      ; import_meta = { Qmljs_types.context; raw = import_meta }
+      })
 
 let eval ?(filename = "<module>") context source =
   reject_nul_module_specifier filename;
@@ -339,9 +341,10 @@ let eval ?(filename = "<module>") context source =
       source
       filename
   in
-  Qmljs_promise.drive_module_evaluation
-    { Qmljs_types.context; raw = eval_result };
-  { Qmljs_types.context; raw }
+  Async_kernel.Deferred.map
+    (Qmljs_promise.drive_module_evaluation
+       { Qmljs_types.context; raw = eval_result })
+    ~f:(fun () -> { Qmljs_types.context; raw })
 
 let default namespace =
   let context = Qmljs_types.value_context namespace in

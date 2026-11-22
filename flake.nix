@@ -64,7 +64,7 @@
               echo "qmljs: expected ocaml.5.4.0, ocaml-variants.5.4.0+ox and compiler 5.4.0+ox" >&2
               exit 1
             fi
-            for package in dune eio eio_main qcheck; do
+            for package in dune base core async_kernel async base_quickcheck; do
               if [ "$(opam list --switch=5.4.0+ox --installed --short --columns=name "$package")" != "$package" ]; then
                 echo "qmljs: missing package $package in shared switch 5.4.0+ox; no packages were installed" >&2
                 exit 1

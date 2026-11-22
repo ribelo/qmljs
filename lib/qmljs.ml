@@ -21,7 +21,6 @@ module Promise = Qmljs_promise
 module Async = Qmljs_async
 module Error = Qmljs_error.Structured
 module Diagnostics = Qmljs_diagnostics
-module Eio = Qmljs_eio
 module Atom = Qmljs_atom
 module Object = Qmljs_object
 module Class = Qmljs_class

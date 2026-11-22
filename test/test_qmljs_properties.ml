@@ -1,38 +1,63 @@
-(* Property-based tests using QCheck2 to find failing invariants. *)
+(* Property-based tests using Base_quickcheck to find failing invariants. *)
 [@@@alert "-do_not_spawn_domains"]
 [@@@alert "-unsafe_multidomain"]
+
+module Generator = Base_quickcheck.Generator
+module Shrinker = Base_quickcheck.Shrinker
 
 let max_safe = 9007199254740991
 
 let fail_count = ref 0
 let test_count = ref 0
 
-let check_property ~name gen (prop : _ -> bool) =
+(* A fresh random seed per run keeps exploring new inputs; a failure prints the
+   counterexample so it can be replayed as an example. *)
+let config =
+  { Base_quickcheck.Test.default_config with
+    seed = Nondeterministic
+  ; test_count = 1000
+  }
+
+let sexp_of_pair sexp_of_a sexp_of_b (a, b) =
+  Base.Sexp.List [ sexp_of_a a; sexp_of_b b ]
+
+let check_property (type a) ~name ~(sexp_of : a -> Base.Sexp.t)
+    ?(shrinker : a Shrinker.t = Shrinker.atomic) (generator : a Generator.t)
+    (prop : a -> bool) =
   incr test_count;
-  let cell = QCheck2.Test.make_cell ~name ~count:1000 gen prop in
-  let result = QCheck2.Test.check_cell ~rand:(Random.State.make_self_init ()) cell in
-  match QCheck2.TestResult.get_state result with
-  | QCheck2.TestResult.Success ->
-    Printf.eprintf "PASS: %s\n%!" name
-  | QCheck2.TestResult.Failed { instances } ->
-    incr fail_count;
-    Printf.eprintf "RED: %s (%d counterexamples)\n%!" name (List.length instances)
-  | QCheck2.TestResult.Failed_other { msg } ->
-    incr fail_count;
-    Printf.eprintf "RED: %s FAILED_OTHER: %s\n%!" name msg
-  | QCheck2.TestResult.Error { instance; exn; backtrace=_ } ->
-    incr fail_count;
-    Printf.eprintf "RED: %s ERROR: %s\n%!" name (Printexc.to_string exn)
+  let module Input = struct
+    type t = a
+
+    let sexp_of_t = sexp_of
+    let quickcheck_generator = generator
+    let quickcheck_shrinker = shrinker
+  end
+  in
+  let holds input =
+    match prop input with
+    | true -> Ok ()
+    | false -> Error "property returned false"
+    | exception exn -> Error ("raised " ^ Printexc.to_string exn)
+  in
+  match Base_quickcheck.Test.result ~config (module Input) ~f:holds with
+  | Ok () -> Printf.eprintf "PASS: %s\n%!" name
+  | Error (input, reason) ->
+      incr fail_count;
+      Printf.eprintf "RED: %s on %s: %s\n%!" name
+        (Base.Sexp.to_string (sexp_of input))
+        reason
+
+let safe_int = Generator.int_inclusive (-max_safe) max_safe
 
 (* PROPERTY 1: Int round-trip within safe range *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
     Qmljs.Value.int ctx n |> Qmljs.Value.to_int = n
   in
-  check_property ~name:"int_roundtrip_safe_range" gen prop
+  check_property ~name:"int_roundtrip_safe_range" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int safe_int prop
 
 (* PROPERTY 2: valid UTF-8 strings round-trip exactly.
 
@@ -42,25 +67,27 @@ let () =
    points. *)
 let () =
   let uchar =
-    QCheck2.Gen.(
-      map Uchar.of_int
-        (oneof [ int_range 0 0xD7FF; int_range 0xE000 0x10FFFF ]))
+    Generator.map ~f:Uchar.of_int
+      (Generator.union
+         [ Generator.int_inclusive 0 0xD7FF
+         ; Generator.int_inclusive 0xE000 0x10FFFF
+         ])
   in
   let gen =
-    QCheck2.Gen.(
-      map
-        (fun chars ->
-          let buf = Buffer.create 16 in
-          List.iter (Buffer.add_utf_8_uchar buf) chars;
-          Buffer.contents buf)
-        (list_small uchar))
+    Generator.map
+      ~f:(fun chars ->
+        let buf = Buffer.create 16 in
+        List.iter (Buffer.add_utf_8_uchar buf) chars;
+        Buffer.contents buf)
+      (Generator.list uchar)
   in
   let prop s =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
     Qmljs.Value.string ctx s |> Qmljs.Value.to_string = s
   in
-  check_property ~name:"string_roundtrip" gen prop
+  check_property ~name:"string_roundtrip" ~sexp_of:Base.String.sexp_of_t gen
+    prop
 
 (* PROPERTY 3: Bool round-trip *)
 let () =
@@ -69,11 +96,12 @@ let () =
     Qmljs.Context.with_ rt @@ fun ctx ->
     Qmljs.Value.bool ctx b |> Qmljs.Value.to_bool = b
   in
-  check_property ~name:"bool_roundtrip" QCheck2.Gen.bool prop
+  check_property ~name:"bool_roundtrip" ~sexp_of:Base.Bool.sexp_of_t
+    Generator.bool prop
 
 (* PROPERTY 4: Object set/get round-trip *)
 let () =
-  let small_int = QCheck2.Gen.(int_range 0 1000) in
+  let small_int = Generator.int_inclusive 0 1000 in
   let prop (k, v) =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -82,11 +110,14 @@ let () =
     Qmljs.Object.set obj ~name (Qmljs.Value.int ctx v);
     Qmljs.Value.to_int (Qmljs.Object.get obj ~key:(Qmljs.Value.string ctx name)) = v
   in
-  check_property ~name:"object_set_get_roundtrip" (QCheck2.Gen.pair small_int small_int) prop
+  check_property ~name:"object_set_get_roundtrip"
+    ~sexp_of:(sexp_of_pair Base.Int.sexp_of_t Base.Int.sexp_of_t)
+    ~shrinker:(Shrinker.both Shrinker.int Shrinker.int)
+    (Generator.both small_int small_int) prop
 
 (* PROPERTY 5: to_int after JS identity function preserves value *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
+  let gen = safe_int in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -95,11 +126,12 @@ let () =
     let result = Qmljs.Context.eval ctx "(x => x)(__id_arg)" in
     Qmljs.Value.to_int result = n
   in
-  check_property ~name:"to_int_after_identity_fn" gen prop
+  check_property ~name:"to_int_after_identity_fn" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 6: strict_equal reflexive for Value.int values *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
+  let gen = safe_int in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -107,11 +139,12 @@ let () =
     let b = Qmljs.Value.int ctx n in
     Qmljs.Value.strict_equal a b
   in
-  check_property ~name:"strict_equal_reflexive" gen prop
+  check_property ~name:"strict_equal_reflexive" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 7: to_float exact for safe-range ints *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
+  let gen = safe_int in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -119,21 +152,25 @@ let () =
     | f -> Float.is_finite f && Float.equal (float_of_int n) f
     | exception _ -> false
   in
-  check_property ~name:"to_float_exact" gen prop
+  check_property ~name:"to_float_exact" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 8: Value.kind correct for int *)
 let () =
-  let gen = QCheck2.Gen.(int_range 0 10000) in
+  let gen = Generator.int_inclusive 0 10000 in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
     Qmljs.Value.kind (Qmljs.Value.int ctx n) = Qmljs.Value.Int
   in
-  check_property ~name:"kind_of_int" gen prop
+  check_property ~name:"kind_of_int" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 9: BigInt of_string . to_string round-trip *)
 let () =
-  let gen = QCheck2.Gen.(int_range 0 99999 >|= string_of_int) in
+  let gen =
+    Generator.map ~f:string_of_int (Generator.int_inclusive 0 99999)
+  in
   let prop s =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -141,7 +178,8 @@ let () =
     | Ok bi -> Qmljs.Value.to_string bi = s
     | Error _ -> false
   in
-  check_property ~name:"bigint_string_roundtrip" gen prop
+  check_property ~name:"bigint_string_roundtrip" ~sexp_of:Base.String.sexp_of_t
+    gen prop
 
 (* PROPERTY 10: Runtime.with_ + Context.with_ doesn't leak native runtimes *)
 let () =
@@ -155,11 +193,12 @@ let () =
     let after = Qmljs.Diagnostics.snapshot () in
     Qmljs.Diagnostics.native_runtimes before = Qmljs.Diagnostics.native_runtimes after
   in
-  check_property ~name:"no_runtime_leak" (QCheck2.Gen.int_range 0 9) prop
+  check_property ~name:"no_runtime_leak" ~sexp_of:Base.Int.sexp_of_t
+    (Generator.int_inclusive 0 9) prop
 
 (* PROPERTY 11: Array.set creates correct length *)
 let () =
-  let gen = QCheck2.Gen.(int_range 0 500) in
+  let gen = Generator.int_inclusive 0 500 in
   let prop i =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -167,21 +206,23 @@ let () =
     Qmljs.Array.set arr i (Qmljs.Value.int ctx 1);
     Qmljs.Array.length arr = i + 1
   in
-  check_property ~name:"array_set_length" gen prop
+  check_property ~name:"array_set_length" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 12: same_value reflexive for int values *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
+  let gen = safe_int in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
     Qmljs.Value.same_value (Qmljs.Value.int ctx n) (Qmljs.Value.int ctx n)
   in
-  check_property ~name:"same_value_reflexive" gen prop
+  check_property ~name:"same_value_reflexive" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 13: Host function int round-trip *)
 let () =
-  let gen = QCheck2.Gen.(int_range (-max_safe) max_safe) in
+  let gen = safe_int in
   let prop n =
     Qmljs.Runtime.with_ @@ fun rt ->
     Qmljs.Context.with_ rt @@ fun ctx ->
@@ -190,7 +231,8 @@ let () =
     let result = Qmljs.Context.eval ctx (Printf.sprintf "__return(%d)" n) in
     Qmljs.Value.to_int result = n
   in
-  check_property ~name:"host_fn_int_roundtrip" gen prop
+  check_property ~name:"host_fn_int_roundtrip" ~sexp_of:Base.Int.sexp_of_t
+    ~shrinker:Shrinker.int gen prop
 
 (* PROPERTY 14: Object.has is own-property only.
 
@@ -209,10 +251,12 @@ let () =
     && not (Qmljs.Object.has obj ~key:(Qmljs.Value.string ctx inherited_key))
   in
   let name_gen prefix =
-    QCheck2.Gen.(map (fun k -> Printf.sprintf "%s%d" prefix k) (int_range 0 1000))
+    Generator.map ~f:(fun k -> Printf.sprintf "%s%d" prefix k)
+      (Generator.int_inclusive 0 1000)
   in
   check_property ~name:"has_own_property_only"
-    (QCheck2.Gen.pair (name_gen "own") (name_gen "inh")) prop
+    ~sexp_of:(sexp_of_pair Base.String.sexp_of_t Base.String.sexp_of_t)
+    (Generator.both (name_gen "own") (name_gen "inh")) prop
 
 let () =
   Printf.eprintf "\n=== RESULTS: %d/%d properties passed ===\n%!"

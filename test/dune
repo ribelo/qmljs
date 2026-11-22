@@ -1,14 +1,14 @@
 (test
  (name test_qmljs)
- (libraries qmljs eio_main))
+ (libraries qmljs async))
 
 (test
  (name test_qmljs_readiness)
- (libraries qmljs eio_main))
+ (libraries qmljs async))
 
 (test
  (name test_qmljs_not_production_ready)
- (libraries qmljs eio_main unix))
+ (libraries qmljs async unix))
 
 (test
  (name test_qmljs_api_surface)
@@ -20,7 +20,7 @@
   qmljs_test_functions_classes
   qmljs_test_binary_numbers
   qmljs_test_modules_loaders)
- (libraries qmljs eio_main unix))
+ (libraries qmljs async unix))
 
 (test
  (name test_qmljs_ppx)
@@ -28,19 +28,18 @@
  (modules test_qmljs_ppx)
  (build_if (< %{ocaml_version} 5.3))
  (enabled_if (< %{ocaml_version} 5.3))
- (libraries qmljs eio_main qmljs_ppx_interface)
+ (libraries qmljs qmljs_ppx_interface)
  (preprocess
   (pps qmljs_ppx)))
 
 (test
  (name test_qmljs_bug_hunt)
- (libraries qmljs eio_main))
+ (libraries qmljs async))
 
 (test
  (name test_qmljs_properties)
- (libraries qmljs eio_main qcheck qcheck-core))
+ (libraries qmljs base base_quickcheck))
 
 (test
  (name test_qmljs_loader_acquisition)
  (libraries qmljs unix))
-

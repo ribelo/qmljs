@@ -63,45 +63,9 @@ let set_global_with_this context ~name ~arity callback =
   Qmljs_context.set_global context ~name
     (make_with_this context ~name ~arity callback)
 
-let reject_with_exn context reject name exn =
-  let reason =
-    { Qmljs_types.context
-    ; raw =
-        Qmljs_raw.function_host_error
-          (Qmljs_types.context_raw context)
-          (Qmljs_error.host_exception_marker name exn)
-    }
-  in
-  ignore (Qmljs_value.call reject [| reason |] : Qmljs_value.t)
-
-let reject_with_exn_noerr context reject name exn =
-  try reject_with_exn context reject name exn with
-  | _ -> ()
-
-let resolve_or_reject context ~name ~resolve ~reject result =
-  match Qmljs_value.call resolve [| result |] with
-  | _ -> ()
-  | exception exn -> reject_with_exn_noerr context reject name exn
-
 let make_async context ~name ~arity callback =
   make context ~name ~arity @@ fun args ->
-  let promise, resolve, reject = Qmljs_promise.create context in
-  let on_cancel () =
-    reject_with_exn_noerr context reject name
-      (Qmljs_error.Structured.host
-         ~message:"async host callback cancelled"
-         ~metadata:[ "function", name; "cancelled", "true" ])
-  in
-  Qmljs_runtime.enqueue_host_job
-    ~on_cancel
-    (Qmljs_types.context_runtime context)
-    (fun () ->
-      try
-        let result = callback args in
-        resolve_or_reject context ~name ~resolve ~reject result
-      with
-      | exn -> reject_with_exn_noerr context reject name exn);
-  promise
+  Qmljs_driver.host_promise context ~name (fun () -> callback args)
 
 let set_global_async context ~name ~arity callback =
   Qmljs_context.set_global context ~name

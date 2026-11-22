@@ -1,5 +1,38 @@
 let fail message = raise (Failure message)
 
+(* Runs [f] on the Async scheduler and returns its value, re-raising the
+   original exception so structured qmljs errors keep their classification. *)
+let run_async f =
+  match
+    Async.Thread_safe.block_on_async (fun () ->
+      Async.Monitor.try_with ~extract_exn:true f)
+  with
+  | Ok (Ok value) -> value
+  | Ok (Error exn) | Error exn -> raise exn
+
+(* Blocking forms of the Async module and promise APIs for specs written in
+   direct style. *)
+let module_eval_sync ?filename context source =
+  run_async (fun () -> Qmljs.Module.eval ?filename context source)
+
+let module_eval_with_meta_sync ?filename context source =
+  run_async (fun () -> Qmljs.Module.eval_with_meta ?filename context source)
+
+let context_eval_module_sync ?filename context source =
+  run_async (fun () -> Qmljs.Context.eval_module ?filename context source)
+
+let await_result_sync ?yield_every promise =
+  run_async (fun () -> Qmljs.Promise.await_result ?yield_every promise)
+
+let await_sync ?yield_every promise =
+  run_async (fun () -> Qmljs.Promise.await ?yield_every promise)
+
+let await_exn_sync ?yield_every promise =
+  run_async (fun () -> Qmljs.Promise.await_exn ?yield_every promise)
+
+let async_drain_jobs_sync runtime =
+  run_async (fun () -> Qmljs.Async.drain_jobs runtime)
+
 let check_int label expected actual =
   if actual <> expected then
     fail (Printf.sprintf "%s: expected %d, got %d" label expected actual)
@@ -83,7 +116,7 @@ let test_c_stubs_initialize_ocaml_arrays_before_allocating_elements () =
   expect_array_failpoint "import attributes array failpoint" 1
     (fun () ->
       ignore
-        (Qmljs.Module.eval context
+        (module_eval_sync context
            {|import data from "data.json" with { type: "json" };
              export default data.answer;|}
           : Qmljs.Module.namespace));
@@ -102,7 +135,7 @@ let test_c_stubs_initialize_ocaml_arrays_before_allocating_elements () =
     Qmljs.Context.eval context
       "Promise.resolve(40).then((value) => value + 2)"
   in
-  ignore (Qmljs.Promise.await ~yield_every:1 promise : Qmljs.Value.t);
+  ignore (await_sync ~yield_every:1 promise : Qmljs.Value.t);
   expect_array_failpoint "promise hooks array failpoint" 4
     (fun () -> ignore (Qmljs.Runtime.take_promise_hooks runtime))
 
@@ -258,7 +291,7 @@ let test_eval_with_timeout_does_not_drain_microtasks_on_success () =
           "Promise.resolve().then(() => globalThis.hit = 1); 0"));
   check_int "microtask not drained after successful timeout eval" 0
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.hit"));
-  ignore (Qmljs.Async.drain_jobs runtime : int);
+  ignore (async_drain_jobs_sync runtime : int);
   check_int "microtask runs after explicit drain" 1
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.hit"))
 
@@ -531,7 +564,7 @@ let test_native_module_host_error_metadata_survives () =
   expect_structured_error "native module host metadata"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"native-metadata-fail.mjs" context
+        (module_eval_sync ~filename:"native-metadata-fail.mjs" context
            {|import value from "native:metadata-fail"; export default value;|}
          : Qmljs.Module.namespace))
     (fun error ->
@@ -559,7 +592,7 @@ let test_module_loader_host_error_metadata_survives () =
   expect_structured_error "module loader host metadata"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"loader-metadata-fail.mjs" context
+        (module_eval_sync ~filename:"loader-metadata-fail.mjs" context
            {|import value from "loader:metadata-fail"; export default value;|}
          : Qmljs.Module.namespace))
     (fun error ->
@@ -586,7 +619,7 @@ let test_module_loader_deny_host_error_metadata_survives () =
   expect_structured_error "module loader deny host metadata"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"loader-deny-metadata-fail.mjs" context
+        (module_eval_sync ~filename:"loader-deny-metadata-fail.mjs" context
            {|import value from "denied.js"; export default value;|}
          : Qmljs.Module.namespace))
     (fun error ->
@@ -653,7 +686,7 @@ let test_host_callback_preserves_nested_structured_error () =
   let async_rejection =
     Qmljs.Context.eval context "raise_async_js_cause()"
   in
-  match Qmljs.Promise.await_result async_rejection with
+  match await_result_sync async_rejection with
   | Ok _ -> fail "expected async nested structured rejection"
   | Error error ->
       check_kind "async host callback nested JS kind" Qmljs.Error.JavaScript
@@ -679,7 +712,7 @@ let test_promise_rejection_preserves_js_stack () =
       |}
   in
   expect_structured_error "promise rejection"
-    (fun () -> Qmljs.Promise.await promise)
+    (fun () -> await_sync promise)
     (fun error ->
       check_bool "rejection has JS frame" true
         (Qmljs.Error.has_js_frame error ~function_name:"rejector"))
@@ -778,7 +811,7 @@ let test_json_import_attribute_loads_json_module () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   let value =
-    Qmljs.Context.eval_module context
+    context_eval_module_sync context
       {|
         import config from "config.json" with { type: "json" };
         export default config.answer;
@@ -790,10 +823,10 @@ let test_context_eval_module_awaits_async_host_jobs () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
   Qmljs.Function.set_global_async context ~name:"later" ~arity:1 (fun args ->
-      Eio.Fiber.yield ();
-      Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1));
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+        Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1)));
   let value =
-    Qmljs.Context.eval_module context {|export default await later(41);|}
+    context_eval_module_sync context {|export default await later(41);|}
   in
   check_int "Context.eval_module awaited async host job" 42
     (Qmljs.Value.to_int value);
@@ -806,7 +839,7 @@ let test_module_eval_respects_configured_promise_job_limit () =
   expect_structured_error "module eval promise job limit"
     (fun () ->
       let namespace =
-        Qmljs.Module.eval context
+        module_eval_sync context
           {|let promise = Promise.resolve(0);
             for (let i = 0; i < 64; i++) {
               promise = promise.then(x => x + 1);
@@ -842,7 +875,7 @@ let test_structured_promise_await_api () =
   let fulfilled =
     Qmljs.Context.eval context "Promise.resolve(41).then(x => x + 1)"
   in
-  (match Qmljs.Promise.await_result fulfilled with
+  (match await_result_sync fulfilled with
    | Ok value -> check_int "fulfilled promise" 42 (Qmljs.Value.to_int value)
    | Error error ->
        fail ("fulfilled promise returned error: " ^ Qmljs.Error.message error));
@@ -855,7 +888,7 @@ let test_structured_promise_await_api () =
         rejector();
       |}
   in
-  (match Qmljs.Promise.await_result rejected with
+  (match await_result_sync rejected with
    | Ok _ -> fail "rejected promise returned Ok"
    | Error error ->
        check_string "rejection message" "structured boom"
@@ -863,7 +896,7 @@ let test_structured_promise_await_api () =
        check_bool "rejection stack" true
          (Qmljs.Error.has_js_frame error ~function_name:"rejector"));
   expect_structured_error "await_exn rejection"
-    (fun () -> Qmljs.Promise.await_exn rejected)
+    (fun () -> await_exn_sync rejected)
     (fun error ->
       check_string "await_exn rejection message" "structured boom"
         (Qmljs.Error.message error))
@@ -904,7 +937,7 @@ let test_module_namespace_api () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   let namespace =
-    Qmljs.Module.eval context
+    module_eval_sync context
       {|
         import base, { named } from "dep";
         export const answer = named + base;
@@ -920,218 +953,242 @@ let test_module_namespace_api () =
   check_bool "module keys include default" true (List.mem "default" keys);
   check_bool "module keys include answer" true (List.mem "answer" keys)
 
-let test_eio_scoped_driver_api env =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver runtime context ->
-      check_int "idle driver drain" 0 (Qmljs.Eio.drain_until_idle driver);
-      let promise =
-        Qmljs.Context.eval context "Promise.resolve(21).then(x => x * 2)"
-      in
-      let drained = Qmljs.Eio.drain_until_idle driver in
+let yields n =
+  let rec loop n =
+    if n <= 0 then Async.Deferred.unit
+    else Async.Deferred.bind (Async.Scheduler.yield ()) ~f:(fun () -> loop (n - 1))
+  in
+  loop n
+
+let test_async_scoped_driver_api () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver runtime context ->
+  Async.Deferred.bind (Qmljs.Async.drain_until_idle driver) ~f:(fun idle ->
+    check_int "idle driver drain" 0 idle;
+    let promise =
+      Qmljs.Context.eval context "Promise.resolve(21).then(x => x * 2)"
+    in
+    Async.Deferred.map (Qmljs.Async.drain_until_idle driver) ~f:(fun drained ->
       if drained < 1 then fail "driver did not drain a pending promise job";
       check_int "driven promise result" 42
         (Qmljs.Value.to_int (Qmljs.Promise.result promise));
-      Qmljs.Eio.cancel driver;
+      check_bool "cancelled not determined while open" false
+        (Async.Deferred.is_determined (Qmljs.Async.cancelled driver));
+      Qmljs.Async.cancel driver;
+      Qmljs.Async.cancel driver;
       check_bool "driver cancel requests interrupt" true
         (Qmljs.Runtime.interrupt_requested runtime);
+      check_bool "driver cancel determines cancelled" true
+        (Async.Deferred.is_determined (Qmljs.Async.cancelled driver));
       Qmljs.Runtime.clear_interrupt runtime;
       check_int "runtime reusable after driver cancel" 42
-        (Qmljs.Value.to_int (Qmljs.Context.eval context "6 * 7")))
+        (Qmljs.Value.to_int (Qmljs.Context.eval context "6 * 7"))))
 
-let test_eio_promise_helper_api env =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver runtime context ->
-      let fulfilled =
-        Qmljs.Eio.promise driver context (fun () ->
-            Eio.Fiber.yield ();
-            Qmljs.Value.int context 42)
-      in
-      (match Qmljs.Promise.await_result fulfilled with
-       | Ok value -> check_int "Eio promise fulfilled" 42 (Qmljs.Value.to_int value)
-       | Error error ->
-           fail ("Eio promise rejected: " ^ Qmljs.Error.message error));
-      let foreign_context = Qmljs.Context.create runtime in
-      let foreign = Qmljs.Value.int foreign_context 41 in
-      let foreign_return =
-        Qmljs.Eio.promise ~name:"eio_foreign_return" driver context
-          (fun () ->
-            Eio.Fiber.yield ();
-            foreign)
-      in
-      (match Qmljs.Promise.await_result foreign_return with
-       | Ok _ -> fail "Eio foreign return unexpectedly fulfilled"
-       | Error error ->
-           check_kind "Eio foreign return kind"
-             Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
-           check_string "Eio foreign return message"
-             "QuickJS value belongs to a different context"
-             (Qmljs.Error.message error));
-      let rejected =
-        Qmljs.Eio.promise ~name:"eio_promise_fail" driver context (fun () ->
-            Eio.Fiber.yield ();
-            raise
-              (Qmljs.Error.host ~message:"eio promise boom"
-                 ~metadata:[ "phase", "promise" ]))
-      in
-      match Qmljs.Promise.await_result rejected with
-      | Ok _ -> fail "Eio promise unexpectedly fulfilled"
-      | Error error ->
-          check_kind "Eio promise rejection kind" Qmljs.Error.Host_callback_defect
-            (Qmljs.Error.kind error);
-          check_string "Eio promise rejection message" "eio promise boom"
-            (Qmljs.Error.message error);
-          check_bool "Eio promise metadata" true
-            (List.mem ("phase", "promise") (Qmljs.Error.metadata error));
-      let cancelled =
-        Qmljs.Eio.promise ~name:"eio_promise_cancelled" driver context
-          (fun () -> raise (Eio.Cancel.Cancelled (Failure "cancelled job")))
-      in
-      match Qmljs.Promise.await_result cancelled with
-      | Ok _ -> fail "cancelled Eio promise unexpectedly fulfilled"
-      | Error error ->
-          check_kind "Eio promise cancellation kind"
-            Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
-          check_bool "Eio promise cancellation has message" true
-            (String.length (Qmljs.Error.message error) > 0))
+let expect_rejection label promise check =
+  Async.Deferred.map (Qmljs.Promise.await_result promise) ~f:(function
+    | Ok _ -> fail (label ^ " unexpectedly fulfilled")
+    | Error error -> check error)
 
-(* Module top-level await must be driven to completion through the Eio driver:
-   a module awaiting a driver-backed promise that settles only after several
-   yields must not return early. With the driver present, Module.eval drives via
-   driver wakeups until the promise settles and the default export is the
-   settled value. *)
-let test_module_eval_awaits_eio_driver_promise env =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver _runtime context ->
-      (* A driver-backed promise that settles only after several scheduler
-         turns, resolved by an independent fiber. A single job drain leaves it
-         pending, so module evaluation must keep driving through the driver. *)
-      let delayed =
-        Qmljs.Eio.promise driver context (fun () ->
-            for _ = 1 to 5 do
-              Eio.Fiber.yield ()
-            done;
-            Qmljs.Value.int context 42)
-      in
-      Qmljs.Context.set_global context ~name:"hostDelayed" delayed;
-      let namespace =
-        Qmljs.Module.eval context "export default await hostDelayed;"
-      in
-      check_int "module eval awaited eio driver promise" 42
+let test_async_promise_helper_api () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver runtime context ->
+  let fulfilled =
+    Qmljs.Async.promise driver context (fun () ->
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+        Qmljs.Value.int context 42))
+  in
+  Async.Deferred.bind (Qmljs.Promise.await_result fulfilled) ~f:(fun result ->
+    (match result with
+     | Ok value -> check_int "Async promise fulfilled" 42 (Qmljs.Value.to_int value)
+     | Error error -> fail ("Async promise rejected: " ^ Qmljs.Error.message error));
+    let foreign_context = Qmljs.Context.create runtime in
+    let foreign = Qmljs.Value.int foreign_context 41 in
+    let foreign_return =
+      Qmljs.Async.promise ~name:"async_foreign_return" driver context (fun () ->
+        Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () -> foreign))
+    in
+    Async.Deferred.bind
+      (expect_rejection "Async foreign return" foreign_return (fun error ->
+         check_kind "Async foreign return kind" Qmljs.Error.Host_callback_defect
+           (Qmljs.Error.kind error);
+         check_string "Async foreign return message"
+           "QuickJS value belongs to a different context"
+           (Qmljs.Error.message error)))
+      ~f:(fun () ->
+        let rejected =
+          Qmljs.Async.promise ~name:"async_promise_fail" driver context (fun () ->
+            Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+              raise
+                (Qmljs.Error.host ~message:"async promise boom"
+                   ~metadata:[ "phase", "promise" ])))
+        in
+        Async.Deferred.bind
+          (expect_rejection "Async promise" rejected (fun error ->
+             check_kind "Async promise rejection kind"
+               Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+             check_string "Async promise rejection message" "async promise boom"
+               (Qmljs.Error.message error);
+             check_bool "Async promise metadata" true
+               (List.mem ("phase", "promise") (Qmljs.Error.metadata error));
+             check_bool "Async promise OCaml frame" true
+               (Qmljs.Error.has_ocaml_frame error
+                  ~function_name:"async_promise_fail")))
+          ~f:(fun () ->
+            (* A worker that raises before returning a Deferred is captured by
+               the same monitor and never reaches the top-level monitor. *)
+            let raised =
+              Qmljs.Async.promise ~name:"async_promise_raise_now" driver context
+                (fun () -> raise (Failure "raised before deferred"))
+            in
+            expect_rejection "Async promise raising synchronously" raised
+              (fun error ->
+                check_kind "Async promise synchronous raise kind"
+                  Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+                check_bool "Async promise synchronous raise has message" true
+                  (String.length (Qmljs.Error.message error) > 0)))))
+
+(* Module top-level await must be driven to completion through the Async
+   driver: a module awaiting a driver-backed promise that settles only after
+   several scheduler cycles must not return early. With the driver present,
+   Module.eval sleeps on driver wakeups until the promise settles and the
+   default export is the settled value. *)
+let test_module_eval_awaits_async_driver_promise () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver _runtime context ->
+  let delayed =
+    Qmljs.Async.promise driver context (fun () ->
+      Async.Deferred.map (yields 5) ~f:(fun () -> Qmljs.Value.int context 42))
+  in
+  Qmljs.Context.set_global context ~name:"hostDelayed" delayed;
+  Async.Deferred.map
+    (Qmljs.Module.eval context "export default await hostDelayed;")
+    ~f:(fun namespace ->
+      check_int "module eval awaited Async driver promise" 42
         (Qmljs.Value.to_int (Qmljs.Module.default namespace)))
 
-(* A Qmljs.Eio.promise worker must be owned by the driver: cancelling the
-   driver cancels the worker before it runs its side effect, and the promise
-   settles as a structured cancellation rather than being left pending. *)
-let test_eio_promise_worker_cancelled_on_driver_cancel env =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver _runtime context ->
-      let ran = ref false in
-      let p =
-        Qmljs.Eio.promise driver context (fun () ->
-            for _ = 1 to 5 do
-              Eio.Fiber.yield ()
-            done;
-            ran := true;
-            Qmljs.Value.int context 1)
-      in
-      Qmljs.Eio.cancel driver;
-      for _ = 1 to 10 do
-        Eio.Fiber.yield ()
-      done;
-      ignore (Qmljs.Eio.drain_until_idle driver : int);
-      check_bool "worker cancelled before side effect" false !ran;
-      match Qmljs.Promise.state p with
-      | Qmljs.Promise.Rejected ->
-          let reason = Qmljs.Promise.result p in
-          check_bool "cancelled Eio promise rejects (non-empty reason)" true
-            (String.length (Qmljs.Value.to_string reason) > 0)
-      | Qmljs.Promise.Pending ->
-          fail "cancelled Eio promise left pending instead of rejected"
-      | Qmljs.Promise.Fulfilled ->
-          fail "cancelled Eio promise fulfilled instead of rejected"
-      | Qmljs.Promise.Not_a_promise -> fail "value is not a promise")
+let check_cancellation_rejection label promise =
+  match Qmljs.Promise.state promise with
+  | Qmljs.Promise.Rejected ->
+      Async.Deferred.map (Qmljs.Promise.await_result promise) ~f:(function
+        | Ok _ -> fail (label ^ ": rejected promise awaited as fulfilled")
+        | Error error ->
+            check_kind (label ^ " kind") Qmljs.Error.Host_callback_defect
+              (Qmljs.Error.kind error);
+            check_bool (label ^ " cancelled metadata") true
+              (List.mem ("cancelled", "true") (Qmljs.Error.metadata error)))
+  | Qmljs.Promise.Pending -> fail (label ^ ": left pending instead of rejected")
+  | Qmljs.Promise.Fulfilled -> fail (label ^ ": fulfilled instead of rejected")
+  | Qmljs.Promise.Not_a_promise -> fail (label ^ ": value is not a promise")
 
-(* A Qmljs.Eio.promise worker must not outlive with_runtime: when the body
-   exits, driver close cancels the worker before it resumes, so it never runs
-   after the context/runtime are torn down. *)
-let test_eio_promise_does_not_outlive_with_runtime env =
+(* A running Qmljs.Async.promise worker is owned by the driver: cancelling the
+   driver determines [cancelled] at once, a cooperative worker stops before its
+   side effect, and the promise settles as a structured cancellation rather than
+   with the worker's result or not at all. *)
+let test_async_promise_worker_cancelled_on_driver_cancel () =
+  let ran = ref false in
+  let started = ref false in
+  let promise =
+    run_async @@ fun () ->
+    Qmljs.Async.with_runtime @@ fun driver _runtime context ->
+    let p =
+      Qmljs.Async.promise driver context (fun () ->
+        started := true;
+        Async.Deferred.choose
+          [ Async.Deferred.choice (Qmljs.Async.cancelled driver) (fun () ->
+              Qmljs.Value.undefined context)
+          ; Async.Deferred.choice
+              (Async.after (Core.Time_float.Span.of_sec 30.0))
+              (fun () ->
+                ran := true;
+                Qmljs.Value.int context 1)
+          ])
+    in
+    Async.Deferred.bind (Qmljs.Async.drain_until_idle driver) ~f:(fun (_ : int) ->
+      check_bool "worker started before cancel" true !started;
+      Qmljs.Async.cancel driver;
+      Async.Deferred.bind (yields 10) ~f:(fun () ->
+        Async.Deferred.bind (Qmljs.Async.drain_until_idle driver)
+          ~f:(fun (_ : int) ->
+            check_bool "worker cancelled before side effect" false !ran;
+            Async.Deferred.map
+              (check_cancellation_rejection "cancelled running Async promise" p)
+              ~f:(fun () -> Qmljs.Promise.state p))))
+  in
+  check_bool "cancelled promise stayed rejected" true
+    (promise = Qmljs.Promise.Rejected)
+
+(* A Qmljs.Async.promise worker must not outlive with_runtime: when the body
+   exits before the host queue starts the worker, driver close drops the start
+   and the worker never runs after the context and runtime are torn down. *)
+let test_async_promise_does_not_outlive_with_runtime () =
   let ran_after_exit = ref false in
-  Eio.Switch.run @@ fun sw ->
-  (Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-     (fun driver _runtime context ->
-       ignore
-         (Qmljs.Eio.promise driver context (fun () ->
-              Eio.Fiber.yield ();
-              Eio.Fiber.yield ();
+  run_async (fun () ->
+    Async.Deferred.bind
+      (Qmljs.Async.with_runtime (fun driver _runtime context ->
+         ignore
+           (Qmljs.Async.promise driver context (fun () ->
               ran_after_exit := true;
-              Qmljs.Value.int context 1)
-           : Qmljs.Value.t)));
-  for _ = 1 to 10 do
-    Eio.Fiber.yield ()
-  done;
+              Async.return (Qmljs.Value.int context 1))
+            : Qmljs.Value.t);
+         Async.Deferred.unit))
+      ~f:(fun () -> yields 10));
   check_bool "worker did not run after with_runtime closed" false !ran_after_exit
 
-let test_eio_queued_host_jobs_are_scoped env =
+let test_async_queued_host_jobs_are_scoped () =
   let callback_ran = ref false in
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver _runtime context ->
+  run_async (fun () ->
+    Qmljs.Async.with_runtime (fun driver _runtime context ->
       Qmljs.Function.set_global_async context ~name:"queued_work" ~arity:0
         (fun _args ->
           callback_ran := true;
-          Qmljs.Value.int context 1);
+          Async.return (Qmljs.Value.int context 1));
       let promise = Qmljs.Context.eval context "queued_work()" in
-      Qmljs.Eio.cancel driver;
-      (match Qmljs.Promise.await_result promise with
-       | Ok _ -> fail "cancelled queued host job unexpectedly fulfilled"
-       | Error error ->
-           check_kind "cancelled queued host job kind"
-             Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
-           check_string "cancelled queued host job message"
-             "async host callback cancelled" (Qmljs.Error.message error);
-           check_bool "cancelled queued host job did not run" false
-             !callback_ran));
+      Qmljs.Async.cancel driver;
+      Async.Deferred.map (Qmljs.Promise.await_result promise) ~f:(function
+        | Ok _ -> fail "cancelled queued host job unexpectedly fulfilled"
+        | Error error ->
+            check_kind "cancelled queued host job kind"
+              Qmljs.Error.Host_callback_defect (Qmljs.Error.kind error);
+            check_string "cancelled queued host job message"
+              "async host callback cancelled" (Qmljs.Error.message error);
+            check_bool "cancelled queued host job metadata" true
+              (List.mem ("cancelled", "true") (Qmljs.Error.metadata error));
+            check_bool "cancelled queued host job did not run" false
+              !callback_ran)));
   let stale_runtime = ref None in
   let stale_ran = ref false in
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun _driver runtime context ->
+  run_async (fun () ->
+    Qmljs.Async.with_runtime (fun _driver runtime context ->
       stale_runtime := Some runtime;
       Qmljs.Function.set_global_async context ~name:"stale_work" ~arity:0
         (fun _args ->
           stale_ran := true;
-          Qmljs.Value.int context 1);
-      ignore (Qmljs.Context.eval context "stale_work()" : Qmljs.Value.t));
+          Async.return (Qmljs.Value.int context 1));
+      ignore (Qmljs.Context.eval context "stale_work()" : Qmljs.Value.t);
+      Async.Deferred.unit));
   (match !stale_runtime with
    | None -> fail "test did not capture runtime"
    | Some runtime ->
        expect_structured_error "stale host job after scope"
-         (fun () -> ignore (Qmljs.Async.drain_jobs runtime : int))
+         (fun () -> ignore (async_drain_jobs_sync runtime : int))
          (fun error ->
            check_kind "stale host job closed runtime" Qmljs.Error.Closed_handle
              (Qmljs.Error.kind error)));
   check_bool "stale queued host job did not run" false !stale_ran
 
-let test_async_host_callback_closed_context_crash env =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-    (fun driver runtime context ->
-      let result = Qmljs.Value.int context 1 in
-      Qmljs.Function.set_global_async context ~name:"closed_context_async"
-        ~arity:0
-        (fun _args ->
-          Eio.Fiber.yield ();
-          result);
-      ignore (Qmljs.Context.eval context "closed_context_async()" : Qmljs.Value.t);
-      ignore (test_context_close context : bool);
-      ignore (Qmljs.Eio.drain_until_idle driver : int);
-      let fresh = Qmljs.Context.create runtime in
-      check_int "runtime reusable after closed async context" 2
-        (Qmljs.Value.to_int (Qmljs.Context.eval fresh "1 + 1")))
+let test_async_host_callback_closed_context_crash () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver runtime context ->
+  let result = Qmljs.Value.int context 1 in
+  Qmljs.Function.set_global_async context ~name:"closed_context_async" ~arity:0
+    (fun _args ->
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () -> result));
+  ignore (Qmljs.Context.eval context "closed_context_async()" : Qmljs.Value.t);
+  ignore (test_context_close context : bool);
+  Async.Deferred.map (Qmljs.Async.drain_until_idle driver) ~f:(fun (_ : int) ->
+    let fresh = Qmljs.Context.create runtime in
+    check_int "runtime reusable after closed async context" 2
+      (Qmljs.Value.to_int (Qmljs.Context.eval fresh "1 + 1")))
 
 (* A failed module-loader replacement must never leave QuickJS with a loader
    opaque that points at freed memory. The replacement is two-phase: the new
@@ -1162,7 +1219,7 @@ let test_module_loader_replacement_allocation_failure_keeps_runtime_safe () =
       resolves. A stale opaque pointing at the freed/replacement loader would
       instead fail to find the module or dereference freed memory. *)
    let namespace =
-     Qmljs.Module.eval ~filename:"old-main.js" context
+     module_eval_sync ~filename:"old-main.js" context
        {|import value from "old.js"; export default value;|}
    in
    check_int "original loader still resolves after a failed replace" 7
@@ -1201,11 +1258,11 @@ let test_module_eval_wrapper_failpoint_frees_raw_values () =
   in
   let eval_namespace context =
     ignore
-      (Qmljs.Module.eval ~filename:"ns.js" context source
+      (module_eval_sync ~filename:"ns.js" context source
         : Qmljs.Module.namespace)
   in
   let eval_with_meta context =
-    ignore (Qmljs.Module.eval_with_meta ~filename:"meta.js" context source)
+    ignore (module_eval_with_meta_sync ~filename:"meta.js" context source)
   in
   (* Warm up steady-state runtime objects, then take the baseline. *)
   (Qmljs.Context.with_ runtime @@ fun context -> eval_namespace context);
@@ -1370,7 +1427,7 @@ let test_promise_create_generic_wrapper_failpoint_no_leak () =
          "QuickJS objects leaked across failed Promise.create: %Ld -> %Ld"
          before.obj_count after.obj_count)
 
-let tests env =
+let tests =
   [ "call argument count over int max is rejected"
   , test_call_argument_count_over_int_max_is_rejected
   ; "C stubs initialize OCaml arrays before allocating elements"
@@ -1441,18 +1498,17 @@ let tests env =
   ; "structured promise await API", test_structured_promise_await_api
   ; "object introspection API", test_object_introspection_api
   ; "module namespace API", test_module_namespace_api
-  ; "Eio scoped driver API", (fun () -> test_eio_scoped_driver_api env)
-  ; "Eio promise helper API", (fun () -> test_eio_promise_helper_api env)
-  ; "module eval awaits eio driver promise"
-  , (fun () -> test_module_eval_awaits_eio_driver_promise env)
-  ; "Eio promise worker cancelled on driver cancel"
-  , (fun () -> test_eio_promise_worker_cancelled_on_driver_cancel env)
-  ; "Eio promise does not outlive with_runtime"
-  , (fun () -> test_eio_promise_does_not_outlive_with_runtime env)
-  ; "Eio queued host jobs are scoped"
-  , (fun () -> test_eio_queued_host_jobs_are_scoped env)
+  ; "Async scoped driver API", test_async_scoped_driver_api
+  ; "Async promise helper API", test_async_promise_helper_api
+  ; "module eval awaits Async driver promise"
+  , test_module_eval_awaits_async_driver_promise
+  ; "Async promise worker cancelled on driver cancel"
+  , test_async_promise_worker_cancelled_on_driver_cancel
+  ; "Async promise does not outlive with_runtime"
+  , test_async_promise_does_not_outlive_with_runtime
+  ; "Async queued host jobs are scoped", test_async_queued_host_jobs_are_scoped
   ; "async host callback closed context crash"
-  , (fun () -> test_async_host_callback_closed_context_crash env)
+  , test_async_host_callback_closed_context_crash
   ; "module loader replacement allocation failure keeps runtime safe"
   , test_module_loader_replacement_allocation_failure_keeps_runtime_safe
   ; "module eval wrapper failpoint frees raw values"
@@ -1464,7 +1520,6 @@ let tests env =
   ]
 
 let () =
-  Eio_main.run @@ fun env ->
   List.iter
     (fun (name, test) ->
       match test () with
@@ -1472,4 +1527,4 @@ let () =
       | exception exn ->
           Printf.eprintf "FAIL: %s: %s\n%!" name (Printexc.to_string exn);
           raise exn)
-    (tests env)
+    tests

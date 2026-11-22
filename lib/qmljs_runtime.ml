@@ -114,6 +114,7 @@ let create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit () =
   let runtime =
     { Qmljs_types.raw
     ; host_jobs = Queue.create ()
+    ; workers = Qmljs_types.Idle
     ; driver = None
     ; module_loader = None
     ; memory_limit
@@ -234,32 +235,49 @@ let set_gc_threshold t threshold =
   if threshold < 0 then invalid_arg "GC threshold must be non-negative";
   Qmljs_raw.runtime_set_gc_threshold (Qmljs_types.runtime_raw t) threshold
 
-let with_ ?memory_limit ?max_stack_size ?promise_job_limit f =
-  let runtime =
-    create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit ()
-  in
-  let close_error () =
-    let runtime_raw = Qmljs_types.runtime_raw runtime in
-    try
-      if Qmljs_raw.runtime_close runtime_raw then None
-      else
-        Some
-          (Qmljs_error.Structured.of_resource_limit
-             "QuickJS runtime close was deferred")
-    with
-    | exn -> Some (Qmljs_error.Structured.of_exception exn)
-  in
-  match f runtime with
-  | result ->
+let close_error runtime =
+  let runtime_raw = Qmljs_types.runtime_raw runtime in
+  try
+    if Qmljs_raw.runtime_close runtime_raw then None
+    else
+      Some
+        (Qmljs_error.Structured.of_resource_limit
+           "QuickJS runtime close was deferred")
+  with
+  | exn -> Some (Qmljs_error.Structured.of_exception exn)
+
+type 'a scope_outcome = ('a, exn * Printexc.raw_backtrace) result
+
+(* Both callbacks run before the bracket returns and never escape it, so they
+   are taken local: a caller cannot stash them past the scope. *)
+let capture_scope (f @ local) : 'a scope_outcome =
+  match f () with
+  | result -> Ok result
+  | exception exn -> Error (exn, Printexc.get_raw_backtrace ())
+
+(* Finish a scope after its body: a cleanup failure is raised when the body
+   succeeded, and attached as suppressed structure when the body failed, so the
+   body failure is never dropped or replaced by cleanup noise. Shared by the
+   synchronous brackets and the Async driver bracket. *)
+let close_scope (outcome : 'a scope_outcome) ~(close_error @ local) =
+  match outcome with
+  | Ok result ->
       (match close_error () with
        | None -> result
        | Some error -> Qmljs_error.Structured.raise error)
-  | exception exn ->
-      let backtrace = Printexc.get_raw_backtrace () in
+  | Error (exn, backtrace) ->
       (match close_error () with
        | None -> Printexc.raise_with_backtrace exn backtrace
        | Some cleanup ->
            Qmljs_error.Structured.raise_with_suppressed exn backtrace [ cleanup ])
+
+let with_ ?memory_limit ?max_stack_size ?promise_job_limit f =
+  let runtime =
+    create_with_limits ?memory_limit ?max_stack_size ?promise_job_limit ()
+  in
+  close_scope
+    (capture_scope (fun () -> f runtime))
+    ~close_error:(fun () -> close_error runtime)
 
 let is_job_pending t =
   Qmljs_raw.runtime_is_job_pending (Qmljs_types.runtime_raw t)
@@ -315,112 +333,145 @@ let reclaim_pending_jobs ?(limit = 1_000_000) t =
   with
   | _ -> ()
 
-let attach_driver t driver =
+let attach_driver t =
   match t.Qmljs_types.driver with
-  | Some _ -> invalid_arg "QuickJS runtime already has an Eio driver"
-  | None -> t.Qmljs_types.driver <- Some driver
+  | Some _ -> invalid_arg "QuickJS runtime already has an Async driver"
+  | None ->
+      let driver =
+        { Qmljs_types.driver_runtime = t
+        ; state = Qmljs_types.Open
+        ; cancelled = Async_kernel.Ivar.create ()
+        ; wakeup_generation = 0
+        ; wakeup = Async_kernel.Ivar.create ()
+        }
+      in
+      t.Qmljs_types.driver <- Some driver;
+      driver
 
 let detach_driver t driver =
   match t.Qmljs_types.driver with
   | Some attached when attached == driver -> t.Qmljs_types.driver <- None
-  | _ -> ()
+  | Some _ | None -> ()
 
-(* [wakeup_generation] is the condition predicate. Waiters snapshot it before
-   checking promise state; signalers advance it under [mutex] before broadcast. *)
-let driver_closed driver =
-  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
-      driver.Qmljs_types.closed)
+let driver_closed (driver : Qmljs_types.driver) =
+  match driver.state with
+  | Qmljs_types.Closed -> true
+  | Qmljs_types.Open | Qmljs_types.Cancelled -> false
 
-let driver_wakeup_generation driver =
-  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
-      if driver.Qmljs_types.closed then None
-      else Some driver.Qmljs_types.wakeup_generation)
+(* A waiter snapshots the wakeup before it inspects promise or job state. Every
+   event advances the generation and fills the snapshotted ivar, so an event
+   that lands between the snapshot and the wait is never lost, and a waiter
+   with nothing to do sleeps on the ivar instead of spinning. *)
+type driver_wakeup =
+  { wakeup_driver : Qmljs_types.driver
+  ; generation : int
+  ; ivar : unit Async_kernel.Ivar.t
+  }
 
-let signal_driver_event driver =
-  Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
-      driver.Qmljs_types.wakeup_generation <-
-        driver.Qmljs_types.wakeup_generation + 1);
-  Eio.Condition.broadcast driver.Qmljs_types.condition
+let driver_wakeup t =
+  match t.Qmljs_types.driver with
+  | None -> None
+  | Some driver ->
+      (match driver.Qmljs_types.state with
+       | Qmljs_types.Closed -> None
+       | Qmljs_types.Open | Qmljs_types.Cancelled ->
+           Some
+             { wakeup_driver = driver
+             ; generation = driver.wakeup_generation
+             ; ivar = driver.wakeup
+             })
+
+let await_driver_wakeup wakeup =
+  if driver_closed wakeup.wakeup_driver
+     || wakeup.wakeup_driver.Qmljs_types.wakeup_generation <> wakeup.generation
+  then Async_kernel.Deferred.unit
+  else Async_kernel.Ivar.read wakeup.ivar
+
+let signal_driver_event (driver : Qmljs_types.driver) =
+  driver.wakeup_generation <- driver.wakeup_generation + 1;
+  let fired = driver.wakeup in
+  driver.wakeup <- Async_kernel.Ivar.create ();
+  Async_kernel.Ivar.fill_if_empty fired ()
 
 let signal_driver t =
   match t.Qmljs_types.driver with
   | None -> ()
   | Some driver -> signal_driver_event driver
 
-let await_driver_wakeup driver generation =
-  Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
-      while
-        (not driver.Qmljs_types.closed)
-        && driver.Qmljs_types.wakeup_generation = generation
-      do
-        Eio.Condition.await driver.Qmljs_types.condition
-          driver.Qmljs_types.mutex
-      done)
+(* Leaving Open wakes cooperative workers through [cancelled] and wakes every
+   waiter so it re-reads the state. *)
+let leave_open (driver : Qmljs_types.driver) next =
+  driver.state <- next;
+  Async_kernel.Ivar.fill_if_empty driver.cancelled ();
+  signal_driver_event driver
 
-let cancel_worker_scope driver =
-  (* Cancel the driver-owned scope that hosts Qmljs.Eio.promise workers, exactly
-     once. Cancelling cascades to every worker fiber so they observe
-     cancellation while the context is still alive, instead of running on past
-     driver cancel/close. *)
-  if not driver.Qmljs_types.worker_scope_cancelled then begin
-    driver.Qmljs_types.worker_scope_cancelled <- true;
-    try
-      Eio.Cancel.cancel driver.Qmljs_types.worker_cancel
-        (Failure "QuickJS Eio driver shut down")
-    with _ -> ()
-  end
+(* Cancel may be called from a host callback while JS is on the stack, so it
+   also sets the sticky interrupt that stops that JS. *)
+let cancel_driver (driver : Qmljs_types.driver) =
+  match driver.state with
+  | Qmljs_types.Open ->
+      leave_open driver Qmljs_types.Cancelled;
+      request_interrupt driver.driver_runtime
+  | Qmljs_types.Cancelled | Qmljs_types.Closed -> ()
 
-let close_driver driver =
-  let changed =
-    Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
-        if driver.Qmljs_types.closed then false
-        else begin
-          driver.Qmljs_types.closed <- true;
-          driver.Qmljs_types.wakeup_generation <-
-            driver.Qmljs_types.wakeup_generation + 1;
-          true
-        end)
-  in
-  if changed then begin
-    cancel_worker_scope driver;
-    Eio.Condition.broadcast driver.Qmljs_types.condition
-  end
+(* Close runs after the scope's body has settled, when no JS of this runtime is
+   on the owner's stack. It sets no interrupt, so workers that finish during
+   the join may still use the context for their cleanup. *)
+let close_driver (driver : Qmljs_types.driver) =
+  match driver.state with
+  | Qmljs_types.Open | Qmljs_types.Cancelled ->
+      leave_open driver Qmljs_types.Closed
+  | Qmljs_types.Closed -> ()
 
-let cancel_driver driver =
-  let changed =
-    Eio.Mutex.use_rw ~protect:false driver.Qmljs_types.mutex (fun () ->
-        if driver.Qmljs_types.closed then false
-        else begin
-          driver.Qmljs_types.cancelled <- true;
-          driver.Qmljs_types.wakeup_generation <-
-            driver.Qmljs_types.wakeup_generation + 1;
-          true
-        end)
-  in
-  if changed then begin
-    cancel_worker_scope driver;
-    driver.Qmljs_types.cancel ();
-    Eio.Condition.broadcast driver.Qmljs_types.condition
-  end
+let driver_cancelled (driver : Qmljs_types.driver) =
+  Async_kernel.Ivar.read driver.cancelled
+
+let worker_started t =
+  t.Qmljs_types.workers <-
+    (match t.Qmljs_types.workers with
+     | Qmljs_types.Idle ->
+         Qmljs_types.Running
+           { count = 1; all_done = Async_kernel.Ivar.create () }
+     | Qmljs_types.Running { count; all_done } ->
+         Qmljs_types.Running { count = count + 1; all_done })
+
+let worker_finished t =
+  match t.Qmljs_types.workers with
+  | Qmljs_types.Idle ->
+      (* Every finish is paired with exactly one start; reaching Idle here is a
+         broken invariant, not a recoverable state. *)
+      failwith "qmljs: host worker finished without a running worker"
+  | Qmljs_types.Running { count = 1; all_done } ->
+      t.Qmljs_types.workers <- Qmljs_types.Idle;
+      Async_kernel.Ivar.fill_if_empty all_done ()
+  | Qmljs_types.Running { count; all_done } ->
+      t.Qmljs_types.workers <- Qmljs_types.Running { count = count - 1; all_done }
+
+let workers_running t =
+  match t.Qmljs_types.workers with
+  | Qmljs_types.Idle -> false
+  | Qmljs_types.Running _ -> true
+
+let workers_done t =
+  match t.Qmljs_types.workers with
+  | Qmljs_types.Idle -> Async_kernel.Deferred.unit
+  | Qmljs_types.Running { all_done; count = _ } -> Async_kernel.Ivar.read all_done
 
 let execute_host_job t =
   ignore (Qmljs_raw.runtime_is_job_pending (Qmljs_types.runtime_raw t) : bool);
   match Queue.take_opt t.Qmljs_types.host_jobs with
   | None -> false
   | Some job ->
-      let drop, cancel =
-        match job.Qmljs_types.driver with
-        | None -> false, false
-        | Some driver ->
-            Eio.Mutex.use_ro driver.Qmljs_types.mutex (fun () ->
-                driver.Qmljs_types.closed, driver.Qmljs_types.cancelled)
-      in
-      if drop then ()
-      else if cancel then
-        Option.iter
-          (fun on_cancel -> with_interrupt_suppressed t on_cancel)
-          job.on_cancel
-      else job.run ();
+      (match job.Qmljs_types.driver with
+       | None -> job.run ()
+       | Some driver ->
+           (match driver.Qmljs_types.state with
+            | Qmljs_types.Open -> job.run ()
+            | Qmljs_types.Cancelled ->
+                Option.iter
+                  (fun on_cancel -> with_interrupt_suppressed t on_cancel)
+                  job.on_cancel
+            | Qmljs_types.Closed -> ()));
       signal_driver t;
       true
 

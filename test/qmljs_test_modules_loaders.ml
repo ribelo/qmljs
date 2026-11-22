@@ -7,7 +7,7 @@ let test_native_module_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
   Qmljs.Context.with_ runtime @@ fun context ->
   let evaluated =
-    Qmljs.Module.eval_with_meta ~filename:"meta-main.js" context
+    module_eval_with_meta_sync ~filename:"meta-main.js" context
       {|import.meta.qmljs = "visible";
         export const answer = 11;
         export default import.meta.qmljs;|}
@@ -36,7 +36,7 @@ let test_native_module_api () =
   in
   Qmljs.Module.declare_native context ~name:"native:math" native_math;
   let namespace =
-    Qmljs.Module.eval ~filename:"native-main.js" context
+    module_eval_sync ~filename:"native-main.js" context
       {|import defaultValue, { answer } from "native:math";
         import { answer as answerAgain } from "native:math";
         export const named = answer;
@@ -61,7 +61,7 @@ let test_native_module_api () =
   expect_structured_error "native module evaluation defect"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"native-bad-main.js" context
+        (module_eval_sync ~filename:"native-bad-main.js" context
            {|import value from "native:bad"; export default value;|}
          : Qmljs.Module.namespace))
     (fun error ->
@@ -130,7 +130,7 @@ let test_filesystem_loader_rejects_symlink_escape () =
       expect_structured_error "filesystem loader symlink escape"
         (fun () ->
           ignore
-            (Qmljs.Module.eval ~filename:"symlink-main.js" context
+            (module_eval_sync ~filename:"symlink-main.js" context
                {|import value from "outside.js"; export default value;|}
              : Qmljs.Module.namespace))
         (fun _error ->
@@ -182,7 +182,7 @@ let test_filesystem_loader_rejects_symlink_swap_race () =
                 in
                 Qmljs.Runtime.set_module_loader runtime loader;
                 let namespace =
-                  Qmljs.Module.eval
+                  module_eval_sync
                     ~filename:(Printf.sprintf "symlink-swap-%d.js" attempt)
                     context
                     {|import value from "victim.js"; export default value;|}
@@ -215,7 +215,7 @@ let test_filesystem_loader_does_not_scan_root_without_imports () =
       in
       Qmljs.Runtime.set_module_loader runtime loader;
       let namespace =
-        Qmljs.Module.eval ~filename:"eval.mjs" context "export default 7;"
+        module_eval_sync ~filename:"eval.mjs" context "export default 7;"
       in
       check_int "filesystem loader no-import default" 7
         (Qmljs.Value.to_int (Qmljs.Module.default namespace)))
@@ -248,7 +248,7 @@ let test_loader_request_attributes_are_per_import_not_stale () =
   expect_structured_error "loader request attribute conflict"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"stale-loader-request-main.js" context
+        (module_eval_sync ~filename:"stale-loader-request-main.js" context
            {|import jsData from "as-js" with { type: "js" };
              import jsonData from "as-json" with { type: "json" };
              export default jsonData.answer + jsData.answer;|}
@@ -284,7 +284,7 @@ let test_loader_request_base_and_original_specifier_do_not_go_stale () =
   expect_structured_error "loader request original specifier conflict"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"request-original-main.js" context
+        (module_eval_sync ~filename:"request-original-main.js" context
            {|import a from "alias-a";
              import b from "alias-b";
              export default a + b;|}
@@ -316,7 +316,7 @@ let test_loader_request_base_and_original_specifier_do_not_go_stale () =
   expect_structured_error "loader request base conflict"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"request-base-main.js" context
+        (module_eval_sync ~filename:"request-base-main.js" context
            {|import left from "left/main.js";
              import right from "right/main.js";
              export default left + right;|}
@@ -343,7 +343,7 @@ let test_module_loader_reentrant_replace_is_safe () =
     expect_structured_error label
       (fun () ->
         ignore
-          (Qmljs.Module.eval
+          (module_eval_sync
              ~filename:(label ^ ".js")
              context
              (Printf.sprintf "import value from %S; export default value;"
@@ -394,7 +394,7 @@ let test_module_normalize_rejects_nul_normalized_specifier () =
   expect_structured_error "NUL normalized module specifier"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"nul-normalize-main.js" context
+        (module_eval_sync ~filename:"nul-normalize-main.js" context
            {|import value from "entry"; export default value;|}
          : Qmljs.Module.namespace))
     (fun error ->
@@ -435,7 +435,7 @@ let test_json_import_attribute_does_not_execute_js_source () =
   expect_structured_error "JSON import rejects JavaScript source"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"json-source-main.js" context
+        (module_eval_sync ~filename:"json-source-main.js" context
            {|import data from "data.json" with { type: "json" };
              export default data;|}
          : Qmljs.Module.namespace))
@@ -443,7 +443,7 @@ let test_json_import_attribute_does_not_execute_js_source () =
   check_int "invalid JSON import did not execute source" 0
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.pwned"));
   let namespace =
-    Qmljs.Module.eval ~filename:"json-proto-main.js" context
+    module_eval_sync ~filename:"json-proto-main.js" context
       {|import data from "proto.json" with { type: "json" };
         export default Object.prototype.hasOwnProperty.call(data, "__proto__")
           && data.answer === 41
@@ -473,7 +473,7 @@ let test_fallback_loader_preserves_child_normalized_identity () =
   Qmljs.Runtime.set_module_loader runtime
     (Qmljs.Module.Loader.fallback [ child_loader ]);
   let namespace =
-    Qmljs.Module.eval ~filename:"fallback-identity-main.js" context
+    module_eval_sync ~filename:"fallback-identity-main.js" context
       {|import a from "alias-a";
         import b from "alias-b";
         export default globalThis.evaluations;|}
@@ -497,26 +497,26 @@ let test_module_loader_filesystem_api () =
   in
   Qmljs.Runtime.set_module_loader runtime loader;
   let namespace =
-    Qmljs.Module.eval ~filename:"main.js" context
+    module_eval_sync ~filename:"main.js" context
       {|import { answer } from "alias"; export default answer;|}
   in
   check_int "filesystem module default" 42
     (Qmljs.Value.to_int (Qmljs.Module.default namespace));
   let relative_namespace =
-    Qmljs.Module.eval ~filename:"pages/main.js" context
+    module_eval_sync ~filename:"pages/main.js" context
       {|import { answer } from "../dep.js"; export default answer + 1;|}
   in
   check_int "filesystem loader relative import" 43
     (Qmljs.Value.to_int (Qmljs.Module.default relative_namespace));
   let json_namespace =
-    Qmljs.Module.eval ~filename:"json-main.js" context
+    module_eval_sync ~filename:"json-main.js" context
       {|import data from "data.json" with { type: "json" };
         export default data.answer;|}
   in
   check_int "filesystem loader JSON import attribute" 41
     (Qmljs.Value.to_int (Qmljs.Module.default json_namespace));
   let repeated_namespace =
-    Qmljs.Module.eval ~filename:"repeated-main.js" context
+    module_eval_sync ~filename:"repeated-main.js" context
       {|import { answer as a } from "dep.js";
         import { answer as b } from "alias";
         export default a + b;|}
@@ -543,7 +543,7 @@ let test_module_loader_filesystem_api () =
   in
   Qmljs.Runtime.set_module_loader runtime callback_loader;
   let callback_namespace =
-    Qmljs.Module.eval ~filename:"pages/callback-main.js" context
+    module_eval_sync ~filename:"pages/callback-main.js" context
       {|import data from "./virtual" with { type: "json" };
         export default data.answer;|}
   in
@@ -583,7 +583,7 @@ let test_module_loader_filesystem_api () =
   in
   Qmljs.Runtime.set_module_loader runtime composed_loader;
   let composed_namespace =
-    Qmljs.Module.eval ~filename:"pages/composed-main.js" context
+    module_eval_sync ~filename:"pages/composed-main.js" context
       {|import { memory } from "memory-only.js";
         import data from "virtual:data" with { type: "json" };
         import { answer } from "../dep.js";
@@ -596,7 +596,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "composed loader deny"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"composed-blocked-main.js" context
+        (module_eval_sync ~filename:"composed-blocked-main.js" context
            {|import blocked from "blocked.js"; export default blocked;|}
           : Qmljs.Module.namespace))
     (fun error ->
@@ -606,7 +606,7 @@ let test_module_loader_filesystem_api () =
         (Qmljs.Error.denied_module_specifier_exn error));
   Qmljs.Runtime.set_module_loader runtime loader;
   let dynamic_namespace =
-    match Qmljs.Promise.await_result
+    match await_result_sync
             (Qmljs.Module.dynamic_import ~base:"dynamic-main.js" context "dep.js")
     with
     | Ok namespace -> namespace
@@ -618,7 +618,7 @@ let test_module_loader_filesystem_api () =
        check_int "dynamic import namespace" 42 (Qmljs.Value.to_int value)
    | None -> fail "dynamic import did not resolve to a namespace");
   (match
-     Qmljs.Promise.await_result
+     await_result_sync
        (Qmljs.Module.dynamic_import ~base:"dynamic-blocked-main.js" context
           "blocked.js")
    with
@@ -631,7 +631,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "filesystem loader deny"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"blocked-main.js" context
+        (module_eval_sync ~filename:"blocked-main.js" context
            {|import blocked from "blocked.js"; export default blocked;|}
           : Qmljs.Module.namespace))
     (fun error ->
@@ -642,7 +642,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "filesystem loader not found"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"missing-main.js" context
+        (module_eval_sync ~filename:"missing-main.js" context
            {|import missing from "missing.js"; export default missing;|}
           : Qmljs.Module.namespace))
     (fun error ->
@@ -657,7 +657,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "filesystem loader defect"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"defect-main.js" context
+        (module_eval_sync ~filename:"defect-main.js" context
            {|import value from "defect.js"; export default value;|}
           : Qmljs.Module.namespace))
     (fun error ->
@@ -667,7 +667,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "filesystem loader root escape"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"pages/escape-main.js" context
+        (module_eval_sync ~filename:"pages/escape-main.js" context
            {|import escaped from "../../dep.js"; export default escaped;|}
           : Qmljs.Module.namespace))
     (fun error ->
@@ -678,7 +678,7 @@ let test_module_loader_filesystem_api () =
   expect_structured_error "filesystem loader unknown import attribute"
     (fun () ->
       ignore
-        (Qmljs.Module.eval ~filename:"unknown-attribute-main.js" context
+        (module_eval_sync ~filename:"unknown-attribute-main.js" context
            {|import { answer } from "dep.js" with { integrity: "dev" };
              export default answer;|}
           : Qmljs.Module.namespace))
@@ -759,7 +759,7 @@ let test_loader_normalization_survives_minor_gc () =
         "import value from %S with { type: \"js\" }; export default value;"
         !expected_specifier in
       let fill = Sys.opaque_identity (fill_nursery (30 * (attempt mod 150))) in
-      let namespace = Qmljs.Module.eval ~filename:!expected_base context source in
+      let namespace = module_eval_sync ~filename:!expected_base context source in
       ignore fill;
       check_int "GC-stressed import result" 42
         (Qmljs.Value.to_int (Qmljs.Module.default namespace))
@@ -843,7 +843,7 @@ let test_dynamic_import_survives_minor_gc () =
       expected_specifier := young_name ~words:name_words ~prefix:"dep" ~attempt;
       let namespace =
         match
-          Qmljs.Promise.await_result
+          await_result_sync
             (Qmljs.Module.dynamic_import ~base:!expected_base context
                !expected_specifier)
         with

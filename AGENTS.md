@@ -12,9 +12,12 @@ Core OCaml code lives in lib/. Keep modules split by binding responsibility:
 - Qmljs_context: context lifecycle, eval, modules, globals, and scoped context
   ownership.
 - Qmljs_value: primitive construction, conversion, and wrapper ownership.
-- Qmljs_function: synchronous host callbacks and Eio-backed async host
+- Qmljs_function: synchronous host callbacks and Async-backed async host
   callbacks.
-- Qmljs_promise: promise state, result extraction, and Eio-compatible await.
+- Qmljs_promise: promise state, result extraction, and Async await.
+- Qmljs_driver (private): the one place that drains QuickJS and host jobs and
+  runs host work as Async workers.
+- Qmljs_async: the Qmljs.Async driver scope, cancellation and job draining.
 - Qmljs_error: structured failures crossing the JS/C/OxCaml boundary.
 - Qmljs_raw plus *_stubs.c: private FFI surface. Do not expose this as the
   user-facing API.
@@ -30,14 +33,15 @@ changes.
 ## Package Boundary Policy
 
 The root qmljs package must stay small: QuickJS runtime/context/value bindings,
-structured errors, and the minimum Eio integration needed for the current async
-API.
+structured errors, and the minimum Async integration needed for the current
+async API. The library depends on async_kernel only; async_unix belongs to the
+application that runs the scheduler.
 
 Optional adapters belong in separate packages when they add real dependencies
 or policy:
 
-- qmljs_eio or another adapter package may own richer Eio driver behavior if
-  core Eio usage grows beyond the minimum surface.
+- qmljs_async or another adapter package may own richer Async driver behavior
+  if core Async usage grows beyond the minimum surface.
 - Test helpers belong outside the runtime core if they need extra dependencies.
 - Provider-specific loaders, codecs, or framework integrations must not be
   added to the root package.
@@ -63,7 +67,8 @@ pin; mainline OCaml is not supported.
 qmljs_ppx remains in the repository but its library, interface fixture, and test
 are excluded from the 5.4 build. It depends on ppxlib, whose OxCaml package guard
 requires ocaml < 5.3. Do not replace it with compiler-libs or weaken core tests.
-Exergy consumes qmljs (including its Eio, async host callback, and promise APIs),
+Exergy consumes qmljs (including its Async driver, async host callback, and
+promise APIs),
 not qmljs_ppx.
 
 Use OxCaml features where they carry a real invariant or performance win:
@@ -84,7 +89,7 @@ Use local reference projects before inventing patterns:
   semantics. Treat it as a behavior and design reference for the binding shape.
 
 qmljs core stands alone: QuickJS runtime/context/value bindings, structured
-errors, and the minimum Eio integration the async API needs.
+errors, and the minimum Async integration the async API needs.
 
 ## QuickJS Ownership Invariants
 
@@ -162,7 +167,8 @@ They close deterministically on:
 - success;
 - JS failure;
 - OCaml exception;
-- Eio cancellation.
+- driver cancellation and close (Qmljs.Async.with_runtime joins every worker
+  before the context closes).
 
 Cleanup runs on the owner domain. GC finalizers are the backup path.
 
@@ -183,9 +189,17 @@ a native monotonic deadline read by the QuickJS interrupt handler; any future
 worker may only flip the atomic interrupt flag and must not touch the runtime,
 context, or value graph.
 
-Queued host jobs must be tied to the enclosing Eio switch/scope. Cancellation
-must propagate to queued work, failures must be observable by the owner, and no
-job should outlive the scope that made it meaningful.
+Queued host jobs and workers are tied to the runtime's driver scope
+(Qmljs.Async.with_runtime). Cancellation propagates to queued work, which
+rejects with a structured cancellation defect; failures are observable by the
+owner; no job outlives the scope that made it meaningful. Async cannot interrupt
+a running Deferred, so workers stop cooperatively on Qmljs.Async.cancelled and
+the scope joins them before the context closes.
+
+Runtimes, contexts, values and drivers are used by Async jobs on the owner
+domain, never concurrently. Driver state is a sum type (Open, Cancelled,
+Closed) mutated only by those jobs; wakeups use a generation plus an Ivar snapshotted before promise state
+is read, so no wakeup is lost and no waiter spins while a driver exists.
 
 ## Build, Test, and Development Commands
 

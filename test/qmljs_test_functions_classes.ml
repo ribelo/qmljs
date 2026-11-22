@@ -89,12 +89,14 @@ let test_async_host_callback_rejection_is_structured () =
   Qmljs.Context.with_ runtime @@ fun context ->
   Qmljs.Function.set_global_async context ~name:"later_host_fail" ~arity:0
     (fun _args ->
-      Eio.Fiber.yield ();
-      raise
-        (Qmljs.Error.host ~message:"async host boom"
-           ~metadata:[ "request_id", "async-42" ]));
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+        raise
+          (Qmljs.Error.host ~message:"async host boom"
+             ~metadata:[ "request_id", "async-42" ])));
   let promise = Qmljs.Context.eval context "later_host_fail()" in
-  match Qmljs.Promise.await_result ~yield_every:1 promise with
+  match
+    run_async (fun () -> Qmljs.Promise.await_result ~yield_every:1 promise)
+  with
   | Ok _ -> fail "async host callback unexpectedly resolved"
   | Error error ->
       check_kind "async host defect kind" Qmljs.Error.Host_callback_defect
@@ -113,10 +115,11 @@ let test_async_host_callback_foreign_return_rejects_structured () =
   let foreign = Qmljs.Value.int right 41 in
   Qmljs.Function.set_global_async left ~name:"bad_async" ~arity:0
     (fun _args ->
-      Eio.Fiber.yield ();
-      foreign);
+      Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () -> foreign));
   let promise = Qmljs.Context.eval left "bad_async()" in
-  (match Qmljs.Promise.await_result ~yield_every:1 promise with
+  (match
+     run_async (fun () -> Qmljs.Promise.await_result ~yield_every:1 promise)
+   with
    | Ok _ -> fail "async foreign host return unexpectedly resolved"
    | Error error ->
        check_kind "async foreign host return kind"
@@ -146,7 +149,7 @@ let test_host_function_name_nul_is_rejected () =
   expect_invalid_arg "async host function NUL name" (fun () ->
       ignore
         (Qmljs.Function.make_async context ~name ~arity:0 (fun _args ->
-             Qmljs.Value.undefined context)
+             Async.return (Qmljs.Value.undefined context))
          : Qmljs.value))
 
 let test_async_function_value_api () =
@@ -158,15 +161,18 @@ let test_async_function_value_api () =
         let health =
           Qmljs.Function.make_async context ~name:"health" ~arity:0
             (fun _args ->
-              Eio.Fiber.yield ();
-              Qmljs.Value.string context "ok")
+              Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                Qmljs.Value.string context "ok"))
         in
         Qmljs.Object.set_string api "health" health;
         Qmljs.Context.set_global context ~name:"api" (Qmljs.Value.object_ api);
         let promise = Qmljs.Context.eval context "api.health()" in
         check_bool "async function value returns a promise" true
           (Qmljs.Promise.is promise);
-        (match Qmljs.Promise.await_result ~yield_every:1 promise with
+        (match
+           run_async (fun () ->
+             Qmljs.Promise.await_result ~yield_every:1 promise)
+         with
          | Ok value ->
              check_string "async function value result" "ok"
                (Qmljs.Value.to_string value)
@@ -175,26 +181,32 @@ let test_async_function_value_api () =
                ("async function value rejected: " ^ Qmljs.Error.message error));
         let unrelated = Qmljs.Context.eval context "api.health()" in
         let plain_namespace =
-          Qmljs.Module.eval ~filename:"plain-module.js" context
-            "export default 1;"
+          run_async (fun () ->
+            Qmljs.Module.eval ~filename:"plain-module.js" context
+              "export default 1;")
         in
         check_int "plain module default" 1
           (Qmljs.Value.to_int (Qmljs.Module.default plain_namespace));
         (match Qmljs.Promise.state unrelated with
          | Qmljs.Promise.Pending -> ()
          | _ -> fail "plain module eval drained unrelated async function");
-        ignore (Qmljs.Promise.await_result ~yield_every:1 unrelated);
+        ignore
+          (run_async (fun () ->
+             Qmljs.Promise.await_result ~yield_every:1 unrelated));
         let fail_async =
           Qmljs.Function.make_async context ~name:"fail_async" ~arity:0
             (fun _args ->
-              Eio.Fiber.yield ();
-              raise
-                (Qmljs.Error.host ~message:"async value boom"
-                   ~metadata:[ "surface", "value" ]))
+              Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                raise
+                  (Qmljs.Error.host ~message:"async value boom"
+                     ~metadata:[ "surface", "value" ])))
         in
         Qmljs.Object.set_string api "failAsync" fail_async;
         let rejected = Qmljs.Context.eval context "api.failAsync()" in
-        (match Qmljs.Promise.await_result ~yield_every:1 rejected with
+        (match
+           run_async (fun () ->
+             Qmljs.Promise.await_result ~yield_every:1 rejected)
+         with
          | Ok _ -> fail "async function value unexpectedly resolved"
          | Error error ->
              check_kind "async function value rejection kind"
@@ -212,8 +224,8 @@ let test_async_function_value_api () =
               let add =
                 Qmljs.Function.make_async context ~name:"native_add" ~arity:1
                   (fun args ->
-                    Eio.Fiber.yield ();
-                    Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1))
+                    Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                      Qmljs.Value.int context (Qmljs.Value.to_int args.(0) + 1)))
               in
               Qmljs.Object.set_string module_api "add" add;
               Qmljs.Module.Native.export exports ~name:"default"
@@ -223,9 +235,10 @@ let test_async_function_value_api () =
         let namespace =
           match
             Qmljs.Error.capture (fun () ->
-                Qmljs.Module.eval ~filename:"async-api-main.js" context
-                  {|import api from "native:async-api";
-                    export default await api.add(41);|})
+                run_async (fun () ->
+                  Qmljs.Module.eval ~filename:"async-api-main.js" context
+                    {|import api from "native:async-api";
+                      export default await api.add(41);|}))
           with
           | Ok namespace -> namespace
           | Error error ->
@@ -241,11 +254,9 @@ let test_async_function_value_api () =
       fail ("unexpected async function structured error: "
             ^ Qmljs.Error.message error)
 
-let test_eio_promise_settles_module_top_level_await () =
-  Eio_main.run @@ fun env ->
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock:(Eio.Stdenv.clock env)
-  @@ fun driver _runtime context ->
+let test_async_promise_settles_module_top_level_await () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver _runtime context ->
   let native =
     Qmljs.Module.Native.define
       (fun declarations ->
@@ -254,29 +265,27 @@ let test_eio_promise_settles_module_top_level_await () =
         let api = Qmljs.Object.create context in
         let slow =
           Qmljs.Function.make context ~name:"slow" ~arity:0 (fun _args ->
-              Qmljs.Eio.promise driver context (fun () ->
-                  Eio.Fiber.yield ();
-                  Eio.Fiber.yield ();
-                  Qmljs.Value.int context 42))
+              Qmljs.Async.promise driver context (fun () ->
+                  Async.Deferred.bind (Async.Scheduler.yield ()) ~f:(fun () ->
+                    Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+                      Qmljs.Value.int context 42))))
         in
         Qmljs.Object.set_string api "slow" slow;
         Qmljs.Module.Native.export exports ~name:"default"
           (Qmljs.Value.object_ api))
   in
-  Qmljs.Module.declare_native context ~name:"native:eio-api" native;
-  let namespace =
-    match
-      Qmljs.Error.capture (fun () ->
-          Qmljs.Module.eval ~filename:"eio-api-main.js" context
-            {|import api from "native:eio-api";
-              export default await api.slow();|})
-    with
-    | Ok namespace -> namespace
-    | Error error ->
-        fail ("Eio promise module await rejected: " ^ Qmljs.Error.message error)
-  in
-  check_int "Eio promise module default export" 42
-    (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+  Qmljs.Module.declare_native context ~name:"native:async-driver-api" native;
+  Async.Deferred.map
+    (Async.Monitor.try_with ~extract_exn:true (fun () ->
+       Qmljs.Module.eval ~filename:"async-driver-api-main.js" context
+         {|import api from "native:async-driver-api";
+           export default await api.slow();|}))
+    ~f:(function
+      | Ok namespace ->
+          check_int "Async promise module default export" 42
+            (Qmljs.Value.to_int (Qmljs.Module.default namespace))
+      | Error exn ->
+          fail ("Async promise module await rejected: " ^ Printexc.to_string exn))
 
 let test_function_defer_api () =
   Qmljs.Runtime.with_ @@ fun runtime ->
@@ -297,7 +306,7 @@ let test_function_defer_api () =
   check_int "deferred function has not run yet" 0
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.deferredResult"));
   check_bool "defer enqueued job" true (Qmljs.Runtime.is_job_pending runtime);
-  ignore (Qmljs.Async.drain_jobs runtime : int);
+  ignore (run_async (fun () -> Qmljs.Async.drain_jobs runtime) : int);
   check_int "deferred function ran" 42
     (Qmljs.Value.to_int (Qmljs.Context.eval context "globalThis.deferredResult"))
 
@@ -438,8 +447,8 @@ let tests =
   ; "host function name NUL is rejected"
   , test_host_function_name_nul_is_rejected
   ; "async function value API", test_async_function_value_api
-  ; "Eio promise settles module top-level await"
-  , test_eio_promise_settles_module_top_level_await
+  ; "Async promise settles module top-level await"
+  , test_async_promise_settles_module_top_level_await
   ; "function defer API", test_function_defer_api
   ; "host class API", test_host_class_api
   ; "iterable API", test_iterable_api

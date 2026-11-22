@@ -23,29 +23,46 @@ and module_load_request =
   ; attributes : (string * string) list
   }
 
+(* A driver only moves forward: Open -> Cancelled -> Closed, or Open -> Closed.
+   Cancelled still lets queued cancellation settlements run; Closed drops all
+   queued work because the context may already be gone. *)
+type driver_state =
+  | Open
+  | Cancelled
+  | Closed
+
+(* Workers are the Async computations behind host promises. Async cannot
+   interrupt a running Deferred, so driver teardown joins them instead, and
+   module evaluation without a driver knows work is still in flight: [all_done]
+   is filled when the last running worker finishes. *)
+type host_workers =
+  | Idle
+  | Running of
+      { count : int
+      ; all_done : unit Async_kernel.Ivar.t
+      }
+
+(* All fields are touched only by the owner thread running the Async scheduler,
+   so plain mutation is race-free; [Runtime.request_interrupt] stays the only
+   cross-domain entry point. *)
 type driver =
-  { sw : Eio.Switch.t
-  ; worker_switch : Eio.Switch.t
-  ; worker_cancel : Eio.Cancel.t
-  ; mutable worker_scope_cancelled : bool
-  ; condition : Eio.Condition.t
-  ; mutex : Eio.Mutex.t
+  { driver_runtime : runtime
+  ; mutable state : driver_state
+  ; cancelled : unit Async_kernel.Ivar.t
   ; mutable wakeup_generation : int
-  ; mutable closed : bool
-  ; mutable cancelled : bool
-  ; drain_until_idle : unit -> int
-  ; cancel : unit -> unit
+  ; mutable wakeup : unit Async_kernel.Ivar.t
   }
 
-type host_job =
+and host_job =
   { driver : driver option
   ; run : unit -> unit
   ; on_cancel : (unit -> unit) option
   }
 
-type runtime =
+and runtime =
   { raw : Qmljs_raw.runtime
   ; host_jobs : host_job Queue.t
+  ; mutable workers : host_workers
   ; mutable driver : driver option
   ; mutable module_loader : module_loader option
   ; memory_limit : int option

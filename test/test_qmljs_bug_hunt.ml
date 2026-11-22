@@ -17,6 +17,19 @@
 
 let fail message = raise (Failure message)
 
+(* Runs [f] on the Async scheduler and returns its value, re-raising the
+   original exception so structured qmljs errors keep their classification. *)
+let run_async f =
+  match
+    Async.Thread_safe.block_on_async (fun () ->
+      Async.Monitor.try_with ~extract_exn:true f)
+  with
+  | Ok (Ok value) -> value
+  | Ok (Error exn) | Error exn -> raise exn
+
+let async_drain_jobs runtime =
+  run_async (fun () -> Qmljs.Async.drain_jobs runtime)
+
 let check_int label expected actual =
   if actual <> expected then
     fail (Printf.sprintf "%s: expected %d, got %d" label expected actual)
@@ -277,9 +290,9 @@ let test_class_finalizers_run_after_gc () =
   Qmljs.Context.set_global context ~name:"Res" ctor;
   ignore (Qmljs.Context.eval context "for (let i = 0; i < 200; i++) { new Res(); } 0");
   Qmljs.Runtime.run_gc runtime;
-  ignore (Qmljs.Async.drain_jobs runtime : int);
+  ignore (async_drain_jobs runtime : int);
   Qmljs.Runtime.run_gc runtime;
-  ignore (Qmljs.Async.drain_jobs runtime : int);
+  ignore (async_drain_jobs runtime : int);
   if !finalized = 0 then
     fail "no class finalizer ran after run_gc + drain_jobs"
 
@@ -289,7 +302,7 @@ let test_class_finalizers_run_after_gc () =
 let test_async_eval_unwraps_result () =
   with_context @@ fun _runtime context ->
   let promise = Qmljs.Context.eval ~async:true context "40 + 2" in
-  let result = Qmljs.Promise.await promise in
+  let result = run_async (fun () -> Qmljs.Promise.await promise) in
   check_int "async eval completion value" 42 (Qmljs.Value.to_int result)
 
 (* Async-eval unwrapping must not depend on user-mutable Promise.prototype.then.
@@ -304,7 +317,7 @@ let test_async_eval_unwrap_ignores_tampered_then () =
         999 }); };"
       : Qmljs.Value.t);
   let promise = Qmljs.Context.eval ~async:true context "40 + 2" in
-  let result = Qmljs.Promise.await promise in
+  let result = run_async (fun () -> Qmljs.Promise.await promise) in
   check_int "async eval ignores tampered then" 42 (Qmljs.Value.to_int result)
 
 (* Module evaluation must not return a namespace while top-level await is still
@@ -316,8 +329,9 @@ let test_module_eval_pending_tla_is_not_silent_success () =
   with_context @@ fun _runtime context ->
   match
     Qmljs.Error.capture (fun () ->
-        Qmljs.Module.eval context
-          "await new Promise(() => {}); export default 1;")
+        run_async (fun () ->
+          Qmljs.Module.eval context
+            "await new Promise(() => {}); export default 1;"))
   with
   | Ok _ ->
       fail "Module.eval returned a namespace while top-level await was pending"
@@ -379,7 +393,7 @@ let test_throw_null_is_javascript_not_oom () =
      | Ok _ -> fail "expected throw null to raise"
      | Error error -> check_null_error (label ^ " throw null") error);
     let rejected = Qmljs.Context.eval context "Promise.reject(null)" in
-    match Qmljs.Promise.await_result rejected with
+    match run_async (fun () -> Qmljs.Promise.await_result rejected) with
     | Ok _ -> fail "expected Promise.reject(null) to reject"
     | Error error ->
         check_null_error (label ^ " Promise.reject(null)") error
@@ -527,33 +541,44 @@ let test_drain_budget drain ~limit ~queued =
     check_bool "queue now empty" false (Qmljs.Runtime.is_job_pending runtime))
 
 (* A driver may schedule only contexts from its own runtime. *)
-let test_eio_promise_rejects_foreign_context ~clock () =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs.Eio.with_runtime ~sw ~clock @@ fun driver _runtime _context ->
+let test_async_promise_rejects_foreign_context () =
+  run_async @@ fun () ->
+  Qmljs.Async.with_runtime @@ fun driver _runtime _context ->
   Qmljs.Runtime.with_ @@ fun other_runtime ->
   Qmljs.Context.with_ other_runtime @@ fun other_context ->
-  match Qmljs.Eio.promise driver other_context (fun () -> Qmljs.Value.int other_context 1) with
-  | _ -> fail "Eio.promise accepted a context belonging to another runtime"
-  | exception Invalid_argument _ -> ()
+  match
+    Qmljs.Async.promise driver other_context (fun () ->
+      Async.return (Qmljs.Value.int other_context 1))
+  with
+  | _ -> fail "Async.promise accepted a context belonging to another runtime"
+  | exception Invalid_argument _ -> Async.Deferred.unit
 
-(* Worker finalizers must finish while their QuickJS context is alive. *)
-let test_eio_scope_joins_workers_before_close ~clock () =
-  Eio.Switch.run @@ fun sw ->
-  let started, start = Eio.Promise.create () in
+(* Worker cleanup must finish while its QuickJS context is alive: the scope
+   closes the driver, the worker observes [cancelled], and with_runtime joins it
+   before closing the context. *)
+let test_async_scope_joins_workers_before_close () =
   let cleaned = ref false in
   let context_alive = ref false in
-  Qmljs.Eio.with_runtime ~sw ~clock (fun driver _runtime context ->
-    ignore (Qmljs.Eio.promise driver context (fun () ->
-      Fun.protect
-        ~finally:(fun () -> Eio.Cancel.protect (fun () ->
-          Eio.Fiber.yield ();
-          context_alive := (match Qmljs.Error.capture (fun () ->
-            Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1")) with
-            | Ok 2 -> true | _ -> false);
-          cleaned := true))
-        (fun () -> Eio.Promise.resolve start (); Eio.Fiber.await_cancel ())) : Qmljs.Value.t);
-    ignore (Qmljs.Eio.drain_until_idle driver : int);
-    Eio.Promise.await started);
+  run_async (fun () ->
+    Qmljs.Async.with_runtime (fun driver _runtime context ->
+      let started = Async.Ivar.create () in
+      ignore
+        (Qmljs.Async.promise driver context (fun () ->
+           Async.Ivar.fill_if_empty started ();
+           Async.Deferred.bind (Qmljs.Async.cancelled driver) ~f:(fun () ->
+             Async.Deferred.map (Async.Scheduler.yield ()) ~f:(fun () ->
+               context_alive :=
+                 (match
+                    Qmljs.Error.capture (fun () ->
+                      Qmljs.Value.to_int (Qmljs.Context.eval context "1 + 1"))
+                  with
+                  | Ok 2 -> true
+                  | Ok _ | Error _ -> false);
+               cleaned := true;
+               Qmljs.Value.undefined context)))
+         : Qmljs.Value.t);
+      Async.Deferred.bind (Qmljs.Async.drain_until_idle driver)
+        ~f:(fun (_ : int) -> Async.Ivar.read started)));
   check_bool "worker cleanup completed before with_runtime returns" true !cleaned;
   check_bool "worker cleanup retains live context" true !context_alive
 
@@ -563,43 +588,47 @@ let test_negative_promise_job_limit () =
   | exception Invalid_argument _ -> ()
 
 (* Private contract: detaching compares the driver, not fresh option boxes. *)
-let test_driver_detach_identity ~clock () =
-  Eio.Switch.run @@ fun sw ->
-  Qmljs__Qmljs_eio.with_runtime ~sw ~clock @@ fun driver runtime _context ->
-  Qmljs__Qmljs_eio.with_runtime ~sw ~clock @@ fun other _runtime _context ->
+let test_driver_detach_identity () =
+  Qmljs__Qmljs_runtime.with_ @@ fun runtime ->
+  Qmljs__Qmljs_runtime.with_ @@ fun other_runtime ->
+  let driver = Qmljs__Qmljs_runtime.attach_driver runtime in
+  let other = Qmljs__Qmljs_runtime.attach_driver other_runtime in
   Qmljs__Qmljs_runtime.detach_driver runtime other;
   (match runtime.Qmljs__Qmljs_types.driver with
    | Some attached when attached == driver -> ()
-   | _ -> fail "detaching another driver changed ownership");
+   | Some _ | None -> fail "detaching another driver changed ownership");
   Qmljs__Qmljs_runtime.detach_driver runtime driver;
   (match runtime.Qmljs__Qmljs_types.driver with
    | None -> ()
-   | Some _ -> fail "detaching the attached driver left it attached")
+   | Some _ -> fail "detaching the attached driver left it attached");
+  Qmljs__Qmljs_runtime.detach_driver other_runtime other
 
-(* The supplied switch outlives the caller's independently cancelled scope. *)
-let test_eio_startup_cancellation_releases_scope ~clock () =
+(* A body that fails before it yields must still tear the whole scope down:
+   the original failure reaches the caller and no runtime, context or value
+   is left behind. *)
+let test_async_body_failure_releases_scope () =
+  let before = Qmljs.Diagnostics.snapshot () in
   let entered = ref false in
-  match Eio.Time.with_timeout clock 1.0 (fun () ->
-    Eio.Switch.run (fun sw ->
-      match Eio.Cancel.sub (fun caller ->
-        Eio.Fiber.fork ~sw (fun () -> Eio.Cancel.cancel caller Exit);
-        Qmljs.Eio.with_runtime ~sw ~clock (fun _ _ _ ->
-          Eio.Fiber.check ();
-          entered := true)) with
-      | () -> fail "startup unexpectedly escaped cancellation"
-      | exception Eio.Cancel.Cancelled _ -> ());
-    Ok ()) with
-  | Ok () -> check_bool "cancelled before body" false !entered
-  | Error `Timeout -> fail "startup cancellation stranded a worker scope on the supplied switch"
+  (match
+     run_async (fun () ->
+       Qmljs.Async.with_runtime (fun _driver _runtime context ->
+         entered := true;
+         ignore (Qmljs.Context.eval context "globalThis.kept = {}" : Qmljs.Value.t);
+         raise Exit))
+   with
+   | () -> fail "with_runtime swallowed the body failure"
+   | exception Exit -> ());
+  check_bool "body ran" true !entered;
+  Qmljs.Diagnostics.assert_no_leaks ~before ~after:(Qmljs.Diagnostics.snapshot ())
 
 let tests =
   [ "runtime_empty_zero_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:0 ~queued:0)
   ; "runtime_exact_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:2 ~queued:2)
   ; "runtime_excess_budget", (fun () -> test_drain_budget Qmljs.Runtime.drain_jobs ~limit:2 ~queued:3)
-  ; "async_empty_zero_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:0 ~queued:0)
-  ; "async_exact_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:2 ~queued:2)
-  ; "async_zero_budget_preserves_work", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:0 ~queued:1)
-  ; "async_excess_budget", (fun () -> test_drain_budget Qmljs.Async.drain_jobs ~limit:2 ~queued:3)
+  ; "async_empty_zero_budget", (fun () -> test_drain_budget async_drain_jobs ~limit:0 ~queued:0)
+  ; "async_exact_budget", (fun () -> test_drain_budget async_drain_jobs ~limit:2 ~queued:2)
+  ; "async_zero_budget_preserves_work", (fun () -> test_drain_budget async_drain_jobs ~limit:0 ~queued:1)
+  ; "async_excess_budget", (fun () -> test_drain_budget async_drain_jobs ~limit:2 ~queued:3)
   ; "int_safe_range_roundtrips", test_int_safe_range_roundtrips
   ; "as_int_accepts_safe_integer_numbers_above_int32",
     test_as_int_accepts_safe_integer_numbers_above_int32
@@ -633,13 +662,12 @@ let tests =
   ]
 
 let () =
-  Eio_main.run @@ fun env ->
   let tests = tests @
     [ "negative_promise_job_limit", test_negative_promise_job_limit
-    ; "driver_detach_identity", test_driver_detach_identity ~clock:(Eio.Stdenv.clock env)
-    ; "eio_startup_cancellation_releases_scope", test_eio_startup_cancellation_releases_scope ~clock:(Eio.Stdenv.clock env)
-    ; "eio_promise_rejects_foreign_context", test_eio_promise_rejects_foreign_context ~clock:(Eio.Stdenv.clock env)
-    ; "eio_scope_joins_workers_before_close", test_eio_scope_joins_workers_before_close ~clock:(Eio.Stdenv.clock env)
+    ; "driver_detach_identity", test_driver_detach_identity
+    ; "async_body_failure_releases_scope", test_async_body_failure_releases_scope
+    ; "async_promise_rejects_foreign_context", test_async_promise_rejects_foreign_context
+    ; "async_scope_joins_workers_before_close", test_async_scope_joins_workers_before_close
     ] in
   let failures = ref [] in
   List.iter
